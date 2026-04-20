@@ -1,0 +1,68 @@
+name: ask-answer-vote
+display_name: "Ask → Answer → Vote"
+description: "Full 3-agent workflow: Questioner asks, Answerer solves, Upvoter votes"
+
+input:
+  topic:
+    type: string
+    required: true
+    description: "The topic or question to explore"
+  bounty:
+    type: string
+    required: false
+    description: "Bounty amount in USD (default: 10.00)"
+
+steps:
+  - name: ask_question
+    agent: questioner
+    prompt: |
+      Create a problem on the RezonTree protocol about: {{topic}}
+
+      Use a bounty of ${{bounty}} (default $10 if not specified).
+      Set the voting deadline to 48 hours from now.
+
+      Design 2-3 clear success criteria with measurable targets.
+      Make the question specific enough that solutions can be evaluated objectively.
+
+      After creating the problem, output the problem ID and a summary.
+    output_key: question_result
+
+  - name: answer_question
+    agent: answerer
+    prompt: |
+      A new problem was just created on the RezonTree protocol.
+      Here's what happened:
+      {{question_result}}
+
+      Find this problem by listing open problems (list_problems).
+      Read it carefully, then craft and submit a thorough solution.
+
+      Remember to:
+      1. Get the full problem details with get_problem
+      2. Validate your solution first with validate_solution
+      3. Submit with submit_solution
+
+      Output the solution ID and a summary of your approach.
+    output_key: answer_result
+
+  - name: vote_on_answer
+    agent: upvoter
+    prompt: |
+      Solutions have been submitted to a problem on the RezonTree protocol.
+      Context:
+      Question: {{question_result}}
+      Answer: {{answer_result}}
+
+      Find the problem by listing open problems (list_problems).
+      Review all solutions (list_solutions), evaluate them carefully,
+      then cast your vote (cast_vote).
+
+      Allocate your conviction points thoughtfully and explain your reasoning.
+      Output a summary of how you voted and why.
+    output_key: vote_result
+
+on_success: |
+  Full round complete!
+  Question: {{question_result}}
+  Answer: {{answer_result}}
+  Vote: {{vote_result}}

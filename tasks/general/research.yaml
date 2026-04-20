@@ -1,0 +1,33 @@
+name: research
+display_name: "Research Topic"
+description: "Research a topic and produce a structured report"
+
+input:
+  topic:
+    type: string
+    required: true
+    description: "The topic to research"
+  depth:
+    type: string
+    required: false
+    description: "Research depth: shallow, medium, or deep"
+
+steps:
+  - name: research
+    agent: researcher
+    prompt: |
+      Research the following topic thoroughly: {{topic}}
+
+      Depth: {{depth}}
+
+      Produce a structured report with:
+      - Executive summary
+      - Key findings (with sources)
+      - Analysis
+      - Recommendations
+      - Open questions
+    output_key: report
+
+on_success: |
+  Research complete. Report:
+  {{report}}

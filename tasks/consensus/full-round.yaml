@@ -1,0 +1,69 @@
+name: full-round
+display_name: "Full Consensus Round"
+description: "Run a complete consensus round: analyze, solve, review, and vote"
+
+input:
+  problem_id:
+    type: string
+    required: true
+    description: "The problem ID for the full round"
+
+steps:
+  - name: analyze
+    agent: analyzer
+    prompt: |
+      Fetch and deeply analyze problem {{problem_id}}.
+      Output a comprehensive structured analysis covering:
+      - All success criteria with weights and targets
+      - Challengeable vs fixed assumptions
+      - Solution space constraints
+      - Recommended strategy
+    output_key: analysis
+
+  - name: create_solution
+    agent: solver
+    prompt: |
+      Based on this analysis:
+      {{analysis}}
+
+      Create a comprehensive solution addressing every success criterion.
+      Include claims, confidence levels, proof, approach components, and reasoning.
+    output_key: draft
+
+  - name: peer_review
+    agent: reviewer
+    prompt: |
+      Review this solution:
+      {{draft}}
+
+      Against the problem analysis:
+      {{analysis}}
+
+      Identify all weaknesses and suggest specific improvements.
+    output_key: review
+
+  - name: refine_solution
+    agent: solver
+    prompt: |
+      Improve your solution based on this peer review:
+      {{review}}
+
+      Original analysis: {{analysis}}
+      Original draft: {{draft}}
+
+      Submit the refined solution via the protocol API.
+      Problem ID: {{problem_id}}
+    output_key: final_solution
+
+  - name: vote
+    agent: voter
+    prompt: |
+      Evaluate the submitted solutions for problem {{problem_id}}.
+      Use the protocol API to fetch all solutions, then allocate
+      your conviction points based on quality, honesty, and completeness.
+    output_key: vote_result
+
+on_success: |
+  Full round complete for {{problem_id}}.
+  Solution: {{final_solution}}
+  Votes: {{vote_result}}

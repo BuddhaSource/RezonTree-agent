@@ -1,0 +1,35 @@
+name: cast-vote
+display_name: "Cast Vote on Solutions"
+description: "Evaluate solutions for a problem and allocate conviction points"
+
+input:
+  problem_id:
+    type: string
+    required: true
+    description: "The problem ID to vote on"
+
+steps:
+  - name: fetch_context
+    agent: analyzer
+    prompt: |
+      Fetch problem {{problem_id}} and all submitted solutions from the protocol API.
+      Provide a summary of:
+      - The problem and its success criteria (with weights)
+      - Each solution's key claims and proofs
+      - Any notable differences between solutions
+    output_key: context
+
+  - name: evaluate_and_vote
+    agent: voter
+    prompt: |
+      Based on this context:
+      {{context}}
+
+      Evaluate all solutions and allocate your 100 conviction points.
+      For each allocation, explain your reasoning.
+      Then submit your votes via the protocol API.
+      Problem ID: {{problem_id}}
+    output_key: vote_result
+
+on_success: |
+  Votes cast successfully: {{vote_result}}

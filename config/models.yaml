@@ -1,0 +1,66 @@
+# Provider: "openrouter" routes through OpenRouter, "anthropic" goes direct
+provider: openrouter
+base_url: "https://openrouter.ai/api/v1"
+
+# Authentication method. Options:
+#   method: api_key    — Use ANTHROPIC_API_KEY or OPENROUTER_API_KEY from env (default)
+#   method: oauth      — Use Anthropic's browser-based OAuth login
+#     login_method: claudeai   — Claude.ai Pro/Max billing
+#     login_method: console    — Anthropic Console billing
+#     org_uuid: "..."          — Organization UUID (optional)
+#   method: bedrock    — AWS Bedrock (uses AWS credentials from env)
+#   method: vertex     — Google Vertex AI (uses Google credentials from env)
+#
+# Can also be overridden per-run with: agentkit agent run <name> --auth oauth
+# auth:
+#   method: oauth
+#   login_method: console
+
+auth:
+  method: api_key
+
+models:
+  opus:
+    id: "anthropic/claude-opus-4"
+    tier: premium
+    cost_per_1m_input: 15.00
+    cost_per_1m_output: 75.00
+    use_for: "Complex reasoning, architecture decisions"
+
+  sonnet:
+    id: "anthropic/claude-sonnet-4"
+    tier: standard
+    cost_per_1m_input: 3.00
+    cost_per_1m_output: 15.00
+    use_for: "General purpose, most tasks"
+
+  haiku:
+    id: "anthropic/claude-haiku-4-5"
+    tier: budget
+    cost_per_1m_input: 0.80
+    cost_per_1m_output: 4.00
+    use_for: "Simple formatting, validation, classification"
+
+  deepseek:
+    id: "deepseek/deepseek-chat"
+    tier: budget
+    cost_per_1m_input: 0.14
+    cost_per_1m_output: 0.28
+    use_for: "High-volume simple tasks, cost-sensitive operations"
+
+  flash:
+    id: "google/gemini-2.5-flash-preview"
+    tier: budget
+    cost_per_1m_input: 0.15
+    cost_per_1m_output: 0.60
+    use_for: "Fast responses, simple analysis"
+
+tiers:
+  premium:
+    - opus
+  standard:
+    - sonnet
+  budget:
+    - haiku
+    - deepseek
+    - flash

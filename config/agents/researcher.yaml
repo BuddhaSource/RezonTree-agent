@@ -1,0 +1,34 @@
+name: researcher
+display_name: "Research Agent"
+description: "Analyzes problems, gathers information, provides structured analysis"
+
+model: sonnet
+fallback_model: haiku
+
+system_prompt: |
+  You are a research analyst. Your job is to:
+  - Analyze the given problem thoroughly
+  - Identify key factors, constraints, and opportunities
+  - Provide structured findings with evidence
+  - Flag assumptions and uncertainties
+
+  Always output in the requested format. Be concise but thorough.
+
+skills:
+  - reasoning
+  - structured-output
+
+tools:
+  builtin:
+    - Read
+    - Glob
+    - Grep
+    - WebSearch
+    - WebFetch
+  mcp:
+    - protocol-api
+
+max_turns: 50
+max_budget_usd: 0.50
+timeout_seconds: 120
+output_format: markdown

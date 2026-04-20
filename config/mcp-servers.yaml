@@ -1,0 +1,99 @@
+servers:
+  # ── Questioner MCP servers ──────────────────────────────────────────
+  rezontree-questioner-01:
+    type: stdio
+    command: "npx"
+    args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
+    description: "RezonTree API for Questioner 01"
+    env:
+      REZONTREE_API_URL: "${REZONTREE_API_URL}"
+      REZONTREE_AGENT_SECRET: "${REZONTREE_QUESTIONER_01_SECRET}"
+
+  rezontree-questioner-02:
+    type: stdio
+    command: "npx"
+    args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
+    description: "RezonTree API for Questioner 02"
+    env:
+      REZONTREE_API_URL: "${REZONTREE_API_URL}"
+      REZONTREE_AGENT_SECRET: "${REZONTREE_QUESTIONER_02_SECRET}"
+
+  # ── Solver MCP servers (answer + vote) ──────────────────────────────
+  rezontree-solver-02:
+    type: stdio
+    command: "npx"
+    args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
+    description: "RezonTree API for Solver 02"
+    env:
+      REZONTREE_API_URL: "${REZONTREE_API_URL}"
+      REZONTREE_AGENT_SECRET: "${REZONTREE_SOLVER_02_SECRET}"
+
+  rezontree-solver-03:
+    type: stdio
+    command: "npx"
+    args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
+    description: "RezonTree API for Solver 03"
+    env:
+      REZONTREE_API_URL: "${REZONTREE_API_URL}"
+      REZONTREE_AGENT_SECRET: "${REZONTREE_SOLVER_03_SECRET}"
+
+  rezontree-solver-04:
+    type: stdio
+    command: "npx"
+    args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
+    description: "RezonTree API for Solver 04"
+    env:
+      REZONTREE_API_URL: "${REZONTREE_API_URL}"
+      REZONTREE_AGENT_SECRET: "${REZONTREE_SOLVER_04_SECRET}"
+
+  rezontree-solver-05:
+    type: stdio
+    command: "npx"
+    args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
+    description: "RezonTree API for Solver 05"
+    env:
+      REZONTREE_API_URL: "${REZONTREE_API_URL}"
+      REZONTREE_AGENT_SECRET: "${REZONTREE_SOLVER_05_SECRET}"
+
+  # ── Legacy servers (backward compat with existing answerer/upvoter) ─
+  rezontree-questioner:
+    type: stdio
+    command: "npx"
+    args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
+    description: "RezonTree API for Questioner (legacy alias)"
+    env:
+      REZONTREE_API_URL: "${REZONTREE_API_URL}"
+      REZONTREE_AGENT_SECRET: "${REZONTREE_QUESTIONER_01_SECRET}"
+
+  rezontree-answerer:
+    type: stdio
+    command: "npx"
+    args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
+    description: "RezonTree API for Answerer (legacy)"
+    env:
+      REZONTREE_API_URL: "${REZONTREE_API_URL}"
+      REZONTREE_AGENT_SECRET: "${REZONTREE_ANSWERER_SECRET}"
+
+  rezontree-upvoter:
+    type: stdio
+    command: "npx"
+    args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
+    description: "RezonTree API for Upvoter (legacy)"
+    env:
+      REZONTREE_API_URL: "${REZONTREE_API_URL}"
+      REZONTREE_AGENT_SECRET: "${REZONTREE_UPVOTER_SECRET}"
+
+  # ── Standard MCP servers ────────────────────────────────────────────
+  filesystem:
+    type: stdio
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "./workspace"]
+    description: "Read/write files in workspace directory"
+
+  github:
+    type: stdio
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-github"]
+    env:
+      GITHUB_TOKEN: "${GITHUB_TOKEN}"
+    description: "GitHub repository operations"
