@@ -8,6 +8,7 @@ import type { ExecutionResult } from "../types/index.js";
 import { Logger } from "../logger/index.js";
 import { CostTracker } from "../model/cost-tracker.js";
 import { ModelRouter } from "../model/router.js";
+import { Reporter, fromEnv as reporterFromEnv } from "../reporting/reporter.js";
 import { McpManager } from "./mcp-manager.js";
 import { Agent } from "./agent.js";
 import { interpolateVariables } from "../config/loader.js";
@@ -18,6 +19,9 @@ export interface ExecutorOptions {
   costTracker?: CostTracker;
   cwd?: string;
   skillsDir?: string;
+  /** Error reporter — when not provided, built from env
+   *  via `reporterFromEnv()`. Loop 0064. */
+  reporter?: Reporter;
 }
 
 /**
@@ -34,6 +38,7 @@ export class Executor {
   private mcpManager: McpManager;
   private cwd: string;
   private skillsDir?: string;
+  private reporter: Reporter;
 
   constructor(options: ExecutorOptions) {
     this.config = options.config;
@@ -43,6 +48,7 @@ export class Executor {
     this.mcpManager = new McpManager(this.logger);
     this.cwd = options.cwd ?? process.cwd();
     this.skillsDir = options.skillsDir;
+    this.reporter = options.reporter ?? reporterFromEnv();
   }
 
   /**
@@ -157,6 +163,17 @@ export class Executor {
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         this.logger.error(`Step "${step.name}" threw: ${errorMsg}`);
+        // Fan-out to configured sinks (file always; stderr
+        // unless disabled; webhook if RT_AGENT_ERROR_WEBHOOK_URL
+        // set). Classification determines which sinks receive
+        // the report. Cartridge loop 0064. Await so the error
+        // is durable before we return — a fire-and-forget here
+        // risks losing the record when the process exits right
+        // after.
+        await this.reporter.report(err, {
+          stepName: step.name,
+          task: task.name,
+        });
         return {
           success: false,
           context,
