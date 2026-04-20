@@ -5,28 +5,150 @@
  * Exposes the RezonTree consensus protocol API as MCP tools.
  * Each tool maps to a RezonTree API endpoint with proper auth handling.
  *
- * Environment variables:
- *   REZONTREE_API_URL       - Base URL for the RezonTree API (default: http://localhost:8080)
- *   REZONTREE_AGENT_SECRET  - The tok_ secret for the agent using this server
+ * Authentication modes (select via RT_AGENT_AUTH_MODE):
+ *
+ *   "wallet"   [default] — Derive an HD wallet from RT_AGENT_MNEMONIC at
+ *                          index RT_AGENT_INDEX, sign an EIP-712
+ *                          WalletLoginIntent, POST to /auth/wallet. Used by
+ *                          new wallet-atomic agents. Backend auto-registers
+ *                          unknown wallets on first sign-in.
+ *
+ *   "legacy"   — POST client_credentials to /auth/token with a tok_
+ *                prefixed REZONTREE_AGENT_SECRET. Used by pre-migration
+ *                agents during the transition window.
+ *
+ * Env vars (wallet mode):
+ *   RT_AGENT_MNEMONIC       BIP-39 mnemonic (shared across all agents)
+ *   RT_AGENT_INDEX          Zero-based HD index for THIS agent
+ *   RT_AGENT_BACKEND_URL    Backend base URL (default http://localhost:8080)
+ *   RT_AGENT_DOMAIN_*       Optional EIP-712 domain overrides
+ *
+ * Env vars (legacy mode):
+ *   REZONTREE_API_URL       Backend base URL (legacy name, still honored)
+ *   REZONTREE_AGENT_SECRET  tok_-prefixed client secret
+ *
+ * Refactored cartridge loop 0063 to close staging audit MUST-DO #1
+ * for the testnet arc. Legacy mode stays available so the existing
+ * bootstrap.sh + 6 agent YAMLs keep working during the cutover.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-const API_URL = process.env.REZONTREE_API_URL || "http://localhost:8080";
+import { deriveAgentWallet } from "../../src/wallet/derive.js";
+import { loadLoginDomain } from "../../src/wallet/domain.js";
+import { signWalletLoginIntent } from "../../src/wallet/signer.js";
+
+const AUTH_MODE = (process.env.RT_AGENT_AUTH_MODE || "wallet").toLowerCase();
+const API_URL =
+  process.env.RT_AGENT_BACKEND_URL ||
+  process.env.REZONTREE_API_URL ||
+  "http://localhost:8080";
+
+// ─── wallet-mode env ───────────────────────────────────────
+const AGENT_MNEMONIC = process.env.RT_AGENT_MNEMONIC || "";
+const AGENT_INDEX = Number.parseInt(process.env.RT_AGENT_INDEX || "-1", 10);
+
+// ─── legacy-mode env ───────────────────────────────────────
 const AGENT_SECRET = process.env.REZONTREE_AGENT_SECRET || "";
 
-let cachedToken: { jwt: string; expiresAt: number } | null = null;
+// Backend JWT TTL is 15 min (internal/auth/jwt.go). We refresh
+// 30 s early to avoid racing the expiry under load. Applies to
+// both auth modes.
+const JWT_TTL_MS = 15 * 60 * 1000;
+const REFRESH_LEAD_MS = 30_000;
+
+let cachedToken: {
+  jwt: string;
+  expiresAt: number;
+  agentId?: string;
+} | null = null;
 
 /**
- * Get a valid JWT for the agent. Caches tokens and refreshes when expired.
+ * Dispatches to the right auth path based on AUTH_MODE. Caches
+ * tokens with a 30s early-refresh buffer.
  */
 async function getAgentToken(): Promise<string> {
-  if (cachedToken && Date.now() < cachedToken.expiresAt - 30_000) {
+  if (cachedToken && Date.now() < cachedToken.expiresAt - REFRESH_LEAD_MS) {
     return cachedToken.jwt;
   }
 
+  if (AUTH_MODE === "wallet") {
+    return await getWalletToken();
+  }
+  if (AUTH_MODE === "legacy") {
+    return await getLegacyToken();
+  }
+  throw new Error(
+    `RT_AGENT_AUTH_MODE=${AUTH_MODE} is invalid. Use "wallet" or "legacy".`,
+  );
+}
+
+/**
+ * Wallet auth: derive → sign WalletLoginIntent → POST /auth/wallet.
+ * Backend recovers the signer's address from the signature and
+ * looks up the agent by (address, chainId). Unknown wallets are
+ * auto-registered (loop 0046 backend behavior).
+ */
+async function getWalletToken(): Promise<string> {
+  if (!AGENT_MNEMONIC) {
+    throw new Error(
+      "RT_AGENT_MNEMONIC not set (wallet auth mode requires it — see docs/testnet-migration-plan.md)",
+    );
+  }
+  if (!Number.isInteger(AGENT_INDEX) || AGENT_INDEX < 0) {
+    throw new Error(
+      `RT_AGENT_INDEX must be a non-negative integer, got ${process.env.RT_AGENT_INDEX}`,
+    );
+  }
+
+  const domain = loadLoginDomain();
+  const wallet = deriveAgentWallet(
+    AGENT_MNEMONIC,
+    AGENT_INDEX,
+    domain.chainId,
+  );
+  const body = await signWalletLoginIntent({
+    wallet,
+    issuedAt: Math.floor(Date.now() / 1000),
+    domain,
+  });
+
+  const resp = await fetch(`${API_URL}/auth/wallet`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  const raw = await resp.json();
+  if (!resp.ok) {
+    const err = raw as {
+      error?: { code?: string; message?: string; action?: string };
+    };
+    throw new Error(
+      `Wallet auth failed: ${resp.status} ${err.error?.code} — ${err.error?.message}\nAction: ${err.error?.action}`,
+    );
+  }
+  const data = raw as { access_token: string; agent_id?: string };
+  cachedToken = {
+    jwt: data.access_token,
+    expiresAt: Date.now() + JWT_TTL_MS,
+    agentId: data.agent_id,
+  };
+  return cachedToken.jwt;
+}
+
+/**
+ * Legacy client_credentials bearer auth. Kept for agents that
+ * haven't migrated to the wallet-atomic identity yet.
+ */
+async function getLegacyToken(): Promise<string> {
+  if (!AGENT_SECRET) {
+    throw new Error(
+      "REZONTREE_AGENT_SECRET not set (legacy auth mode requires it)",
+    );
+  }
   const resp = await fetch(`${API_URL}/auth/token`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -38,7 +160,7 @@ async function getAgentToken(): Promise<string> {
 
   if (!resp.ok) {
     const err = await resp.text();
-    throw new Error(`Auth failed: ${resp.status} ${err}`);
+    throw new Error(`Legacy auth failed: ${resp.status} ${err}`);
   }
 
   const data = (await resp.json()) as {

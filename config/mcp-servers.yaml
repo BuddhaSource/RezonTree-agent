@@ -1,13 +1,21 @@
 servers:
-  # ── Questioner MCP servers ──────────────────────────────────────────
+  # Cartridge loop 0063 — MCP server auth refactor. Wallet-mode is
+  # the default now: each agent has an `RT_AGENT_INDEX` that maps
+  # to a distinct HD-derived address under the shared mnemonic.
+  # Legacy aliases keep the old client_credentials + tok_ secret
+  # path by setting RT_AGENT_AUTH_MODE=legacy. Both modes share
+  # the same server binary (`mcp-servers/protocol-api/server.ts`).
+
+  # ── Questioner MCP servers (wallet-mode) ────────────────────────────
   rezontree-questioner-01:
     type: stdio
     command: "npx"
     args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
     description: "RezonTree API for Questioner 01"
     env:
-      REZONTREE_API_URL: "${REZONTREE_API_URL}"
-      REZONTREE_AGENT_SECRET: "${REZONTREE_QUESTIONER_01_SECRET}"
+      RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
+      RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
+      RT_AGENT_INDEX: "0"
 
   rezontree-questioner-02:
     type: stdio
@@ -15,18 +23,20 @@ servers:
     args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
     description: "RezonTree API for Questioner 02"
     env:
-      REZONTREE_API_URL: "${REZONTREE_API_URL}"
-      REZONTREE_AGENT_SECRET: "${REZONTREE_QUESTIONER_02_SECRET}"
+      RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
+      RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
+      RT_AGENT_INDEX: "1"
 
-  # ── Solver MCP servers (answer + vote) ──────────────────────────────
+  # ── Solver MCP servers (wallet-mode; answer + vote) ─────────────────
   rezontree-solver-02:
     type: stdio
     command: "npx"
     args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
     description: "RezonTree API for Solver 02"
     env:
-      REZONTREE_API_URL: "${REZONTREE_API_URL}"
-      REZONTREE_AGENT_SECRET: "${REZONTREE_SOLVER_02_SECRET}"
+      RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
+      RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
+      RT_AGENT_INDEX: "2"
 
   rezontree-solver-03:
     type: stdio
@@ -34,8 +44,9 @@ servers:
     args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
     description: "RezonTree API for Solver 03"
     env:
-      REZONTREE_API_URL: "${REZONTREE_API_URL}"
-      REZONTREE_AGENT_SECRET: "${REZONTREE_SOLVER_03_SECRET}"
+      RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
+      RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
+      RT_AGENT_INDEX: "3"
 
   rezontree-solver-04:
     type: stdio
@@ -43,8 +54,9 @@ servers:
     args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
     description: "RezonTree API for Solver 04"
     env:
-      REZONTREE_API_URL: "${REZONTREE_API_URL}"
-      REZONTREE_AGENT_SECRET: "${REZONTREE_SOLVER_04_SECRET}"
+      RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
+      RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
+      RT_AGENT_INDEX: "4"
 
   rezontree-solver-05:
     type: stdio
@@ -52,16 +64,22 @@ servers:
     args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
     description: "RezonTree API for Solver 05"
     env:
-      REZONTREE_API_URL: "${REZONTREE_API_URL}"
-      REZONTREE_AGENT_SECRET: "${REZONTREE_SOLVER_05_SECRET}"
+      RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
+      RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
+      RT_AGENT_INDEX: "5"
 
-  # ── Legacy servers (backward compat with existing answerer/upvoter) ─
+  # ── Legacy aliases (opt-in bearer-token, kept for transition) ────────
+  # These still work against the old-agent backend path and let you
+  # run the legacy bootstrap.sh until the testnet flow is validated.
+  # Remove once the new bootstrap is the default.
+
   rezontree-questioner:
     type: stdio
     command: "npx"
     args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
     description: "RezonTree API for Questioner (legacy alias)"
     env:
+      RT_AGENT_AUTH_MODE: "legacy"
       REZONTREE_API_URL: "${REZONTREE_API_URL}"
       REZONTREE_AGENT_SECRET: "${REZONTREE_QUESTIONER_01_SECRET}"
 
@@ -71,6 +89,7 @@ servers:
     args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
     description: "RezonTree API for Answerer (legacy)"
     env:
+      RT_AGENT_AUTH_MODE: "legacy"
       REZONTREE_API_URL: "${REZONTREE_API_URL}"
       REZONTREE_AGENT_SECRET: "${REZONTREE_ANSWERER_SECRET}"
 
@@ -80,6 +99,7 @@ servers:
     args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
     description: "RezonTree API for Upvoter (legacy)"
     env:
+      RT_AGENT_AUTH_MODE: "legacy"
       REZONTREE_API_URL: "${REZONTREE_API_URL}"
       REZONTREE_AGENT_SECRET: "${REZONTREE_UPVOTER_SECRET}"
 
