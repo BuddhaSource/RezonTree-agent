@@ -1,9 +1,18 @@
 #!/bin/bash
 # Run a single simulation cycle with specified agents and tasks
 # Usage: ./scripts/sim-cycle.sh
+#
+# Refitted cartridge loop 0066 for the wallet-atomic flow:
+# preflight-checks env + relies on `pnpm testnet:bootstrap`
+# having been run first.
+
 set -euo pipefail
 
-CLI="/usr/local/bin/node dist/cli/index.js"
+# ── Preflight ────────────────────────────────────────────────
+: "${RT_AGENT_MNEMONIC:?RT_AGENT_MNEMONIC not set. Run 'pnpm testnet:bootstrap' first — see docs/testnet-migration-plan.md}"
+: "${RT_AGENT_BACKEND_URL:=http://localhost:8080}"
+
+CLI="pnpm --silent start"
 LOG_DIR="logs/sim_loop"
 TS=$(date +%Y%m%d_%H%M%S)
 mkdir -p "$LOG_DIR"

@@ -1,7 +1,37 @@
 #!/bin/bash
-# Bootstrap RezonTree agents: create agents in DB, issue credentials, fund wallets.
-# Usage: ./scripts/bootstrap.sh
+# LEGACY bootstrap — cartridge loop 0066 deprecated this path.
+#
+# Use `pnpm testnet:bootstrap` instead. The legacy script below
+# registers agents via email/password + psql-direct-write +
+# issues tok_ secrets, which ONLY works against the old
+# backend auth model. Kept here for regression testing against
+# an old backend snapshot; will be removed when the wallet flow
+# ships to production.
+#
+# For the testnet flow, the canonical bootstrap is:
+#
+#   pnpm testnet:bootstrap
+#
+# which derives wallets from RT_AGENT_MNEMONIC, prints addresses
+# for you to fund, polls until funded, then auto-registers each
+# agent via /auth/wallet.
+#
+# Usage (legacy, not recommended):
+#   ./scripts/bootstrap.sh
+
 set -euo pipefail
+
+cat <<'EOF' >&2
+  ⚠  scripts/bootstrap.sh is LEGACY.
+
+  For testnet / wallet-atomic flow:
+    pnpm testnet:bootstrap
+
+  Continuing with the legacy email/password flow in 5 seconds —
+  Ctrl-C now if you meant the new bootstrap.
+
+EOF
+sleep 5
 
 API_URL="${REZONTREE_API_URL:-http://localhost:8080}"
 DB_URL="${DATABASE_URL:-postgres://rezontree:rezontree@localhost:5432/rezontree?sslmode=disable}"
