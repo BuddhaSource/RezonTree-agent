@@ -28,7 +28,7 @@ models:
     use_for: "Complex reasoning, architecture decisions"
 
   sonnet:
-    id: "anthropic/claude-sonnet-4"
+    id: "anthropic/claude-sonnet-4.6"
     tier: standard
     cost_per_1m_input: 3.00
     cost_per_1m_output: 15.00

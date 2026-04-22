@@ -1,6 +1,15 @@
 {
   "permissions": {
-    "allow": [],
+    "allow": [
+      "Bash(pnpm typecheck)",
+      "Bash(pnpm lint)",
+      "Bash(pnpm audit)",
+      "Bash(pnpm list)",
+      "Bash(pnpm outdated)",
+      "Bash(npm view *)",
+      "Bash(npm ls *)",
+      "Bash(npm outdated *)"
+    ],
     "deny": []
   }
 }

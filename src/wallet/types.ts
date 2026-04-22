@@ -76,7 +76,7 @@ export const DEFAULT_FUNDING_THRESHOLD: FundingThreshold = {
   // 0.005 Sepolia ETH — enough for ~5 claim txs at typical
   // Base Sepolia gas prices. Users with cheaper faucets can
   // override via config.
-  minNativeWei: 5_000_000_000_000_000n,
-  // $10 USDC at 6 decimals.
-  minUsdcMinor: 10_000_000n,
+  minNativeWei: 2_000_000_000_000_000n,
+  // $1 USDC at 6 decimals.
+  minUsdcMinor: 1_000_000n,
 };

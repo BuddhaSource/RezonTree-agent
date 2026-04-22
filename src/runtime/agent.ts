@@ -24,6 +24,13 @@ const ANTHROPIC_MODEL_ALIASES: Record<string, string> = {
   "claude-sonnet-4": "claude-sonnet-4-20250514",
   "claude-haiku-4": "claude-haiku-4-20250506",
   "claude-haiku-4-5": "claude-haiku-4-5-20251001",
+  // OpenRouter-style dot naming → Anthropic SDK dash naming. The
+  // models.yaml config uses OpenRouter conventions (claude-sonnet-4.6)
+  // but the SDK expects Anthropic's dashed IDs. Both forms resolve to
+  // the same model.
+  "claude-sonnet-4.6": "claude-sonnet-4-6",
+  "claude-opus-4.7": "claude-opus-4-7",
+  "claude-haiku-4.5": "claude-haiku-4-5-20251001",
 };
 
 export interface AgentRunOptions {
@@ -232,27 +239,30 @@ export class Agent {
     systemPrompt: string,
     runOptions: AgentRunOptions,
   ): Record<string, unknown> {
-    // Resolve model ID. For direct Anthropic access (OAuth, Bedrock, Vertex,
-    // or api_key with an Anthropic key), strip OpenRouter-style provider
-    // prefixes (e.g., "anthropic/claude-sonnet-4" → "claude-sonnet-4")
-    // and resolve short aliases to full dated IDs required by the SDK.
+    // Resolve model ID. The Claude Agent SDK (and the bundled Claude
+    // Code CLI it spawns) always wants a bare Anthropic model ID, never
+    // the OpenRouter `<provider>/<model>` form. The only time we route
+    // through OpenRouter is when OPENROUTER_API_KEY is set AND no
+    // ANTHROPIC_API_KEY is set — in that case the SDK itself forwards
+    // the prefixed ID to the OpenRouter endpoint. Everywhere else
+    // (api_key + Anthropic, oauth, bedrock, vertex, Claude Code's own
+    // OAuth) we strip the prefix + resolve the alias.
     const authMethod = this.authConfig?.method ?? "api_key";
     let modelId = this.modelConfig.id;
-    const isDirectAnthropic =
-      authMethod !== "api_key" ||
-      (process.env["ANTHROPIC_API_KEY"]?.startsWith("sk-ant-") &&
-        !process.env["OPENROUTER_API_KEY"]);
-    if (isDirectAnthropic && modelId.includes("/")) {
+    const routingViaOpenRouter =
+      authMethod === "api_key" &&
+      !!process.env["OPENROUTER_API_KEY"] &&
+      !process.env["ANTHROPIC_API_KEY"]?.startsWith("sk-ant-");
+    if (!routingViaOpenRouter && modelId.includes("/")) {
       modelId = modelId.split("/").pop()!;
     }
-    // Resolve short aliases to full dated model IDs
-    if (isDirectAnthropic && ANTHROPIC_MODEL_ALIASES[modelId]) {
+    if (!routingViaOpenRouter && ANTHROPIC_MODEL_ALIASES[modelId]) {
       modelId = ANTHROPIC_MODEL_ALIASES[modelId];
     }
 
     this.logger.debug(`Resolved model ID: ${modelId}`, {
       original: this.modelConfig.id,
-      isDirectAnthropic,
+      routingViaOpenRouter,
     });
 
     const options: Record<string, unknown> = {
