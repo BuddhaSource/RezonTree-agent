@@ -68,11 +68,11 @@ const API_URL =
 const AGENT_MNEMONIC = process.env.RT_AGENT_MNEMONIC || "";
 const AGENT_INDEX = Number.parseInt(process.env.RT_AGENT_INDEX || "-1", 10);
 
-// ─── Router v2 chain-broadcast env (loop 0080) ─────────────
-// All three are required for signed-intent + on-chain flows.
-// Missing → chain-broadcast tools throw a teaching error; the
-// backend-only tools (list_*, get_*) still work so agents doing
-// reads don't fail to even load the MCP server.
+// ─── Router chain-broadcast env ────────────────────────────
+// All three are required for signed-intent and on-chain flows.
+// When missing, chain-broadcast tools throw a teaching error at
+// first call; backend-only tools (list_*, get_*) keep working so
+// read-only agents can still use the server.
 const ROUTER_ADDRESS = process.env.RT_ROUTER_ADDRESS as Address | undefined;
 const RPC_URL = process.env.RT_RPC_URL || "https://sepolia.base.org";
 const CHAIN_ID = Number.parseInt(
@@ -85,13 +85,13 @@ const USDC_ADDRESS =
 
 /**
  * Router broadcast helpers lazy-derive the agent wallet + cache
- * viem clients. Missing RT_ROUTER_ADDRESS errors at first call
- * rather than at server boot so read-only tools still work.
+ * viem clients. Missing RT_ROUTER_ADDRESS errors at first call,
+ * not at server boot, so read-only tools still work.
  */
 function requireRouterEnv(): { router: Address; rpc: string; chainId: number } {
   if (!ROUTER_ADDRESS) {
     throw new Error(
-      "RT_ROUTER_ADDRESS is not set. Router-v2 broadcast tools (fund_problem, submit_solution, cast_vote, claim_payout) need the deployed Router address. Set it in your MCP server env; see RUNBOOK.md.",
+      "RT_ROUTER_ADDRESS is not set. Chain-broadcast tools (fund_problem, submit_solution, cast_vote, claim_payout) need the deployed Router address. Set it in your MCP server env; see RUNBOOK.md.",
     );
   }
   return { router: ROUTER_ADDRESS, rpc: RPC_URL, chainId: CHAIN_ID };
@@ -107,24 +107,16 @@ function getAgentWallet() {
   return deriveAgentWallet(AGENT_MNEMONIC, AGENT_INDEX, CHAIN_ID);
 }
 
-// ─── Idempotency cache (loop 0084) ─────────────────────────
+// ─── Idempotency cache ─────────────────────────────────────
 //
-// Multi-step tool flows (submit_solution, cast_vote, fund_problem)
-// are NOT atomic — if a network hiccup interrupts between, say,
-// POST /commit and POST /solutions, the agent retries from scratch
-// and creates a duplicate intent. To prevent that, we cache the
-// final result keyed by (tool_name, sha256(params)). On retry
-// within CACHE_TTL, return the cached result rather than redoing
-// the flow.
+// Multi-step tool flows (submit_solution, cast_vote, fund_problem,
+// claim_payout) are not atomic. A network hiccup between steps
+// causes the agent to retry from scratch and produce a duplicate
+// intent. The cache keys (tool_name, sha256(params)) → final result
+// so a retry within the TTL replays the first call's output.
 //
-// Scope: in-memory only. Loss on MCP-server restart is acceptable
-// (agent sees the duplicate behaviour then, not repeatedly). A
-// persistent cache or backend-enforced idempotency key can
-// replace this in a follow-up loop.
-//
-// TTL matches intent expiresAt (15 min default); after that the
-// signed intent would be rejected on-chain anyway, so a retry
-// past TTL correctly produces a fresh intent.
+// Scope: in-memory. TTL matches the default intent expiresAt
+// (15 min) — past that a fresh intent would be needed anyway.
 
 import { createHash } from "node:crypto";
 
@@ -155,7 +147,7 @@ function setCached(key: string, result: unknown): void {
   idempotencyCache.set(key, { timestamp: Date.now(), result });
 }
 
-function cachedTextResponse(result: unknown, replay: boolean) {
+function textResponse(result: unknown, replay = false) {
   const body = typeof result === "string" ? result : JSON.stringify(result, null, 2);
   return {
     content: [
@@ -165,6 +157,25 @@ function cachedTextResponse(result: unknown, replay: boolean) {
       },
     ],
   };
+}
+
+/**
+ * Run a broadcast tool's body under the idempotency cache. The
+ * runner is called only on a cache miss; its return value is cached
+ * and returned to the caller. Replays return the cached result
+ * wrapped with an `[idempotent-replay]` marker.
+ */
+async function withIdempotency<T>(
+  action: string,
+  params: unknown,
+  runner: () => Promise<T>,
+) {
+  const key = idempotencyKey(action, params);
+  const cached = getCached(key);
+  if (cached !== null) return textResponse(cached, true);
+  const result = await runner();
+  setCached(key, result);
+  return textResponse(result);
 }
 
 interface ClientBundle {
@@ -427,7 +438,7 @@ server.tool(
 
 server.tool(
   "submit_solution",
-  "Submit a solution via the Router v2 signed-intent flow: preflight → sign CommitIntent → POST /commit → POST /solutions body → USDC permit → Router.commitSolution() on-chain. Returns contribution_id, intent_hash, and the chain tx hash. The backend row flips pending→confirmed when the HTTP poller ingests the SolutionCommitted event (~3s).",
+  "Submit a solution via the Router signed-intent flow: preflight → sign CommitIntent → POST /commit → POST /solutions body → USDC permit → Router.commitSolution() on-chain. Returns solution_id, intent_hash, and the chain tx hash. The backend row flips pending→confirmed when the HTTP poller ingests the SolutionCommitted event (~3s).",
   {
     problem_id: z.string().describe("The problem ID to solve"),
     summary: z.string().describe("Brief solution summary"),
@@ -458,86 +469,78 @@ server.tool(
     const env = requireRouterEnv();
     const { walletClient, publicClient, privateKey, address } = getClients();
 
-    // Loop 0084: idempotency replay. Same problem_id + same body
-    // within 15min → return the cached first-call result rather
-    // than creating a duplicate CommitIntent + solution row.
-    const idemKey = idempotencyKey("submit_solution", {
-      addr: address,
-      pid: params.problem_id,
-      summary: params.summary,
-      reasoning: params.reasoning_tree,
-      claims: params.claims,
-    });
-    const cached = getCached(idemKey);
-    if (cached) return cachedTextResponse(cached, true);
-
-    // Step 1 — preflight.
-    const pre = (await apiCall(
-      "GET",
-      `/v1/problems/${params.problem_id}/commit/preflight?submitter=${address}`,
-    )) as CommitPreflight;
-
-    // Step 2 — build + sign CommitIntent. Backend hashes the body
-    // into intent.contentHash; agent must post the same body in
-    // the /solutions call below.
-    const contentHash = computeContentHash(params.summary);
-    const td = buildCommitIntentTypedData({
-      preflight: pre,
-      submitter: address,
-      contentHash,
-    });
-    const intentSig = (await privateKeyToAccount(privateKey).signTypedData(
-      td,
-    )) as Hex;
-
-    // Step 3 — POST /commit (backend stores signed intent).
-    const commitResp = (await apiCall(
-      "POST",
-      `/v1/problems/${params.problem_id}/commit`,
-      buildSubmitCommitRequestBody({ typedData: td, signature: intentSig }),
-    )) as { intent_hash: string };
-
-    // Step 4 — POST /solutions (body row, intent_hash links).
-    const solResp = (await apiCall(
-      "POST",
-      `/v1/problems/${params.problem_id}/solutions`,
+    return withIdempotency(
+      "submit_solution",
       {
-        intent_hash: commitResp.intent_hash,
+        addr: address,
+        pid: params.problem_id,
         summary: params.summary,
-        reasoning_tree: params.reasoning_tree,
+        reasoning: params.reasoning_tree,
         claims: params.claims,
       },
-    )) as { id: string };
+      async () => {
+        const pre = (await apiCall(
+          "GET",
+          `/v1/problems/${params.problem_id}/commit/preflight?submitter=${address}`,
+        )) as CommitPreflight;
 
-    // Step 5 — USDC permit (fee + bond).
-    const permitValue =
-      BigInt(td.message.feeAmount) + BigInt(td.message.bondAmount);
-    const permit = await signUSDCPermit(walletClient, publicClient, {
-      usdc: USDC_ADDRESS,
-      spender: env.router,
-      value: permitValue,
-      deadline: td.message.expiresAt,
-    });
+        // Backend hashes the summary into intent.contentHash; the
+        // /solutions POST below must carry the same body so the
+        // hashes align.
+        const contentHash = computeContentHash(params.summary);
+        const td = buildCommitIntentTypedData({
+          preflight: pre,
+          submitter: address,
+          contentHash,
+        });
+        const intentSig = (await privateKeyToAccount(privateKey).signTypedData(
+          td,
+        )) as Hex;
 
-    // Step 6 — Router.commitSolution broadcast.
-    const txHash = await broadcastCommit(walletClient, {
-      routerAddress: env.router,
-      intent: td.message,
-      intentSig,
-      permit,
-    });
-    await awaitReceipt(publicClient, txHash);
+        const commitResp = (await apiCall(
+          "POST",
+          `/v1/problems/${params.problem_id}/commit`,
+          buildSubmitCommitRequestBody({ typedData: td, signature: intentSig }),
+        )) as { intent_hash: string };
 
-    const result = {
-      solution_id: solResp.id,
-      intent_hash: commitResp.intent_hash,
-      commit_tx_hash: txHash,
-      fee_paid: td.message.feeAmount.toString(),
-      bond_paid: td.message.bondAmount.toString(),
-      note: "Backend row will flip pending→confirmed within one HTTPPoller tick (~2s).",
-    };
-    setCached(idemKey, result);
-    return cachedTextResponse(result, false);
+        const solResp = (await apiCall(
+          "POST",
+          `/v1/problems/${params.problem_id}/solutions`,
+          {
+            intent_hash: commitResp.intent_hash,
+            summary: params.summary,
+            reasoning_tree: params.reasoning_tree,
+            claims: params.claims,
+          },
+        )) as { id: string };
+
+        const permitValue =
+          BigInt(td.message.feeAmount) + BigInt(td.message.bondAmount);
+        const permit = await signUSDCPermit(walletClient, publicClient, {
+          usdc: USDC_ADDRESS,
+          spender: env.router,
+          value: permitValue,
+          deadline: td.message.expiresAt,
+        });
+
+        const txHash = await broadcastCommit(walletClient, {
+          routerAddress: env.router,
+          intent: td.message,
+          intentSig,
+          permit,
+        });
+        await awaitReceipt(publicClient, txHash);
+
+        return {
+          solution_id: solResp.id,
+          intent_hash: commitResp.intent_hash,
+          commit_tx_hash: txHash,
+          fee_paid: td.message.feeAmount.toString(),
+          bond_paid: td.message.bondAmount.toString(),
+          note: "Backend row flips pending→confirmed within one HTTPPoller tick (~2s).",
+        };
+      },
+    );
   },
 );
 
@@ -595,7 +598,7 @@ server.tool(
 
 server.tool(
   "cast_vote",
-  "Cast a vote via the Router v2 signed-intent flow: preflight → canonical allocations hash → sign VoteIntent → POST /vote-intent (backend writes votes row) → USDC permit → Router.castVote() on-chain. Bond (1 USDC default) locked by Router; refunded partially on settlement if your allocation aligns with the winning distribution.",
+  "Cast a vote via the Router signed-intent flow: preflight → canonical allocations hash → sign VoteIntent → POST /vote-intent (backend writes votes row) → USDC permit → Router.castVote() on-chain. Bond (1 USDC default) is locked by Router and refunded at settlement; wrong-voter bonds are slashed into the pool.",
   {
     problem_id: z.string().describe("The problem ID"),
     allocations: z
@@ -617,77 +620,66 @@ server.tool(
     const env = requireRouterEnv();
     const { walletClient, publicClient, privateKey, address } = getClients();
 
-    // Loop 0084: idempotency.
-    const idemKey = idempotencyKey("cast_vote", {
-      addr: address,
-      pid: params.problem_id,
-      allocs: params.allocations,
-    });
-    const cached = getCached(idemKey);
-    if (cached) return cachedTextResponse(cached, true);
-
-    // Convert allocations to the canonical shape the intent
-    // signer expects (signer.Allocation: {solution_id, points}).
+    // Canonicalise allocations for the intent signer
+    // (signer.Allocation: {solution_id, points}).
     const canonicalAllocs: Allocation[] = params.allocations.map((a) => ({
       solution_id: a.solution_id,
       points: a.conviction_points,
     }));
 
-    // Step 1 — preflight.
-    const pre = (await apiCall(
-      "GET",
-      `/v1/problems/${params.problem_id}/vote/preflight?voter=${address}`,
-    )) as VotePreflight;
+    return withIdempotency(
+      "cast_vote",
+      { addr: address, pid: params.problem_id, allocs: params.allocations },
+      async () => {
+        const pre = (await apiCall(
+          "GET",
+          `/v1/problems/${params.problem_id}/vote/preflight?voter=${address}`,
+        )) as VotePreflight;
 
-    // Step 2 — build + sign VoteIntent.
-    const allocationsHash = computeAllocationsHash(canonicalAllocs);
-    const td = buildVoteIntentTypedData({
-      preflight: pre,
-      voter: address,
-      allocationsHash,
-    });
-    const intentSig = (await privateKeyToAccount(privateKey).signTypedData(
-      td,
-    )) as Hex;
+        const allocationsHash = computeAllocationsHash(canonicalAllocs);
+        const td = buildVoteIntentTypedData({
+          preflight: pre,
+          voter: address,
+          allocationsHash,
+        });
+        const intentSig = (await privateKeyToAccount(privateKey).signTypedData(
+          td,
+        )) as Hex;
 
-    // Step 3 — POST /vote-intent (backend recomputes allocations
-    // hash + inserts vote row with intent_hash).
-    const voteResp = (await apiCall(
-      "POST",
-      `/v1/problems/${params.problem_id}/vote-intent`,
-      buildSubmitVoteIntentRequestBody({
-        typedData: td,
-        allocations: canonicalAllocs,
-        signature: intentSig,
-      }),
-    )) as { intent_hash: string };
+        const voteResp = (await apiCall(
+          "POST",
+          `/v1/problems/${params.problem_id}/vote-intent`,
+          buildSubmitVoteIntentRequestBody({
+            typedData: td,
+            allocations: canonicalAllocs,
+            signature: intentSig,
+          }),
+        )) as { intent_hash: string };
 
-    // Step 4 — USDC permit.
-    const permitValue =
-      BigInt(td.message.feeAmount) + BigInt(td.message.bondAmount);
-    const permit = await signUSDCPermit(walletClient, publicClient, {
-      usdc: USDC_ADDRESS,
-      spender: env.router,
-      value: permitValue,
-      deadline: td.message.expiresAt,
-    });
+        const permitValue =
+          BigInt(td.message.feeAmount) + BigInt(td.message.bondAmount);
+        const permit = await signUSDCPermit(walletClient, publicClient, {
+          usdc: USDC_ADDRESS,
+          spender: env.router,
+          value: permitValue,
+          deadline: td.message.expiresAt,
+        });
 
-    // Step 5 — Router.castVote broadcast.
-    const txHash = await broadcastVote(walletClient, {
-      routerAddress: env.router,
-      intent: td.message,
-      intentSig,
-      permit,
-    });
-    await awaitReceipt(publicClient, txHash);
+        const txHash = await broadcastVote(walletClient, {
+          routerAddress: env.router,
+          intent: td.message,
+          intentSig,
+          permit,
+        });
+        await awaitReceipt(publicClient, txHash);
 
-    const result = {
-      intent_hash: voteResp.intent_hash,
-      vote_tx_hash: txHash,
-      bond_paid: td.message.bondAmount.toString(),
-    };
-    setCached(idemKey, result);
-    return cachedTextResponse(result, false);
+        return {
+          intent_hash: voteResp.intent_hash,
+          vote_tx_hash: txHash,
+          bond_paid: td.message.bondAmount.toString(),
+        };
+      },
+    );
   },
 );
 
@@ -695,7 +687,7 @@ server.tool(
 
 server.tool(
   "fund_problem",
-  "Fund a problem via the Router v2 flow: preflight → sign FundIntent → POST /fund → USDC permit → Router.fund() on-chain. Adds to the problem's bounty pool. Amount is in human USDC (e.g. '1.5' = 1.5 USDC, 1500000 wei at 6dp). Minimum 1 USDC (L2 floor).",
+  "Fund a problem via the Router flow: preflight → sign FundIntent → POST /fund → USDC permit → Router.fund() on-chain. Adds to the problem's bounty pool. Amount is in human USDC (e.g. '1.5' = 1.5 USDC, 1500000 wei at 6dp). Minimum 1 USDC (L2 floor).",
   {
     problem_id: z.string().describe("The problem ID to fund"),
     amount: z
@@ -708,59 +700,54 @@ server.tool(
     const env = requireRouterEnv();
     const { walletClient, publicClient, privateKey, address } = getClients();
 
-    // Loop 0084: idempotency.
-    const idemKey = idempotencyKey("fund_problem", {
-      addr: address,
-      pid: params.problem_id,
-      amount: params.amount,
-    });
-    const cached = getCached(idemKey);
-    if (cached) return cachedTextResponse(cached, true);
+    return withIdempotency(
+      "fund_problem",
+      { addr: address, pid: params.problem_id, amount: params.amount },
+      async () => {
+        const pre = (await apiCall(
+          "GET",
+          `/v1/problems/${params.problem_id}/fund/preflight?funder=${address}`,
+        )) as FundPreflight;
 
-    const pre = (await apiCall(
-      "GET",
-      `/v1/problems/${params.problem_id}/fund/preflight?funder=${address}`,
-    )) as FundPreflight;
+        const amountWei = parseAmountToWei(params.amount, pre.token.decimals);
+        const td = buildFundIntentTypedData({
+          preflight: pre,
+          funder: address,
+          amountWei,
+        });
+        const intentSig = (await privateKeyToAccount(privateKey).signTypedData(
+          td,
+        )) as Hex;
 
-    const amountWei = parseAmountToWei(params.amount, pre.token.decimals);
-    const td = buildFundIntentTypedData({
-      preflight: pre,
-      funder: address,
-      amountWei,
-    });
-    const intentSig = (await privateKeyToAccount(privateKey).signTypedData(
-      td,
-    )) as Hex;
+        const fundResp = (await apiCall(
+          "POST",
+          `/v1/problems/${params.problem_id}/fund`,
+          buildFundRequestBody({ typedData: td, signature: intentSig }),
+        )) as { intent_hash: string; contribution_id: string };
 
-    const fundResp = (await apiCall(
-      "POST",
-      `/v1/problems/${params.problem_id}/fund`,
-      buildFundRequestBody({ typedData: td, signature: intentSig }),
-    )) as { intent_hash: string; contribution_id: string };
+        const permit = await signUSDCPermit(walletClient, publicClient, {
+          usdc: USDC_ADDRESS,
+          spender: env.router,
+          value: amountWei,
+          deadline: td.message.expiresAt,
+        });
 
-    const permit = await signUSDCPermit(walletClient, publicClient, {
-      usdc: USDC_ADDRESS,
-      spender: env.router,
-      value: amountWei,
-      deadline: td.message.expiresAt,
-    });
+        const txHash = await broadcastFund(walletClient, {
+          routerAddress: env.router,
+          intent: td.message,
+          intentSig,
+          permit,
+        });
+        await awaitReceipt(publicClient, txHash);
 
-    const txHash = await broadcastFund(walletClient, {
-      routerAddress: env.router,
-      intent: td.message,
-      intentSig,
-      permit,
-    });
-    await awaitReceipt(publicClient, txHash);
-
-    const result = {
-      contribution_id: fundResp.contribution_id,
-      intent_hash: fundResp.intent_hash,
-      fund_tx_hash: txHash,
-      amount_wei: amountWei.toString(),
-    };
-    setCached(idemKey, result);
-    return cachedTextResponse(result, false);
+        return {
+          contribution_id: fundResp.contribution_id,
+          intent_hash: fundResp.intent_hash,
+          fund_tx_hash: txHash,
+          amount_wei: amountWei.toString(),
+        };
+      },
+    );
   },
 );
 
@@ -788,33 +775,28 @@ server.tool(
     const env = requireRouterEnv();
     const { walletClient, publicClient, address } = getClients();
 
-    // Loop 0084: idempotency. Router itself enforces "one claim per
-    // (qid, recipient)" — a retry will revert `RouterAlreadyClaimed`.
-    // But if the FIRST call's response was lost (network), the agent
-    // has no record of success. Cache protects retries from hitting
-    // the chain revert and surfaces the original tx_hash.
-    const idemKey = idempotencyKey("claim_payout", {
-      addr: address,
-      qid: params.question_id,
-      amount: params.amount,
-    });
-    const cached = getCached(idemKey);
-    if (cached) return cachedTextResponse(cached, true);
-
-    const txHash = await broadcastClaim(walletClient, {
-      routerAddress: env.router,
-      questionId: params.question_id as Hex,
-      amount: BigInt(params.amount),
-      proof: params.proof as Hex[],
-    });
-    await awaitReceipt(publicClient, txHash);
-    const result = {
-      claim_tx_hash: txHash,
-      amount_wei: params.amount,
-      note: "Router emitted Claimed event; USDC transferred to your wallet.",
-    };
-    setCached(idemKey, result);
-    return cachedTextResponse(result, false);
+    // Router enforces one claim per (qid, recipient) — a retry
+    // reverts RouterAlreadyClaimed. The cache keeps retries from
+    // hitting the on-chain revert when the first call's response
+    // was lost in transit, and replays the original tx_hash.
+    return withIdempotency(
+      "claim_payout",
+      { addr: address, qid: params.question_id, amount: params.amount },
+      async () => {
+        const txHash = await broadcastClaim(walletClient, {
+          routerAddress: env.router,
+          questionId: params.question_id as Hex,
+          amount: BigInt(params.amount),
+          proof: params.proof as Hex[],
+        });
+        await awaitReceipt(publicClient, txHash);
+        return {
+          claim_tx_hash: txHash,
+          amount_wei: params.amount,
+          note: "Router emitted Claimed event; USDC transferred to your wallet.",
+        };
+      },
+    );
   },
 );
 

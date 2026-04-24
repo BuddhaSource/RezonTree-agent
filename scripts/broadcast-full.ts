@@ -1,26 +1,24 @@
 #!/usr/bin/env tsx
-// broadcast-full.ts — full Model C closure across Fund + Commit +
-// Vote + Settle + Claim + Bond recovery, with per-step accounting
-// verification.
+// broadcast-full.ts — end-to-end audit across Fund → Commit → Vote →
+// Settle → Claim (winner + platform fee) → Bond recovery.
 //
 // Wallet roles (BIP-44 m/44'/60'/0'/0/N):
 //   w0 (N=0) — questioner + funder + oracle + admin
 //   w1 (N=1) — solver (commits, claims pool, claims commit bond)
 //   w2 (N=2) — voter (claims vote bond)
-//   fee   (N=3) — platform fee wallet (not yet populated by Router)
+//   fee   (N=3) — platform fee wallet
 //
-// Steady-state economics per round (after bond recovery), with
-// platform fee of PLATFORM_FEE_BPS basis points:
+// Steady-state per-round economics at PLATFORM_FEE_BPS basis points:
 //   w0:         -fundAmount            (full bounty)
 //   w1:         +fundAmount × (1 - feeBps/10000)  (pool share)
 //   w2:          0                     (bond refunded)
 //   fee_wallet: +fundAmount × (feeBps/10000)      (platform cut)
 //   Router:      0                     (fund flows through; bonds in+out)
-//   Chain total: unchanged             (USDC never leaves the system)
+//   Chain total: unchanged
 //
-// Each step is audited: snapshot → broadcast → snapshot → verify
-// the delta matches an explicit ExpectedDelta. Any mismatch aborts
-// the script with the specific line that drifted.
+// Each step audits: snapshot → broadcast → snapshot → verify the
+// delta matches an explicit ExpectedDelta. Any mismatch aborts with
+// the specific line that drifted.
 
 import { execSync } from "node:child_process";
 import type { Address, Hex } from "viem";
@@ -93,11 +91,11 @@ const MNEMONIC = process.env.RT_AGENT_MNEMONIC;
 if (!ROUTER) throw new Error("RT_ROUTER_ADDRESS required");
 if (!MNEMONIC) throw new Error("RT_AGENT_MNEMONIC required");
 
-// Platform fee rate in basis points (10000 = 100%). 1000 = 10%.
-// Applied to the pool at settlement time: the Merkle tree carries
-// one leaf for the winning solver (pool × (10000 - FEE_BPS) / 10000)
-// and one leaf for the fee_wallet (pool × FEE_BPS / 10000). Winner
-// + fee_wallet sum to the pool exactly — no residual.
+// Platform fee rate in basis points (10000 = 100%; 1000 = 10%).
+// Applied at settlement: the Merkle tree holds one leaf for the
+// winning solver (pool × (10000 - FEE_BPS) / 10000) and one for
+// the fee_wallet (pool × FEE_BPS / 10000). Winner + fee_wallet
+// sum to the pool exactly — no residual.
 const PLATFORM_FEE_BPS = BigInt(
   process.env.RT_PLATFORM_FEE_BPS ?? "1000",
 );
@@ -273,9 +271,8 @@ async function main() {
     expected: ExpectedDelta,
   ): Promise<BalanceSnapshot> {
     // Public Base Sepolia RPCs serve stale `latest` for ~2s after a
-    // tx mines. awaitReceipt blocks until the tx is in a block, but
-    // the RPC node may not have updated its `latest`-view state
-    // readers query. Sleep before reading so balanceOf reflects
+    // tx mines; awaitReceipt confirms inclusion but state-reads can
+    // still see the pre-tx view. Sleep so balanceOf reflects the
     // post-tx state.
     await new Promise((r) => setTimeout(r, 2500));
     const after = await snap();
@@ -526,8 +523,8 @@ async function main() {
   const winnerProof = merkleProof(leafHashes, 0);
   const feeProof = merkleProof(leafHashes, 1);
 
-  // One solver, one voter, both winners → no slashing in this demo.
-  // The signed envelope still includes the empty slash lists so the
+  // Demo: one solver + one voter, both winners → no slashing. The
+  // signed envelope still includes the empty slash lists so the
   // oracle sig covers them (prevents mix-and-match attacks).
   const slashedCommitHashes: Hex[] = [];
   const slashedVoteHashes: Hex[] = [];
@@ -561,7 +558,7 @@ async function main() {
     chainTotal: 0n, // no USDC movement on settle
   });
 
-  // 4s delay — public Base Sepolia RPC lag for read-your-writes.
+  // Public Base Sepolia RPC lag — give read-your-writes 4 s to settle.
   await new Promise((r) => setTimeout(r, 4000));
 
   // =========================================================================
@@ -679,7 +676,7 @@ async function main() {
   const feeDelta = findDelta(feeWallet.address);
 
   console.log("");
-  console.log(c.bold("── Round cumulative Δ ──"));
+  console.log(c.bold("── Round cumulative delta ──"));
   console.log(`  w0 funder:   ${fmtUsdc(w0Delta).padStart(14)}   (expected: -${fmtUsdc(fundAmount).replace(/^-/, "")} — full bounty paid)`);
   console.log(`  w1 solver:   ${fmtUsdc(w1Delta).padStart(14)}   (expected: +${fmtUsdc(winnerAmount).replace(/^-/, "")} — pool × ${10000n - PLATFORM_FEE_BPS}/10000; bond refunded)`);
   console.log(`  w2 voter:    ${fmtUsdc(w2Delta).padStart(14)}   (expected:  0 — bond refunded)`);

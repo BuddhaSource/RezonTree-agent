@@ -1,13 +1,12 @@
 // accounting/balances.ts — fund-conservation audit.
 //
-// Every action in the protocol moves USDC between known actors:
-//   wallets (w0, w1, w2, fee_wallet) + Router contract.
-// Total USDC across all actors is invariant over any action —
-// USDC never leaves the system (minus gas, which is paid in ETH).
+// Every protocol action moves USDC between known actors: agent
+// wallets and the Router contract. Total USDC across all actors is
+// invariant over any action (gas is paid in ETH, not USDC).
 //
-// This module takes snapshots, computes diffs, and checks that
-// each action's delta matches an expected transformation. Any
-// mismatch signals a real accounting bug.
+// Snapshots capture balances and per-qid Router state; verifyDelta
+// compares two snapshots against an ExpectedDelta and reports any
+// drift as an accounting bug.
 
 import type { Address, Hex, PublicClient } from "viem";
 import { erc20Abi } from "viem";

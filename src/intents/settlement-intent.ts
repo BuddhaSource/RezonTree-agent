@@ -1,21 +1,17 @@
 // settlement-intent.ts — oracle-signed SettlementIntent builder.
 //
-// Loop 0079: operator-path settlement. The ORACLE_ENABLED keeper
-// is production v1+ work (needs Gnosis Safe quorum). For v0 prod,
-// a script runs this builder to sign + publish a Merkle-root
-// settlement via the oracle private key.
+// An operator script signs + publishes a Merkle-root settlement via
+// the oracle private key. The oracle signer is set in Router's
+// constructor at deploy time.
 //
-// EIP-712 typehash (must match contracts/src/Router.sol:96):
-//   "SettlementIntent(bytes32 questionId,bytes32 merkleRoot,uint256 expiresAt)"
-//
-// The oracle signer is set in Router's constructor. On Base Sepolia
-// Router 0x0BB8e006…, that's 0x55Bd1aAE… (operator mnemonic path 0).
+// EIP-712 typehash (must match Router.sol SETTLEMENT_INTENT_TYPEHASH):
+//   "SettlementIntent(bytes32 questionId,bytes32 merkleRoot,uint256 expiresAt,bytes32[] slashedCommitHashes,bytes32[] slashedVoteHashes)"
 
 import type { Address, Hex, TypedDataDomain } from "viem";
 import { buildRouterDomain } from "./router-domain.js";
 
-/** EIP-712 types for SettlementIntent. Field order fixed by the
- *  Router's typehash; a reorder breaks on-chain signature recovery. */
+/** EIP-712 types for SettlementIntent. Field order matches the
+ *  Router's typehash; reordering breaks on-chain signature recovery. */
 export const SETTLEMENT_INTENT_TYPES = {
   SettlementIntent: [
     { name: "questionId", type: "bytes32" },

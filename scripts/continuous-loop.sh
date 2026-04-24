@@ -44,12 +44,9 @@ trap 'echo ""; echo "==="; echo "Ran $i iterations — $ok_count ok, $fail_count
 #   w2    0                    (bond refunded)
 #   fee  +fundAmount × 0.1     (platform cut; grows)
 #
-# Between iterations, w1 rebates `fundAmount` to w0 so the demo
-# runs indefinitely. This mirrors the real-world flow where the
-# operator's funding cost comes back from the winning solver (in
-# our bring-up, both roles are operator wallets). fee_wallet keeps
-# growing — that's the platform's margin per round. Disable with
-# RT_SKIP_REBATE=true.
+# Between iterations w1 rebates `fundAmount` back to w0 so the demo
+# runs indefinitely. fee_wallet keeps growing — that's the platform
+# margin per round. Disable with RT_SKIP_REBATE=true.
 REBATE_AMOUNT_WEI=${REBATE_AMOUNT_WEI:-1000000}
 W0_ADDR=0x55Bd1aAE425116048590db9dC978f47b4F3702b5
 USDC_ADDR=0x036CbD53842c5426634e7929541eC2318f3dCF7e

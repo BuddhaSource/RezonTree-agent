@@ -1,19 +1,16 @@
-// client.ts — Router v2 write client. Wraps viem's writeContract
-// for the four agent-facing entry points (fund, commitSolution,
-// castVote, claim).
+// client.ts — Router write client. Wraps viem's writeContract for
+// the agent-facing entry points (fund, commitSolution, castVote,
+// claim, publishSettlement).
 //
-// Scope boundary: the SDK's job here is calldata + broadcast +
-// receipt wait. It does NOT sign the intent — intent signing
-// lives in src/intents/*. It does NOT construct the USDC permit
-// signature — that's the caller's responsibility (build via
-// `signPermit` from the agent's wallet key against the USDC
-// contract's permit typehash). The router client just takes
-// fully-formed (intent, intentSig, permitV/R/S) and broadcasts.
+// Scope: calldata + broadcast + receipt wait. Intent signing lives
+// in src/intents/*; USDC permit signing lives in ./permit.ts. This
+// file just takes fully-formed (intent, intentSig, permitV/R/S)
+// bundles and broadcasts.
 //
-// R-CHAIN-VERIFIES-INTENT — Router verifies the signature
-// on-chain; the client doesn't re-check.
+// R-CHAIN-VERIFIES-INTENT — Router verifies the signature on-chain;
+// the client doesn't re-check.
 // R-REUSE-FIRST — viem's writeContract + waitForTransactionReceipt
-// handle the RPC + nonce + receipt plumbing.
+// handle RPC + nonce + receipt plumbing.
 
 import {
   type Account,
@@ -35,9 +32,9 @@ import { ROUTER_V2_ABI } from "./abi.js";
 
 /**
  * Permit signature bundle — the USDC EIP-2612 permit that
- * authorizes the Router to pull tokens. Router v2 expects these
- * three components passed as separate args (compat with existing
- * USDC ABI that doesn't support a combined 65-byte sig arg).
+ * authorizes the Router to pull tokens. Router takes the three
+ * components as separate args to match the USDC ABI, which
+ * doesn't support a combined 65-byte sig.
  */
 export interface PermitSig {
   v: number; // uint8 — 27 or 28

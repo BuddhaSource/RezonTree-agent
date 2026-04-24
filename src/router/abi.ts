@@ -1,15 +1,14 @@
-// abi.ts — Router v2 function ABI. Hand-written from Router.sol
-// (contracts/src/Router.sol). Kept minimal: only the four entry
-// points agents call directly (fund, commitSolution, castVote,
-// claim). Other functions (publishSettlement — oracle only;
-// claimExpiredRefund — recipient only) are not exposed through
-// the agent SDK.
+// abi.ts — Router function ABI. Hand-written from Router.sol.
+// Includes the entry points agents call (fund, commitSolution,
+// castVote, claim, claim{Solution,Vote}Bond), oracle-only
+// publishSettlement + sweepResiduals, and view getters used by
+// health checks and tests.
 //
-// Cross-language drift: any rename / reorder of a Router struct
-// field means the agent's calldata won't decode on-chain. The
-// backend's embedded ABI (services/indexer/abi.go) is the EVENT
-// portion; this file is the FUNCTION portion — both ultimately
-// trace back to Router.sol. When Router evolves, update both.
+// Cross-language drift risk: any rename or reorder of a Router
+// struct field silently breaks agent calldata. The backend's
+// embedded ABI (services/indexer/abi.go) covers the EVENT side;
+// this file covers the FUNCTION side. Both must be updated when
+// Router.sol changes.
 
 import type { Abi } from "viem";
 
@@ -113,10 +112,10 @@ export const ROUTER_V2_ABI = [
   },
 
   // ── publishSettlement(bytes32 qid, bytes32 merkleRoot,
-  //    uint256 expiresAt, bytes oracleSig) ─────────────────────
-  // Oracle-only. Loop 0079 exposes this to the SDK so an operator
-  // can run a manual settle-claim cycle while the keeper
-  // (ORACLE_ENABLED path) is still under construction.
+  //    uint256 expiresAt, bytes32[] slashedCommitHashes,
+  //    bytes32[] slashedVoteHashes, bytes oracleSig) ──────────
+  // Oracle-only. Exposed to the SDK so an operator can run a
+  // manual settle-claim cycle.
   {
     type: "function",
     name: "publishSettlement",
@@ -150,8 +149,8 @@ export const ROUTER_V2_ABI = [
   },
 
   // ── claimSolutionBond(bytes32 qid, bytes32 intentHash) ────
-  // v2.1 — release a previously-posted commit bond to its
-  // original submitter after the question is SETTLED.
+  // Release a commit bond to its original submitter once the
+  // question is SETTLED.
   {
     type: "function",
     name: "claimSolutionBond",
@@ -164,8 +163,8 @@ export const ROUTER_V2_ABI = [
   },
 
   // ── claimVoteBond(bytes32 qid, bytes32 intentHash) ─────────
-  // v2.1 — release a previously-posted vote bond to its original
-  // voter after the question is SETTLED.
+  // Release a vote bond to its original voter once the question
+  // is SETTLED.
   {
     type: "function",
     name: "claimVoteBond",
@@ -178,8 +177,8 @@ export const ROUTER_V2_ABI = [
   },
 
   // ── sweepResiduals(address to, uint256 amount) ─────────────
-  // v2.1 — admin-only drain of stuck USDC (dust, legacy bonds,
-  // accidental transfers). Set at deploy; no rotation.
+  // Admin-only drain of USDC that isn't claimable via any
+  // intent-owner path (dust, accidental transfers).
   {
     type: "function",
     name: "sweepResiduals",
