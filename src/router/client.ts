@@ -73,6 +73,10 @@ export interface BroadcastFundParams {
   intent: FundIntentMessage;
   intentSig: Hex;
   permit: PermitSig;
+  /** Gas override. Public Base Sepolia's eth_estimateGas occasionally
+   *  returns a value ~10% under actual consumption, causing an
+   *  out-of-gas revert. Pass 350_000n to leave headroom. */
+  gas?: bigint;
 }
 
 /**
@@ -105,6 +109,7 @@ export async function broadcastFund(
     ],
     account: wallet.account as Account,
     chain: wallet.chain,
+    ...(params.gas ? { gas: params.gas } : {}),
   });
 }
 
@@ -115,6 +120,7 @@ export interface BroadcastCommitParams {
   intent: CommitIntentMessage;
   intentSig: Hex;
   permit: PermitSig;
+  gas?: bigint;
 }
 
 export async function broadcastCommit(
@@ -143,6 +149,7 @@ export async function broadcastCommit(
     ],
     account: wallet.account as Account,
     chain: wallet.chain,
+    ...(params.gas ? { gas: params.gas } : {}),
   });
 }
 
@@ -153,6 +160,7 @@ export interface BroadcastVoteParams {
   intent: VoteIntentMessage;
   intentSig: Hex;
   permit: PermitSig;
+  gas?: bigint;
 }
 
 export async function broadcastVote(
@@ -181,6 +189,7 @@ export async function broadcastVote(
     ],
     account: wallet.account as Account,
     chain: wallet.chain,
+    ...(params.gas ? { gas: params.gas } : {}),
   });
 }
 

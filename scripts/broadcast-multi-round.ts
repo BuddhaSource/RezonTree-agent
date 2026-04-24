@@ -267,6 +267,7 @@ async function runRound(plan: RoundPlan, ctx: RoundCtx): Promise<RoundResult> {
     intent: fundTd.message,
     intentSig: fundSig,
     permit: fundPermit,
+    gas: 350_000n,
   });
   await awaitReceipt(publicClient, fundTx);
   info(`${funder.label} funded ${fmtUsdc(fundAmount)} (tx ${fundTx.slice(0, 14)}…)`);
@@ -460,6 +461,7 @@ async function commitOne(params: {
     intent: td.message,
     intentSig: sig,
     permit,
+    gas: 400_000n,
   });
   await awaitReceipt(publicClient, tx);
   return { solutionId: solution.id, intentHash: resp.intent_hash as Hex, bond };
@@ -506,6 +508,7 @@ async function voteOne(params: {
     intent: td.message,
     intentSig: sig,
     permit,
+    gas: 400_000n,
   });
   await awaitReceipt(publicClient, tx);
   return { intentHash: resp.intent_hash as Hex, bond };
