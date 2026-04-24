@@ -38,9 +38,22 @@ ok_count=0
 fail_count=0
 trap 'echo ""; echo "==="; echo "Ran $i iterations — $ok_count ok, $fail_count failed"; echo "See $SUMMARY for summary, $LOG_DIR/iter-*.log for details"; exit 0' INT TERM
 
-# Rounds are zero-sum after bond recovery: w0 -1 USDC, w1 +1 USDC,
-# w2 0 USDC. w0 is the only one that drains. When w0 drops below
-# 1 USDC the next fund fails. Operator tops up from w1 or faucet.
+# Per-round economics (multi-leaf settlement + bond recovery):
+#   w0   -fundAmount           (full bounty; drains)
+#   w1   +fundAmount × 0.9     (pool share; bond refunded)
+#   w2    0                    (bond refunded)
+#   fee  +fundAmount × 0.1     (platform cut; grows)
+#
+# Between iterations, w1 rebates `fundAmount` to w0 so the demo
+# runs indefinitely. This mirrors the real-world flow where the
+# operator's funding cost comes back from the winning solver (in
+# our bring-up, both roles are operator wallets). fee_wallet keeps
+# growing — that's the platform's margin per round. Disable with
+# RT_SKIP_REBATE=true.
+REBATE_AMOUNT_WEI=${REBATE_AMOUNT_WEI:-1000000}
+W0_ADDR=0x55Bd1aAE425116048590db9dC978f47b4F3702b5
+USDC_ADDR=0x036CbD53842c5426634e7929541eC2318f3dCF7e
+W1_PK=$(node -e "const {mnemonicToAccount} = require('viem/accounts'); const w = mnemonicToAccount(process.env.RT_AGENT_MNEMONIC, {path: \"m/44'/60'/0'/0/1\"}); console.log('0x' + Buffer.from(w.getHdKey().privateKey).toString('hex'));")
 
 while :; do
   i=$((i + 1))
@@ -56,6 +69,12 @@ while :; do
     line="iter=$i start=$start_ts status=ok problem=$prob_id pool=$pool"
     echo "  ✓ $line"
     echo "$line" >> "$SUMMARY"
+
+    # Rebate: w1 → w0. Keeps w0 solvent indefinitely; fee_wallet
+    # keeps the platform margin. Skip with RT_SKIP_REBATE=true.
+    if [ "${RT_SKIP_REBATE:-false}" != "true" ]; then
+      cast send "$USDC_ADDR" "transfer(address,uint256)" "$W0_ADDR" "$REBATE_AMOUNT_WEI" --rpc-url "${RT_RPC_URL:-https://sepolia.base.org}" --private-key "$W1_PK" > /dev/null 2>&1 && echo "  ⟲ rebate ${REBATE_AMOUNT_WEI} wei w1 → w0"
+    fi
   else
     fail_count=$((fail_count + 1))
     # Capture the failure reason (last [FAIL] line).
