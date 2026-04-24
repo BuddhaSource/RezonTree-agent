@@ -125,6 +125,66 @@ function getAgentWallet() {
   return deriveAgentWallet(AGENT_MNEMONIC, AGENT_INDEX, CHAIN_ID);
 }
 
+// ─── Idempotency cache (loop 0084) ─────────────────────────
+//
+// Multi-step tool flows (submit_solution, cast_vote, fund_problem)
+// are NOT atomic — if a network hiccup interrupts between, say,
+// POST /commit and POST /solutions, the agent retries from scratch
+// and creates a duplicate intent. To prevent that, we cache the
+// final result keyed by (tool_name, sha256(params)). On retry
+// within CACHE_TTL, return the cached result rather than redoing
+// the flow.
+//
+// Scope: in-memory only. Loss on MCP-server restart is acceptable
+// (agent sees the duplicate behaviour then, not repeatedly). A
+// persistent cache or backend-enforced idempotency key can
+// replace this in a follow-up loop.
+//
+// TTL matches intent expiresAt (15 min default); after that the
+// signed intent would be rejected on-chain anyway, so a retry
+// past TTL correctly produces a fresh intent.
+
+import { createHash } from "node:crypto";
+
+interface CacheEntry {
+  timestamp: number;
+  result: unknown;
+}
+const IDEM_CACHE_TTL_MS = 15 * 60 * 1000;
+const idempotencyCache = new Map<string, CacheEntry>();
+
+function idempotencyKey(action: string, params: unknown): string {
+  const paramsJSON = JSON.stringify(params);
+  const hash = createHash("sha256").update(paramsJSON).digest("hex").slice(0, 32);
+  return `${action}:${hash}`;
+}
+
+function getCached(key: string): unknown | null {
+  const entry = idempotencyCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.timestamp > IDEM_CACHE_TTL_MS) {
+    idempotencyCache.delete(key);
+    return null;
+  }
+  return entry.result;
+}
+
+function setCached(key: string, result: unknown): void {
+  idempotencyCache.set(key, { timestamp: Date.now(), result });
+}
+
+function cachedTextResponse(result: unknown, replay: boolean) {
+  const body = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: replay ? `[idempotent-replay]\n${body}` : body,
+      },
+    ],
+  };
+}
+
 interface ClientBundle {
   walletClient: ReturnType<typeof makeAgentWalletClient>;
   // Use `any` for publicClient — viem's PublicClient type explosion
@@ -474,6 +534,19 @@ server.tool(
     const env = requireRouterEnv();
     const { walletClient, publicClient, privateKey, address } = getClients();
 
+    // Loop 0084: idempotency replay. Same problem_id + same body
+    // within 15min → return the cached first-call result rather
+    // than creating a duplicate CommitIntent + solution row.
+    const idemKey = idempotencyKey("submit_solution", {
+      addr: address,
+      pid: params.problem_id,
+      summary: params.summary,
+      reasoning: params.reasoning_tree,
+      claims: params.claims,
+    });
+    const cached = getCached(idemKey);
+    if (cached) return cachedTextResponse(cached, true);
+
     // Step 1 — preflight.
     const pre = (await apiCall(
       "GET",
@@ -531,25 +604,16 @@ server.tool(
     });
     await awaitReceipt(publicClient, txHash);
 
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(
-            {
-              solution_id: solResp.id,
-              intent_hash: commitResp.intent_hash,
-              commit_tx_hash: txHash,
-              fee_paid: td.message.feeAmount.toString(),
-              bond_paid: td.message.bondAmount.toString(),
-              note: "Backend row will flip pending→confirmed within one HTTPPoller tick (~2s).",
-            },
-            null,
-            2,
-          ),
-        },
-      ],
+    const result = {
+      solution_id: solResp.id,
+      intent_hash: commitResp.intent_hash,
+      commit_tx_hash: txHash,
+      fee_paid: td.message.feeAmount.toString(),
+      bond_paid: td.message.bondAmount.toString(),
+      note: "Backend row will flip pending→confirmed within one HTTPPoller tick (~2s).",
     };
+    setCached(idemKey, result);
+    return cachedTextResponse(result, false);
   },
 );
 
@@ -629,6 +693,15 @@ server.tool(
     const env = requireRouterEnv();
     const { walletClient, publicClient, privateKey, address } = getClients();
 
+    // Loop 0084: idempotency.
+    const idemKey = idempotencyKey("cast_vote", {
+      addr: address,
+      pid: params.problem_id,
+      allocs: params.allocations,
+    });
+    const cached = getCached(idemKey);
+    if (cached) return cachedTextResponse(cached, true);
+
     // Convert allocations to the canonical shape the intent
     // signer expects (signer.Allocation: {solution_id, points}).
     const canonicalAllocs: Allocation[] = params.allocations.map((a) => ({
@@ -684,22 +757,13 @@ server.tool(
     });
     await awaitReceipt(publicClient, txHash);
 
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(
-            {
-              intent_hash: voteResp.intent_hash,
-              vote_tx_hash: txHash,
-              bond_paid: td.message.bondAmount.toString(),
-            },
-            null,
-            2,
-          ),
-        },
-      ],
+    const result = {
+      intent_hash: voteResp.intent_hash,
+      vote_tx_hash: txHash,
+      bond_paid: td.message.bondAmount.toString(),
     };
+    setCached(idemKey, result);
+    return cachedTextResponse(result, false);
   },
 );
 
@@ -719,6 +783,15 @@ server.tool(
   async (params) => {
     const env = requireRouterEnv();
     const { walletClient, publicClient, privateKey, address } = getClients();
+
+    // Loop 0084: idempotency.
+    const idemKey = idempotencyKey("fund_problem", {
+      addr: address,
+      pid: params.problem_id,
+      amount: params.amount,
+    });
+    const cached = getCached(idemKey);
+    if (cached) return cachedTextResponse(cached, true);
 
     const pre = (await apiCall(
       "GET",
@@ -756,23 +829,14 @@ server.tool(
     });
     await awaitReceipt(publicClient, txHash);
 
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(
-            {
-              contribution_id: fundResp.contribution_id,
-              intent_hash: fundResp.intent_hash,
-              fund_tx_hash: txHash,
-              amount_wei: amountWei.toString(),
-            },
-            null,
-            2,
-          ),
-        },
-      ],
+    const result = {
+      contribution_id: fundResp.contribution_id,
+      intent_hash: fundResp.intent_hash,
+      fund_tx_hash: txHash,
+      amount_wei: amountWei.toString(),
     };
+    setCached(idemKey, result);
+    return cachedTextResponse(result, false);
   },
 );
 
@@ -798,7 +862,21 @@ server.tool(
   },
   async (params) => {
     const env = requireRouterEnv();
-    const { walletClient, publicClient } = getClients();
+    const { walletClient, publicClient, address } = getClients();
+
+    // Loop 0084: idempotency. Router itself enforces "one claim per
+    // (qid, recipient)" — a retry will revert `RouterAlreadyClaimed`.
+    // But if the FIRST call's response was lost (network), the agent
+    // has no record of success. Cache protects retries from hitting
+    // the chain revert and surfaces the original tx_hash.
+    const idemKey = idempotencyKey("claim_payout", {
+      addr: address,
+      qid: params.question_id,
+      amount: params.amount,
+    });
+    const cached = getCached(idemKey);
+    if (cached) return cachedTextResponse(cached, true);
+
     const txHash = await broadcastClaim(walletClient, {
       routerAddress: env.router,
       questionId: params.question_id as Hex,
@@ -806,22 +884,13 @@ server.tool(
       proof: params.proof as Hex[],
     });
     await awaitReceipt(publicClient, txHash);
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(
-            {
-              claim_tx_hash: txHash,
-              amount_wei: params.amount,
-              note: "Router emitted Claimed event; USDC transferred to your wallet.",
-            },
-            null,
-            2,
-          ),
-        },
-      ],
+    const result = {
+      claim_tx_hash: txHash,
+      amount_wei: params.amount,
+      note: "Router emitted Claimed event; USDC transferred to your wallet.",
     };
+    setCached(idemKey, result);
+    return cachedTextResponse(result, false);
   },
 );
 
