@@ -36,9 +36,42 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
+import type { Address, Hex } from "viem";
+import { createPublicClient, http } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { deriveAgentWallet } from "../../src/wallet/derive.js";
 import { loadLoginDomain } from "../../src/wallet/domain.js";
 import { signWalletLoginIntent } from "../../src/wallet/signer.js";
+import {
+  buildFundIntentTypedData,
+  buildFundRequestBody,
+  parseAmountToWei,
+} from "../../src/intents/fund-intent.js";
+import {
+  buildCommitIntentTypedData,
+  buildSubmitCommitRequestBody,
+  computeContentHash,
+} from "../../src/intents/commit-intent.js";
+import {
+  type Allocation,
+  buildSubmitVoteIntentRequestBody,
+  buildVoteIntentTypedData,
+  computeAllocationsHash,
+} from "../../src/intents/vote-intent.js";
+import type {
+  CommitPreflight,
+  FundPreflight,
+  VotePreflight,
+} from "../../src/intents/preflight-types.js";
+import {
+  awaitReceipt,
+  broadcastClaim,
+  broadcastCommit,
+  broadcastFund,
+  broadcastVote,
+  makeAgentWalletClient,
+} from "../../src/router/client.js";
+import { signUSDCPermit } from "../../src/router/permit.js";
 
 const AUTH_MODE = (process.env.RT_AGENT_AUTH_MODE || "wallet").toLowerCase();
 const API_URL =
@@ -50,8 +83,85 @@ const API_URL =
 const AGENT_MNEMONIC = process.env.RT_AGENT_MNEMONIC || "";
 const AGENT_INDEX = Number.parseInt(process.env.RT_AGENT_INDEX || "-1", 10);
 
+// ─── Router v2 chain-broadcast env (loop 0080) ─────────────
+// All three are required for signed-intent + on-chain flows.
+// Missing → chain-broadcast tools throw a teaching error; the
+// backend-only tools (list_*, get_*) still work so agents doing
+// reads don't fail to even load the MCP server.
+const ROUTER_ADDRESS = process.env.RT_ROUTER_ADDRESS as Address | undefined;
+const RPC_URL = process.env.RT_RPC_URL || "https://sepolia.base.org";
+const CHAIN_ID = Number.parseInt(
+  process.env.RT_AGENT_CHAIN_ID || "84532",
+  10,
+);
+const USDC_ADDRESS =
+  (process.env.RT_USDC_ADDRESS as Address | undefined) ??
+  ("0x036CbD53842c5426634e7929541eC2318f3dCF7e" as Address);
+
 // ─── legacy-mode env ───────────────────────────────────────
 const AGENT_SECRET = process.env.REZONTREE_AGENT_SECRET || "";
+
+/**
+ * Router broadcast helpers lazy-derive the agent wallet + cache
+ * viem clients. Missing RT_ROUTER_ADDRESS errors at first call
+ * rather than at server boot so read-only tools still work.
+ */
+function requireRouterEnv(): { router: Address; rpc: string; chainId: number } {
+  if (!ROUTER_ADDRESS) {
+    throw new Error(
+      "RT_ROUTER_ADDRESS is not set. Router-v2 broadcast tools (fund_problem, submit_solution, cast_vote, claim_payout) need the deployed Router address. Set it in your MCP server env; see RUNBOOK.md.",
+    );
+  }
+  return { router: ROUTER_ADDRESS, rpc: RPC_URL, chainId: CHAIN_ID };
+}
+
+function getAgentWallet() {
+  if (!AGENT_MNEMONIC) {
+    throw new Error("RT_AGENT_MNEMONIC not set");
+  }
+  if (AGENT_INDEX < 0) {
+    throw new Error("RT_AGENT_INDEX not set or negative");
+  }
+  return deriveAgentWallet(AGENT_MNEMONIC, AGENT_INDEX, CHAIN_ID);
+}
+
+interface ClientBundle {
+  walletClient: ReturnType<typeof makeAgentWalletClient>;
+  // Use `any` for publicClient — viem's PublicClient type explosion
+  // with the wallet-client chain variant is a known friction point;
+  // the actual runtime object is a functional public client.
+  // biome-ignore lint/suspicious/noExplicitAny: viem type workaround
+  publicClient: any;
+  address: Address;
+  privateKey: Hex;
+}
+
+let cachedClients: ClientBundle | null = null;
+
+function getClients(): ClientBundle {
+  if (cachedClients) return cachedClients;
+  const env = requireRouterEnv();
+  const wallet = getAgentWallet();
+  const walletClient = makeAgentWalletClient({
+    privateKey: wallet.privateKey,
+    chainId: env.chainId,
+    rpcUrl: env.rpc,
+  });
+  // Construct the public client without the walletClient.chain
+  // union — we only need HTTP transport for read + receipt
+  // polling; the wallet-specific chain metadata is only needed
+  // on writeContract paths which use walletClient.
+  const publicClient = createPublicClient({
+    transport: http(env.rpc),
+  });
+  cachedClients = {
+    walletClient,
+    publicClient,
+    address: wallet.address,
+    privateKey: wallet.privateKey,
+  };
+  return cachedClients;
+}
 
 // Backend JWT TTL is 15 min (internal/auth/jwt.go). We refresh
 // 30 s early to avoid racing the expiry under load. Applies to
@@ -111,7 +221,7 @@ async function getWalletToken(): Promise<string> {
   );
   const body = await signWalletLoginIntent({
     wallet,
-    issuedAt: Math.floor(Date.now() / 1000),
+    expiresAt: Math.floor(Date.now() / 1000) + 300,
     domain,
   });
 
@@ -333,7 +443,7 @@ server.tool(
 
 server.tool(
   "submit_solution",
-  "Submit a solution to a problem. Must include summary, reasoning_tree, and claims for each success criterion.",
+  "Submit a solution via the Router v2 signed-intent flow: preflight → sign CommitIntent → POST /commit → POST /solutions body → USDC permit → Router.commitSolution() on-chain. Returns contribution_id, intent_hash, and the chain tx hash. The backend row flips pending→confirmed when the HTTP poller ingests the SolutionCommitted event (~3s).",
   {
     problem_id: z.string().describe("The problem ID to solve"),
     summary: z.string().describe("Brief solution summary"),
@@ -361,16 +471,85 @@ server.tool(
       .describe("Claims against each success criterion"),
   },
   async (params) => {
-    const result = await apiCall(
+    const env = requireRouterEnv();
+    const { walletClient, publicClient, privateKey, address } = getClients();
+
+    // Step 1 — preflight.
+    const pre = (await apiCall(
+      "GET",
+      `/v1/problems/${params.problem_id}/commit/preflight?submitter=${address}`,
+    )) as CommitPreflight;
+
+    // Step 2 — build + sign CommitIntent. Backend hashes the body
+    // into intent.contentHash; agent must post the same body in
+    // the /solutions call below.
+    const contentHash = computeContentHash(params.summary);
+    const td = buildCommitIntentTypedData({
+      preflight: pre,
+      submitter: address,
+      contentHash,
+    });
+    const intentSig = (await privateKeyToAccount(privateKey).signTypedData(
+      td,
+    )) as Hex;
+
+    // Step 3 — POST /commit (backend stores signed intent).
+    const commitResp = (await apiCall(
+      "POST",
+      `/v1/problems/${params.problem_id}/commit`,
+      buildSubmitCommitRequestBody({ typedData: td, signature: intentSig }),
+    )) as { intent_hash: string };
+
+    // Step 4 — POST /solutions (body row, intent_hash links).
+    const solResp = (await apiCall(
       "POST",
       `/v1/problems/${params.problem_id}/solutions`,
       {
+        intent_hash: commitResp.intent_hash,
         summary: params.summary,
         reasoning_tree: params.reasoning_tree,
         claims: params.claims,
       },
-    );
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+    )) as { id: string };
+
+    // Step 5 — USDC permit (fee + bond).
+    const permitValue =
+      BigInt(td.message.feeAmount) + BigInt(td.message.bondAmount);
+    const permit = await signUSDCPermit(walletClient, publicClient, {
+      usdc: USDC_ADDRESS,
+      spender: env.router,
+      value: permitValue,
+      deadline: td.message.expiresAt,
+    });
+
+    // Step 6 — Router.commitSolution broadcast.
+    const txHash = await broadcastCommit(walletClient, {
+      routerAddress: env.router,
+      intent: td.message,
+      intentSig,
+      permit,
+    });
+    await awaitReceipt(publicClient, txHash);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              solution_id: solResp.id,
+              intent_hash: commitResp.intent_hash,
+              commit_tx_hash: txHash,
+              fee_paid: td.message.feeAmount.toString(),
+              bond_paid: td.message.bondAmount.toString(),
+              note: "Backend row will flip pending→confirmed within one HTTPPoller tick (~2s).",
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+    };
   },
 );
 
@@ -428,7 +607,7 @@ server.tool(
 
 server.tool(
   "cast_vote",
-  "Cast a vote distributing conviction points across solutions. Each agent gets 100 points, min 10 per allocation.",
+  "Cast a vote via the Router v2 signed-intent flow: preflight → canonical allocations hash → sign VoteIntent → POST /vote-intent (backend writes votes row) → USDC permit → Router.castVote() on-chain. Bond (1 USDC default) locked by Router; refunded partially on settlement if your allocation aligns with the winning distribution.",
   {
     problem_id: z.string().describe("The problem ID"),
     allocations: z
@@ -440,18 +619,209 @@ server.tool(
             .describe("Points to allocate (min 10, total max 100)"),
           why: z
             .string()
-            .describe("Explanation for this allocation (max 500 chars)"),
+            .optional()
+            .describe("Optional rationale. Not part of the signed intent; not required on the Router v2 path."),
         }),
       )
       .describe("Point allocations across solutions"),
   },
   async (params) => {
-    const result = await apiCall(
+    const env = requireRouterEnv();
+    const { walletClient, publicClient, privateKey, address } = getClients();
+
+    // Convert allocations to the canonical shape the intent
+    // signer expects (signer.Allocation: {solution_id, points}).
+    const canonicalAllocs: Allocation[] = params.allocations.map((a) => ({
+      solution_id: a.solution_id,
+      points: a.conviction_points,
+    }));
+
+    // Step 1 — preflight.
+    const pre = (await apiCall(
+      "GET",
+      `/v1/problems/${params.problem_id}/vote/preflight?voter=${address}`,
+    )) as VotePreflight;
+
+    // Step 2 — build + sign VoteIntent.
+    const allocationsHash = computeAllocationsHash(canonicalAllocs);
+    const td = buildVoteIntentTypedData({
+      preflight: pre,
+      voter: address,
+      allocationsHash,
+    });
+    const intentSig = (await privateKeyToAccount(privateKey).signTypedData(
+      td,
+    )) as Hex;
+
+    // Step 3 — POST /vote-intent (backend recomputes allocations
+    // hash + inserts vote row with intent_hash).
+    const voteResp = (await apiCall(
       "POST",
-      `/v1/problems/${params.problem_id}/votes`,
-      { allocations: params.allocations },
-    );
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      `/v1/problems/${params.problem_id}/vote-intent`,
+      buildSubmitVoteIntentRequestBody({
+        typedData: td,
+        allocations: canonicalAllocs,
+        signature: intentSig,
+      }),
+    )) as { intent_hash: string };
+
+    // Step 4 — USDC permit.
+    const permitValue =
+      BigInt(td.message.feeAmount) + BigInt(td.message.bondAmount);
+    const permit = await signUSDCPermit(walletClient, publicClient, {
+      usdc: USDC_ADDRESS,
+      spender: env.router,
+      value: permitValue,
+      deadline: td.message.expiresAt,
+    });
+
+    // Step 5 — Router.castVote broadcast.
+    const txHash = await broadcastVote(walletClient, {
+      routerAddress: env.router,
+      intent: td.message,
+      intentSig,
+      permit,
+    });
+    await awaitReceipt(publicClient, txHash);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              intent_hash: voteResp.intent_hash,
+              vote_tx_hash: txHash,
+              bond_paid: td.message.bondAmount.toString(),
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+    };
+  },
+);
+
+// ── Fund (Router v2 signed-intent + on-chain broadcast) ─────────────
+
+server.tool(
+  "fund_problem",
+  "Fund a problem via the Router v2 flow: preflight → sign FundIntent → POST /fund → USDC permit → Router.fund() on-chain. Adds to the problem's bounty pool. Amount is in human USDC (e.g. '1.5' = 1.5 USDC, 1500000 wei at 6dp). Minimum 1 USDC (L2 floor).",
+  {
+    problem_id: z.string().describe("The problem ID to fund"),
+    amount: z
+      .string()
+      .describe(
+        "Amount in human USDC, e.g. '1' for 1 USDC. Backend enforces min 1 USDC for L2 activation.",
+      ),
+  },
+  async (params) => {
+    const env = requireRouterEnv();
+    const { walletClient, publicClient, privateKey, address } = getClients();
+
+    const pre = (await apiCall(
+      "GET",
+      `/v1/problems/${params.problem_id}/fund/preflight?funder=${address}`,
+    )) as FundPreflight;
+
+    const amountWei = parseAmountToWei(params.amount, pre.token.decimals);
+    const td = buildFundIntentTypedData({
+      preflight: pre,
+      funder: address,
+      amountWei,
+    });
+    const intentSig = (await privateKeyToAccount(privateKey).signTypedData(
+      td,
+    )) as Hex;
+
+    const fundResp = (await apiCall(
+      "POST",
+      `/v1/problems/${params.problem_id}/fund`,
+      buildFundRequestBody({ typedData: td, signature: intentSig }),
+    )) as { intent_hash: string; contribution_id: string };
+
+    const permit = await signUSDCPermit(walletClient, publicClient, {
+      usdc: USDC_ADDRESS,
+      spender: env.router,
+      value: amountWei,
+      deadline: td.message.expiresAt,
+    });
+
+    const txHash = await broadcastFund(walletClient, {
+      routerAddress: env.router,
+      intent: td.message,
+      intentSig,
+      permit,
+    });
+    await awaitReceipt(publicClient, txHash);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              contribution_id: fundResp.contribution_id,
+              intent_hash: fundResp.intent_hash,
+              fund_tx_hash: txHash,
+              amount_wei: amountWei.toString(),
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+    };
+  },
+);
+
+// ── Claim (winner pulls payout via Merkle proof) ────────────────────
+
+server.tool(
+  "claim_payout",
+  "Claim your share of a SETTLED question's payout pool. Requires the question_id (bytes32), your amount (uint256 wei), and the Merkle proof (array of 0x-prefixed 32-byte hex). For the one-leaf-takes-all bring-up case, proof is an empty array. Router verifies the proof against the stored root and transfers USDC on success.",
+  {
+    question_id: z
+      .string()
+      .describe(
+        "bytes32 question_id (0x-prefixed 66-char hex) — see problems.chain_question_id",
+      ),
+    amount: z
+      .string()
+      .describe("Your share amount in token wei (6dp for USDC)"),
+    proof: z
+      .array(z.string())
+      .describe(
+        "Merkle proof as array of 0x-prefixed 32-byte hex strings; [] for single-leaf trees",
+      ),
+  },
+  async (params) => {
+    const env = requireRouterEnv();
+    const { walletClient, publicClient } = getClients();
+    const txHash = await broadcastClaim(walletClient, {
+      routerAddress: env.router,
+      questionId: params.question_id as Hex,
+      amount: BigInt(params.amount),
+      proof: params.proof as Hex[],
+    });
+    await awaitReceipt(publicClient, txHash);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              claim_tx_hash: txHash,
+              amount_wei: params.amount,
+              note: "Router emitted Claimed event; USDC transferred to your wallet.",
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+    };
   },
 );
 

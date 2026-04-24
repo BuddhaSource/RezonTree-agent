@@ -16,6 +16,10 @@ servers:
       RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
       RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
       RT_AGENT_INDEX: "0"
+      RT_ROUTER_ADDRESS: "${RT_ROUTER_ADDRESS}"
+      RT_RPC_URL: "${RT_RPC_URL:-https://sepolia.base.org}"
+      RT_USDC_ADDRESS: "${RT_USDC_ADDRESS:-0x036CbD53842c5426634e7929541eC2318f3dCF7e}"
+      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_ROUTER_ADDRESS}"
 
   rezontree-questioner-02:
     type: stdio
@@ -26,6 +30,10 @@ servers:
       RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
       RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
       RT_AGENT_INDEX: "1"
+      RT_ROUTER_ADDRESS: "${RT_ROUTER_ADDRESS}"
+      RT_RPC_URL: "${RT_RPC_URL:-https://sepolia.base.org}"
+      RT_USDC_ADDRESS: "${RT_USDC_ADDRESS:-0x036CbD53842c5426634e7929541eC2318f3dCF7e}"
+      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_ROUTER_ADDRESS}"
 
   # ── Solver MCP servers (wallet-mode; answer + vote) ─────────────────
   rezontree-solver-02:
@@ -37,6 +45,10 @@ servers:
       RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
       RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
       RT_AGENT_INDEX: "2"
+      RT_ROUTER_ADDRESS: "${RT_ROUTER_ADDRESS}"
+      RT_RPC_URL: "${RT_RPC_URL:-https://sepolia.base.org}"
+      RT_USDC_ADDRESS: "${RT_USDC_ADDRESS:-0x036CbD53842c5426634e7929541eC2318f3dCF7e}"
+      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_ROUTER_ADDRESS}"
 
   rezontree-solver-03:
     type: stdio
@@ -47,6 +59,10 @@ servers:
       RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
       RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
       RT_AGENT_INDEX: "3"
+      RT_ROUTER_ADDRESS: "${RT_ROUTER_ADDRESS}"
+      RT_RPC_URL: "${RT_RPC_URL:-https://sepolia.base.org}"
+      RT_USDC_ADDRESS: "${RT_USDC_ADDRESS:-0x036CbD53842c5426634e7929541eC2318f3dCF7e}"
+      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_ROUTER_ADDRESS}"
 
   rezontree-solver-04:
     type: stdio
@@ -57,6 +73,10 @@ servers:
       RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
       RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
       RT_AGENT_INDEX: "4"
+      RT_ROUTER_ADDRESS: "${RT_ROUTER_ADDRESS}"
+      RT_RPC_URL: "${RT_RPC_URL:-https://sepolia.base.org}"
+      RT_USDC_ADDRESS: "${RT_USDC_ADDRESS:-0x036CbD53842c5426634e7929541eC2318f3dCF7e}"
+      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_ROUTER_ADDRESS}"
 
   rezontree-solver-05:
     type: stdio
@@ -67,6 +87,10 @@ servers:
       RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
       RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
       RT_AGENT_INDEX: "5"
+      RT_ROUTER_ADDRESS: "${RT_ROUTER_ADDRESS}"
+      RT_RPC_URL: "${RT_RPC_URL:-https://sepolia.base.org}"
+      RT_USDC_ADDRESS: "${RT_USDC_ADDRESS:-0x036CbD53842c5426634e7929541eC2318f3dCF7e}"
+      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_ROUTER_ADDRESS}"
 
   # ── Legacy aliases (opt-in bearer-token, kept for transition) ────────
   # These still work against the old-agent backend path and let you
