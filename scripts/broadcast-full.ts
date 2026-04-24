@@ -57,9 +57,17 @@ import type {
   VotePreflight,
 } from "../src/intents/preflight-types.js";
 import {
+  DEFAULT_SETTLEMENT_TTL_SECONDS,
+  buildSettlementIntentTypedData,
+} from "../src/intents/settlement-intent.js";
+import { hashLeaf, type MerkleLeaf } from "../src/intents/merkle.js";
+import { ROUTER_V2_ABI } from "../src/router/abi.js";
+import {
   awaitReceipt,
+  broadcastClaim,
   broadcastCommit,
   broadcastFund,
+  broadcastPublishSettlement,
   broadcastVote,
   makeAgentWalletClient,
 } from "../src/router/client.js";
@@ -380,10 +388,70 @@ async function main() {
     "vote",
   );
 
+  // =========================================================================
+  // STEP 4 — SETTLE (w0 as oracle) + CLAIM (w1 as winner)
+  // =========================================================================
+  // One-winner-takes-all for bring-up: the solver claims the entire
+  // pool (fund + commit bond + vote bond). Loop 0079's operator
+  // path while the ORACLE_ENABLED keeper is still v1+ work.
+  log("settle", "w0 (oracle) → Router.publishSettlement()");
+  const qidHex = `0x${"0".repeat(64 - fundTd.message.questionId.slice(2).length)}${fundTd.message.questionId.slice(2)}` as Hex;
+  const q = (await publicClient.readContract({
+    address: ROUTER!,
+    abi: ROUTER_V2_ABI,
+    functionName: "questions",
+    args: [qidHex],
+  })) as [number, `0x${string}`, number, bigint, bigint];
+  const poolAmount = q[3];
+  info(`pool = ${poolAmount} wei USDC (${q[2]} solutions, status=${q[0]})`);
+  if (poolAmount === 0n) throw new Error("pool 0, cannot settle");
+
+  const leaf: MerkleLeaf = {
+    questionId: qidHex,
+    recipient: a1.address, // solver takes the pool
+    amount: poolAmount,
+  };
+  const root = hashLeaf(leaf);
+  const settleTd = buildSettlementIntentTypedData({
+    routerAddress: ROUTER!,
+    chainId: CHAIN_ID,
+    questionId: qidHex,
+    merkleRoot: root,
+    expiresAtSeconds: Math.floor(Date.now() / 1000) + DEFAULT_SETTLEMENT_TTL_SECONDS,
+  });
+  const oracleSig = (await privateKeyToAccount(w0.privateKey).signTypedData(settleTd)) as Hex;
+  const settleTx = await broadcastPublishSettlement(walletClient0, {
+    routerAddress: ROUTER!,
+    questionId: qidHex,
+    merkleRoot: root,
+    expiresAt: settleTd.message.expiresAt,
+    oracleSig,
+  });
+  info(`settle tx ${settleTx}`);
+  await awaitReceipt(publicClient, settleTx);
+  ok(`settled (root ${root.slice(0, 10)}…)`);
+
+  // Public Base Sepolia RPCs serve slightly stale "latest" for
+  // 2-3s after a tx mines. viem's writeContract pre-simulates via
+  // eth_call; without this delay the pre-sim sees status=OPEN and
+  // RouterNotSettled reverts. Real chain state is already SETTLED.
+  await new Promise((r) => setTimeout(r, 4000));
+
+  log("claim", "w1 (solver) → Router.claim()");
+  const claimTx = await broadcastClaim(walletClient1, {
+    routerAddress: ROUTER!,
+    questionId: qidHex,
+    amount: poolAmount,
+    proof: [], // single-leaf tree
+  });
+  info(`claim tx ${claimTx}`);
+  await awaitReceipt(publicClient, claimTx);
+  ok(`claimed ${poolAmount} wei USDC by ${a1.address}`);
+
   console.log("");
-  console.log(c.green(c.bold("  Fund + Commit + Vote end-to-end: passing.")));
-  console.log(c.dim(`  Problem: ${problem.id}`));
-  console.log(c.dim("  Settle + Claim remain chain-gated on oracle keeper."));
+  console.log(c.green(c.bold("  Fund → Commit → Vote → Settle → Claim: full cycle passing.")));
+  console.log(c.dim(`  Problem: ${problem.id} (qid ${qidHex.slice(0, 18)}…)`));
+  console.log(c.dim(`  Pool of ${poolAmount} wei USDC delivered to solver ${a1.address}.`));
 }
 
 main().catch((err) => {

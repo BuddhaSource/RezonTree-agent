@@ -210,6 +210,39 @@ export async function broadcastClaim(
   });
 }
 
+// ─── publishSettlement() — oracle path ─────────────────────────
+
+export interface BroadcastPublishSettlementParams {
+  routerAddress: Address;
+  questionId: Hex;
+  merkleRoot: Hex;
+  expiresAt: bigint;
+  oracleSig: Hex;
+}
+
+/** Broadcasts `Router.publishSettlement(qid, root, expiresAt, sig)`.
+ *  Caller must be the oracle address set in Router's constructor.
+ *  Loop 0079: manual operator path while the keeper is still v1+
+ *  work. */
+export async function broadcastPublishSettlement(
+  wallet: WalletClient,
+  params: BroadcastPublishSettlementParams,
+): Promise<Hex> {
+  return wallet.writeContract({
+    address: params.routerAddress,
+    abi: ROUTER_V2_ABI,
+    functionName: "publishSettlement",
+    args: [
+      params.questionId,
+      params.merkleRoot,
+      params.expiresAt,
+      params.oracleSig,
+    ],
+    account: wallet.account as Account,
+    chain: wallet.chain,
+  });
+}
+
 // ─── Receipt wait helper ───────────────────────────────────────
 
 /**

@@ -112,6 +112,41 @@ export const ROUTER_V2_ABI = [
     outputs: [],
   },
 
+  // ── publishSettlement(bytes32 qid, bytes32 merkleRoot,
+  //    uint256 expiresAt, bytes oracleSig) ─────────────────────
+  // Oracle-only. Loop 0079 exposes this to the SDK so an operator
+  // can run a manual settle-claim cycle while the keeper
+  // (ORACLE_ENABLED path) is still under construction.
+  {
+    type: "function",
+    name: "publishSettlement",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "questionId", type: "bytes32" },
+      { name: "merkleRoot", type: "bytes32" },
+      { name: "expiresAt", type: "uint256" },
+      { name: "oracleSig", type: "bytes" },
+    ],
+    outputs: [],
+  },
+
+  // ── questions(bytes32) view returns (QuestionState) ─────────
+  // Used to read poolAmount before publishing settlement. Fields
+  // match Router.sol's QuestionState in declaration order.
+  {
+    type: "function",
+    name: "questions",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "bytes32" }],
+    outputs: [
+      { name: "status", type: "uint8" },
+      { name: "tokenAddr", type: "address" },
+      { name: "solutionCount", type: "uint32" },
+      { name: "poolAmount", type: "uint256" },
+      { name: "fundingDeadline", type: "uint256" },
+    ],
+  },
+
   // ── Read-only sanity (used by health checks / tests) ──────
   {
     type: "function",
