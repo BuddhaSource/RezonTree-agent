@@ -27,6 +27,7 @@ import { generateMnemonic, english, privateKeyToAccount } from "viem/accounts";
 import type { Hex } from "viem";
 import { deriveAgentWallets } from "../src/wallet/derive.js";
 import { signWalletLoginIntent } from "../src/wallet/signer.js";
+import { loadLoginDomain } from "../src/wallet/domain.js";
 import type { AgentWallet } from "../src/wallet/types.js";
 import {
   buildFundIntentTypedData,
@@ -116,9 +117,11 @@ interface AuthedAgent {
   address: `0x${string}`;
 }
 
+const LOGIN_DOMAIN = loadLoginDomain();
+
 async function loginAgent(wallet: AgentWallet): Promise<AuthedAgent> {
   const expiresAt = Math.floor(Date.now() / 1000) + 300;
-  const body = await signWalletLoginIntent({ wallet, expiresAt });
+  const body = await signWalletLoginIntent({ wallet, expiresAt, domain: LOGIN_DOMAIN });
   const resp = await call<{ access_token: string; address: `0x${string}` }>(
     "POST",
     "/auth/wallet",
