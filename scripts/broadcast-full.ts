@@ -526,11 +526,18 @@ async function main() {
   const winnerProof = merkleProof(leafHashes, 0);
   const feeProof = merkleProof(leafHashes, 1);
 
+  // One solver, one voter, both winners → no slashing in this demo.
+  // The signed envelope still includes the empty slash lists so the
+  // oracle sig covers them (prevents mix-and-match attacks).
+  const slashedCommitHashes: Hex[] = [];
+  const slashedVoteHashes: Hex[] = [];
   const settleTd = buildSettlementIntentTypedData({
     routerAddress: ROUTER!,
     chainId: CHAIN_ID,
     questionId: qid,
     merkleRoot: root,
+    slashedCommitHashes,
+    slashedVoteHashes,
     expiresAtSeconds: Math.floor(Date.now() / 1000) + DEFAULT_SETTLEMENT_TTL_SECONDS,
   });
   const oracleSig = (await privateKeyToAccount(w0.privateKey).signTypedData(settleTd)) as Hex;
@@ -541,6 +548,8 @@ async function main() {
     questionId: qid,
     merkleRoot: root,
     expiresAt: settleTd.message.expiresAt,
+    slashedCommitHashes,
+    slashedVoteHashes,
     oracleSig,
   });
   info(`settle tx ${settleTx}`);

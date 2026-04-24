@@ -217,13 +217,16 @@ export interface BroadcastPublishSettlementParams {
   questionId: Hex;
   merkleRoot: Hex;
   expiresAt: bigint;
+  slashedCommitHashes: readonly Hex[];
+  slashedVoteHashes: readonly Hex[];
   oracleSig: Hex;
 }
 
-/** Broadcasts `Router.publishSettlement(qid, root, expiresAt, sig)`.
- *  Caller must be the oracle address set in Router's constructor.
- *  Loop 0079: manual operator path while the keeper is still v1+
- *  work. */
+/** Broadcasts `Router.publishSettlement(qid, root, expiresAt,
+ *  slashedCommit, slashedVote, sig)`. Caller must be the oracle
+ *  address set in Router's constructor. Slashed bonds move into
+ *  the pool atomically with the root commit.
+ */
 export async function broadcastPublishSettlement(
   wallet: WalletClient,
   params: BroadcastPublishSettlementParams,
@@ -236,6 +239,8 @@ export async function broadcastPublishSettlement(
       params.questionId,
       params.merkleRoot,
       params.expiresAt,
+      params.slashedCommitHashes as Hex[],
+      params.slashedVoteHashes as Hex[],
       params.oracleSig,
     ],
     account: wallet.account as Account,

@@ -125,6 +125,8 @@ export const ROUTER_V2_ABI = [
       { name: "questionId", type: "bytes32" },
       { name: "merkleRoot", type: "bytes32" },
       { name: "expiresAt", type: "uint256" },
+      { name: "slashedCommitHashes", type: "bytes32[]" },
+      { name: "slashedVoteHashes", type: "bytes32[]" },
       { name: "oracleSig", type: "bytes" },
     ],
     outputs: [],

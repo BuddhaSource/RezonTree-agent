@@ -21,6 +21,8 @@ export const SETTLEMENT_INTENT_TYPES = {
     { name: "questionId", type: "bytes32" },
     { name: "merkleRoot", type: "bytes32" },
     { name: "expiresAt", type: "uint256" },
+    { name: "slashedCommitHashes", type: "bytes32[]" },
+    { name: "slashedVoteHashes", type: "bytes32[]" },
   ],
 } as const;
 
@@ -33,6 +35,8 @@ export interface SettlementIntentMessage {
   questionId: Hex;
   merkleRoot: Hex;
   expiresAt: bigint;
+  slashedCommitHashes: Hex[];
+  slashedVoteHashes: Hex[];
 }
 
 export interface BuildSettlementIntentInput {
@@ -40,6 +44,11 @@ export interface BuildSettlementIntentInput {
   chainId: number;
   questionId: Hex;
   merkleRoot: Hex;
+  /** Intent hashes of losing commits — bonds slashed into pool at
+   *  settlement time. Empty for rounds with no losers. */
+  slashedCommitHashes?: Hex[];
+  /** Intent hashes of wrong-voter intents — bonds slashed. */
+  slashedVoteHashes?: Hex[];
   /** Unix seconds. Defaults to now + 30min. */
   expiresAtSeconds?: number;
   /** Wall-clock seconds (test injection). Defaults to Math.floor(Date.now()/1000). */
@@ -72,6 +81,8 @@ export function buildSettlementIntentTypedData(
       questionId: input.questionId,
       merkleRoot: input.merkleRoot,
       expiresAt,
+      slashedCommitHashes: input.slashedCommitHashes ?? [],
+      slashedVoteHashes: input.slashedVoteHashes ?? [],
     },
   };
 }
