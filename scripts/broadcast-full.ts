@@ -140,14 +140,13 @@ async function login(wallet: AgentWallet): Promise<Authed> {
   return { wallet, token: r.access_token, address: r.address };
 }
 
-async function pollDB(query: string, expect: string, label: string, limitSec = 90): Promise<void> {
-  // Trigger a backend restart once to force indexer backfill —
-  // the WS tailer misses live events on the public Base Sepolia
-  // endpoint (finding #4, documented in loop 0077 tile). Backfill
-  // on restart picks up everything behind the checkpoint.
-  let triggered = false;
-  for (let i = 0; i < Math.floor(limitSec / 3); i++) {
-    await new Promise((r) => setTimeout(r, 3000));
+async function pollDB(query: string, expect: string, label: string, limitSec = 30): Promise<void> {
+  // Loop 0078 dropped the WSTailer in favour of HTTPPoller —
+  // events land within the poll interval (2s default) + finality
+  // lag (we read pre-finality rows; projector writes on first
+  // observation). 30s is generous.
+  for (let i = 0; i < Math.floor(limitSec / 2); i++) {
+    await new Promise((r) => setTimeout(r, 2000));
     const out = execSync(
       `docker exec rezontree-postgres-1 psql -U rezontree -d rezontree -Atc "${query}"`,
       { encoding: "utf-8" },
@@ -157,19 +156,6 @@ async function pollDB(query: string, expect: string, label: string, limitSec = 9
       return;
     }
     info(`  [${i + 1}] ${label}=${out}`);
-    if (!triggered && i >= 2) {
-      info(`  forcing indexer backfill via backend restart…`);
-      try {
-        execSync(
-          "docker compose -f /Volumes/Data/projects/rezontree/RezonTree/docker-compose.full.yml restart backend",
-          { encoding: "utf-8", stdio: "pipe" },
-        );
-      } catch {
-        /* best effort */
-      }
-      triggered = true;
-      await new Promise((r) => setTimeout(r, 6000));
-    }
   }
   throw new Error(`${label} did not reach ${expect} within ${limitSec}s`);
 }
