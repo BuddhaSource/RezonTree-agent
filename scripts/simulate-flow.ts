@@ -237,11 +237,14 @@ async function main() {
   );
   ok(`commit intent_hash ${commitResp.intent_hash.slice(0, 10)}…`);
 
-  // Also POST the body (loop 0071 chained flow).
+  // Also POST the body (loop 0071 chained flow). Include intent_hash
+  // so the solutions row links to the stored CommitIntent — loop 0076
+  // enables projector_solution_committed to match on SolutionCommitted.
   const solutionResp = await call<{ id: string; summary: string }>(
     "POST",
     `/v1/problems/${problem.id}/solutions`,
     {
+      intent_hash: commitResp.intent_hash,
       summary: solutionBody,
       reasoning_tree: [
         {
