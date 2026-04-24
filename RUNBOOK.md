@@ -7,40 +7,62 @@
 > the next action is yours: run it end-to-end for the first
 > time).
 
-## Quick path — Router v2 live demo (loops 0075–0080)
+## Quick path — audited on-chain rounds
 
-The Router v2 + on-chain flow is already live on Base Sepolia
-(`0x0BB8e006…`). If you want to drive a full
-Fund → Commit → Vote → Settle → Claim cycle without the full LLM
-agent stack, use the operator scripts:
+Drive the full Fund → Commit → Vote → Settle → Claim (winner + fee)
+→ Bond recovery cycle against a live Router without the LLM agent
+stack. Every step is fund-conservation-audited; any drift aborts
+the script with the responsible line.
 
 ```bash
-# one-shot: fund + commit + vote + settle + claim (3-wallet)
-RT_ROUTER_ADDRESS=0x0BB8e006F6DF07ce634AA1d3C852c4f98493Aba6 \
+# one-shot: 8 audited on-chain steps, operator sees final balance sheet
+RT_ROUTER_ADDRESS=0x836d931A384faefB14A72F6323638c373baefE2c \
 RT_AGENT_DOMAIN_VERIFYING_CONTRACT=$RT_ROUTER_ADDRESS \
 npx tsx scripts/broadcast-full.ts
 
-# continuous: loop the above every ~25s, summary log + per-iter log
+# continuous: loop forever, per-iter log + summary line per result
 ITER_DELAY=3 ./scripts/continuous-loop.sh
 # Ctrl-C: prints ok/fail count
-# summary: logs/continuous-loop/summary-<run_id>.log
-# per-iter: logs/continuous-loop/iter-<run_id>-NNN.log
+# summary log: logs/continuous-loop/summary-<run_id>.log
+# per-iter log: logs/continuous-loop/iter-<run_id>-NNN.log
+
+# standalone balance sheet (any time)
+npx tsx scripts/audit-balances.ts
 ```
 
-Wallet roles (BIP-44 paths `m/44'/60'/0'/0/0..2` from
-`RT_AGENT_MNEMONIC`):
-- **w0** — questioner + funder + oracle (deploy signer)
-- **w1** — solver (receives the pool claim)
-- **w2** — voter
+### Wallet roles (BIP-44 `m/44'/60'/0'/0/N` from `RT_AGENT_MNEMONIC`)
 
-Economics per round: w0 pays 1 USDC fund; w1 locks 1 USDC commit
-bond; w2 locks 1 USDC vote bond. Single-leaf settlement pays
-pool (= fund amount) to w1. Bonds stay locked in Router until a
-multi-leaf settlement ships post-launch. Operator tops up w0 +
-w2 when they deplete.
+| N | Role | Receives | Pays |
+|---|------|----------|------|
+| 0 | questioner + funder + oracle + admin | — | fund (bounty) |
+| 1 | solver | pool × (1 − feeBps/10000) + bond refund | commit bond |
+| 2 | voter | bond refund | vote bond |
+| 3 | `fee_wallet` | pool × (feeBps/10000) | — |
 
-For the full LLM-agent flow (questioner/solver/voter agents via
-Claude Agent SDK), continue with Step 1 below.
+### Economics per round (PLATFORM_FEE_BPS = 1000 default = 10%)
+
+```
+w0  −fundAmount                     (full bounty)
+w1  +fundAmount × 0.9               (pool share; bond refunded separately)
+w2   0                              (bond refunded)
+fee +fundAmount × 0.1               (platform cut)
+Router:  0                          (fund flows through; bonds in+out)
+chain total:  conserved             (USDC never leaves the system)
+```
+
+### Operator responsibilities
+
+- **Refill w0** when it drops below 2 USDC (→ Circle Base Sepolia faucet).
+- **Sweep Router residuals** if non-zero: `cast send <router>
+  sweepResiduals(address,uint256) <to> <amount>` — admin-only.
+- **Withdraw from fee_wallet** whenever the business wants to take
+  fees off-chain (it's a regular EOA, `cast send <usdc> transfer(...)`).
+
+### If you want Claude-driven agents (generates LLM content)
+
+Continue with Step 1 below — the existing task YAMLs wire Claude
+through the same MCP tools (which internally take the audited
+Router-v2 path from loop 0080).
 
 ---
 >
