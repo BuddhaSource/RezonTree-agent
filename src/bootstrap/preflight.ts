@@ -136,7 +136,7 @@ async function checkWalletLogin(url: string): Promise<CheckResult> {
     const wallet = deriveAgentWallet(m, 0, domain.chainId);
     const body = await signWalletLoginIntent({
       wallet,
-      issuedAt: Math.floor(Date.now() / 1000),
+      expiresAt: Math.floor(Date.now() / 1000) + 300,
       domain,
     });
     const resp = await fetch(`${url}/auth/wallet`, {

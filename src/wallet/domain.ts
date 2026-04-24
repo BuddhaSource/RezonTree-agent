@@ -46,11 +46,20 @@ export function loadLoginDomain(): LoginDomain {
 
 /** Type-set for signTypedData — field order + types must match
  *  backend `WalletLoginIntent` struct byte-for-byte
- *  (internal/signer/wallet_login_intent.go:45). */
+ *  (internal/signer/wallet_login_intent.go:45).
+ *  Loop 0036 migrated `issuedAt` → `expiresAt`; this file
+ *  caught up as part of the end-to-end runbook work. Prior
+ *  `issuedAt` shape produced a struct hash the backend's
+ *  signature recovery rejected (parallel to UI loop 0070's fix). */
 export const WALLET_LOGIN_INTENT_TYPES = {
   WalletLoginIntent: [
     { name: "ethAddress", type: "address" },
     { name: "chainId", type: "uint256" },
-    { name: "issuedAt", type: "uint256" },
+    { name: "expiresAt", type: "uint256" },
   ],
 } as const;
+
+/** Default TTL for a wallet-login intent. Backend ceiling is 15
+ *  min (internal/auth/auth_service.go:WalletLoginMaxTTL); we pick
+ *  5 min to leave margin for wallet prompt + network RTT. */
+export const DEFAULT_LOGIN_TTL_SECONDS = 5 * 60;

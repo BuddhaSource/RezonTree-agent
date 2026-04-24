@@ -157,7 +157,7 @@ async function main(): Promise<number> {
     try {
       const body = await signWalletLoginIntent({
         wallet: w,
-        issuedAt: Math.floor(Date.now() / 1000),
+        expiresAt: Math.floor(Date.now() / 1000) + 300,
         domain,
       });
       const resp = await fetch(`${backendUrl}/auth/wallet`, {

@@ -32,17 +32,17 @@ export interface AgentWallet {
 export interface WalletLoginIntent {
   ethAddress: Address;
   chainId: bigint;
-  issuedAt: bigint;
+  expiresAt: bigint;
 }
 
 /**
  * SignedWalletLoginIntent is what /auth/wallet wants:
- * { address, chain_id, issued_at, signature }.
+ * { address, chain_id, expires_at, signature }.
  */
 export interface SignedWalletLoginIntent {
   address: Address;
   chain_id: number;
-  issued_at: number;
+  expires_at: number;
   signature: Hex;
 }
 

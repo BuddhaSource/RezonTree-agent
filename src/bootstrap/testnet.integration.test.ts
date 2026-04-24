@@ -109,7 +109,7 @@ describe("bootstrap — end-to-end smoke", () => {
       for (const w of wallets) {
         const body = await signWalletLoginIntent({
           wallet: w,
-          issuedAt: Math.floor(Date.now() / 1000),
+          expiresAt: Math.floor(Date.now() / 1000) + 300,
           domain: DEFAULT_LOGIN_DOMAIN,
         });
         const resp = await fetch("http://mock/auth/wallet", {
@@ -146,7 +146,7 @@ describe("bootstrap — end-to-end smoke", () => {
       for (const w of wallets) {
         const body = await signWalletLoginIntent({
           wallet: w,
-          issuedAt: Math.floor(Date.now() / 1000),
+          expiresAt: Math.floor(Date.now() / 1000) + 300,
           domain: DEFAULT_LOGIN_DOMAIN,
         });
         const resp = await fetch("http://mock/auth/wallet", {
