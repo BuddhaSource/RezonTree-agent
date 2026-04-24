@@ -147,6 +147,48 @@ export const ROUTER_V2_ABI = [
     ],
   },
 
+  // ── claimSolutionBond(bytes32 qid, bytes32 intentHash) ────
+  // v2.1 — release a previously-posted commit bond to its
+  // original submitter after the question is SETTLED.
+  {
+    type: "function",
+    name: "claimSolutionBond",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "questionId", type: "bytes32" },
+      { name: "intentHash", type: "bytes32" },
+    ],
+    outputs: [],
+  },
+
+  // ── claimVoteBond(bytes32 qid, bytes32 intentHash) ─────────
+  // v2.1 — release a previously-posted vote bond to its original
+  // voter after the question is SETTLED.
+  {
+    type: "function",
+    name: "claimVoteBond",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "questionId", type: "bytes32" },
+      { name: "intentHash", type: "bytes32" },
+    ],
+    outputs: [],
+  },
+
+  // ── sweepResiduals(address to, uint256 amount) ─────────────
+  // v2.1 — admin-only drain of stuck USDC (dust, legacy bonds,
+  // accidental transfers). Set at deploy; no rotation.
+  {
+    type: "function",
+    name: "sweepResiduals",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "to", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [],
+  },
+
   // ── Read-only sanity (used by health checks / tests) ──────
   {
     type: "function",

@@ -43,9 +43,9 @@ W0_ADDR=0x55Bd1aAE425116048590db9dC978f47b4F3702b5
 W1_ADDR=0x483c51061e6106fe4e08E138428336A519fC0533
 W2_ADDR=0x8A589E3210Db52658505E1681DCd36fA973bA7C3
 USDC_ADDR=0x036CbD53842c5426634e7929541eC2318f3dCF7e
-TOPUP_THRESHOLD_WEI=2000000   # 2 USDC
-TOPUP_AMOUNT_WEI=3000000      # 3 USDC per refill
-HALT_THRESHOLD_WEI=4000000    # stop when w1 below 4 USDC
+TOPUP_THRESHOLD_WEI=${TOPUP_THRESHOLD_WEI:-1000000}   # 1 USDC — topup when below
+TOPUP_AMOUNT_WEI=${TOPUP_AMOUNT_WEI:-2000000}         # 2 USDC per refill
+HALT_THRESHOLD_WEI=${HALT_THRESHOLD_WEI:-1500000}     # stop when w1 below 1.5 USDC
 
 # Derive w1's private key for topups.
 W1_PK=$(node -e "const {mnemonicToAccount} = require('viem/accounts'); const w = mnemonicToAccount(process.env.RT_AGENT_MNEMONIC, {path: \"m/44'/60'/0'/0/1\"}); console.log('0x' + Buffer.from(w.getHdKey().privateKey).toString('hex'));")
