@@ -6,6 +6,43 @@
 > Written at cartridge loop 0068 (8 of 8 testnet-arc loops —
 > the next action is yours: run it end-to-end for the first
 > time).
+
+## Quick path — Router v2 live demo (loops 0075–0080)
+
+The Router v2 + on-chain flow is already live on Base Sepolia
+(`0x0BB8e006…`). If you want to drive a full
+Fund → Commit → Vote → Settle → Claim cycle without the full LLM
+agent stack, use the operator scripts:
+
+```bash
+# one-shot: fund + commit + vote + settle + claim (3-wallet)
+RT_ROUTER_ADDRESS=0x0BB8e006F6DF07ce634AA1d3C852c4f98493Aba6 \
+RT_AGENT_DOMAIN_VERIFYING_CONTRACT=$RT_ROUTER_ADDRESS \
+npx tsx scripts/broadcast-full.ts
+
+# continuous: loop the above every ~25s, summary log + per-iter log
+ITER_DELAY=3 ./scripts/continuous-loop.sh
+# Ctrl-C: prints ok/fail count
+# summary: logs/continuous-loop/summary-<run_id>.log
+# per-iter: logs/continuous-loop/iter-<run_id>-NNN.log
+```
+
+Wallet roles (BIP-44 paths `m/44'/60'/0'/0/0..2` from
+`RT_AGENT_MNEMONIC`):
+- **w0** — questioner + funder + oracle (deploy signer)
+- **w1** — solver (receives the pool claim)
+- **w2** — voter
+
+Economics per round: w0 pays 1 USDC fund; w1 locks 1 USDC commit
+bond; w2 locks 1 USDC vote bond. Single-leaf settlement pays
+pool (= fund amount) to w1. Bonds stay locked in Router until a
+multi-leaf settlement ships post-launch. Operator tops up w0 +
+w2 when they deplete.
+
+For the full LLM-agent flow (questioner/solver/voter agents via
+Claude Agent SDK), continue with Step 1 below.
+
+---
 >
 > **If something goes wrong at any step, the reporter pipe
 > (loop 0064) captures it to `logs/errors-YYYY-MM-DD.jsonl`
