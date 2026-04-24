@@ -9,12 +9,14 @@
 //   w2 (N=2) — voter (claims vote bond)
 //   fee   (N=3) — platform fee wallet (not yet populated by Router)
 //
-// Steady-state economics per round (after bond recovery):
-//   w0: -fundAmount (that's the bounty, paid to the winning solver)
-//   w1: +fundAmount (wins the pool; bond fully refunded)
-//   w2:  0          (bond fully refunded)
-//   Router:  0      (fund flows through; bonds in+out)
-//   Chain total: unchanged (USDC never leaves the system)
+// Steady-state economics per round (after bond recovery), with
+// platform fee of PLATFORM_FEE_BPS basis points:
+//   w0:         -fundAmount            (full bounty)
+//   w1:         +fundAmount × (1 - feeBps/10000)  (pool share)
+//   w2:          0                     (bond refunded)
+//   fee_wallet: +fundAmount × (feeBps/10000)      (platform cut)
+//   Router:      0                     (fund flows through; bonds in+out)
+//   Chain total: unchanged             (USDC never leaves the system)
 //
 // Each step is audited: snapshot → broadcast → snapshot → verify
 // the delta matches an explicit ExpectedDelta. Any mismatch aborts
@@ -53,7 +55,12 @@ import {
   DEFAULT_SETTLEMENT_TTL_SECONDS,
   buildSettlementIntentTypedData,
 } from "../src/intents/settlement-intent.js";
-import { hashLeaf, type MerkleLeaf } from "../src/intents/merkle.js";
+import {
+  hashLeaf,
+  merkleProof,
+  merkleRoot,
+  type MerkleLeaf,
+} from "../src/intents/merkle.js";
 import { ROUTER_V2_ABI } from "../src/router/abi.js";
 import {
   awaitReceipt,
@@ -85,6 +92,15 @@ const ROUTER = process.env.RT_ROUTER_ADDRESS as Address | undefined;
 const MNEMONIC = process.env.RT_AGENT_MNEMONIC;
 if (!ROUTER) throw new Error("RT_ROUTER_ADDRESS required");
 if (!MNEMONIC) throw new Error("RT_AGENT_MNEMONIC required");
+
+// Platform fee rate in basis points (10000 = 100%). 1000 = 10%.
+// Applied to the pool at settlement time: the Merkle tree carries
+// one leaf for the winning solver (pool × (10000 - FEE_BPS) / 10000)
+// and one leaf for the fee_wallet (pool × FEE_BPS / 10000). Winner
+// + fee_wallet sum to the pool exactly — no residual.
+const PLATFORM_FEE_BPS = BigInt(
+  process.env.RT_PLATFORM_FEE_BPS ?? "1000",
+);
 
 const c = {
   cyan: (s: string) => `\x1b[36m${s}\x1b[0m`,
@@ -217,6 +233,11 @@ async function main() {
   });
   const walletClient2 = makeAgentWalletClient({
     privateKey: w2.privateKey,
+    chainId: CHAIN_ID,
+    rpcUrl: RPC,
+  });
+  const walletClientFee = makeAgentWalletClient({
+    privateKey: feeWallet.privateKey,
     chainId: CHAIN_ID,
     rpcUrl: RPC,
   });
@@ -477,9 +498,9 @@ async function main() {
   );
 
   // =========================================================================
-  // STEP 4 — SETTLE (w0 as oracle)
+  // STEP 4 — SETTLE (w0 as oracle) — 2-leaf tree: winner + platform fee
   // =========================================================================
-  log("4/7 settle", "w0 (oracle) → Router.publishSettlement()");
+  log("4/8 settle", "w0 (oracle) → Router.publishSettlement()");
   const qState = (await publicClient.readContract({
     address: ROUTER!,
     abi: ROUTER_V2_ABI,
@@ -487,15 +508,24 @@ async function main() {
     args: [qid],
   })) as [number, Address, number, bigint, bigint];
   const poolAmount = qState[3];
-  info(`pool = ${fmtUsdc(poolAmount)}`);
+  const feeAmount = (poolAmount * PLATFORM_FEE_BPS) / 10000n;
+  const winnerAmount = poolAmount - feeAmount;
+  info(
+    `pool = ${fmtUsdc(poolAmount)}; fee ${PLATFORM_FEE_BPS}bp = ${fmtUsdc(feeAmount)}; winner = ${fmtUsdc(winnerAmount)}`,
+  );
   if (poolAmount === 0n) throw new Error("pool 0, cannot settle");
 
-  const leaf: MerkleLeaf = {
-    questionId: qid,
-    recipient: a1.address,
-    amount: poolAmount,
-  };
-  const root = hashLeaf(leaf);
+  // Leaves MUST be in a fixed order — the proof depends on index.
+  // [0] winner, [1] platform fee.
+  const leaves: MerkleLeaf[] = [
+    { questionId: qid, recipient: a1.address, amount: winnerAmount },
+    { questionId: qid, recipient: feeWallet.address, amount: feeAmount },
+  ];
+  const leafHashes = leaves.map(hashLeaf);
+  const root = merkleRoot(leaves);
+  const winnerProof = merkleProof(leafHashes, 0);
+  const feeProof = merkleProof(leafHashes, 1);
+
   const settleTd = buildSettlementIntentTypedData({
     routerAddress: ROUTER!,
     chainId: CHAIN_ID,
@@ -526,31 +556,53 @@ async function main() {
   await new Promise((r) => setTimeout(r, 4000));
 
   // =========================================================================
-  // STEP 5 — CLAIM POOL (w1)
+  // STEP 5 — CLAIM WINNER (w1)
   // =========================================================================
-  log("5/7 claim pool", "w1 → Router.claim()");
+  log("5/8 claim winner", "w1 → Router.claim(winnerAmount)");
   const before5 = await snap();
   const claimTx = await broadcastClaim(walletClient1, {
     routerAddress: ROUTER!,
     questionId: qid,
-    amount: poolAmount,
-    proof: [],
+    amount: winnerAmount,
+    proof: winnerProof,
   });
   info(`claim tx ${claimTx}`);
   await awaitReceipt(publicClient, claimTx);
-  await auditStep("Claim pool → Router.claim()", before5, {
+  await auditStep("Claim winner → Router.claim()", before5, {
     action: "claim",
-    byAddress: { [a1.address]: poolAmount },
-    routerTotal: -poolAmount,
+    byAddress: { [a1.address]: winnerAmount },
+    routerTotal: -winnerAmount,
     qid,
-    poolDelta: -poolAmount,
+    poolDelta: -winnerAmount,
     chainTotal: 0n,
   });
 
   // =========================================================================
-  // STEP 6 — CLAIM SOLUTION BOND (w1)
+  // STEP 6 — CLAIM PLATFORM FEE (fee_wallet)
   // =========================================================================
-  log("6/7 claim commit bond", "w1 → Router.claimSolutionBond()");
+  log("6/8 claim fee", "fee_wallet → Router.claim(feeAmount)");
+  const before5b = await snap();
+  const feeClaimTx = await broadcastClaim(walletClientFee, {
+    routerAddress: ROUTER!,
+    questionId: qid,
+    amount: feeAmount,
+    proof: feeProof,
+  });
+  info(`fee claim tx ${feeClaimTx}`);
+  await awaitReceipt(publicClient, feeClaimTx);
+  await auditStep("Claim fee → Router.claim() by fee_wallet", before5b, {
+    action: "claim",
+    byAddress: { [feeWallet.address]: feeAmount },
+    routerTotal: -feeAmount,
+    qid,
+    poolDelta: -feeAmount,
+    chainTotal: 0n,
+  });
+
+  // =========================================================================
+  // STEP 7 — CLAIM SOLUTION BOND (w1)
+  // =========================================================================
+  log("7/8 claim commit bond", "w1 → Router.claimSolutionBond()");
   const before6 = await snap();
   const claimSolBondTx = await walletClient1.writeContract({
     address: ROUTER!,
@@ -572,9 +624,9 @@ async function main() {
   });
 
   // =========================================================================
-  // STEP 7 — CLAIM VOTE BOND (w2)
+  // STEP 8 — CLAIM VOTE BOND (w2)
   // =========================================================================
-  log("7/7 claim vote bond", "w2 → Router.claimVoteBond()");
+  log("8/8 claim vote bond", "w2 → Router.claimVoteBond()");
   const before7 = await snap();
   const claimVoteBondTx = await walletClient2.writeContract({
     address: ROUTER!,
@@ -607,34 +659,40 @@ async function main() {
     process.exit(1);
   }
 
-  // Cumulative per-wallet deltas (expected for one zero-sum round).
-  const w0Delta =
-    (snapN.wallets.find((w) => w.address === a0.address)?.usdc ?? 0n) -
-    (snap0.wallets.find((w) => w.address === a0.address)?.usdc ?? 0n);
-  const w1Delta =
-    (snapN.wallets.find((w) => w.address === a1.address)?.usdc ?? 0n) -
-    (snap0.wallets.find((w) => w.address === a1.address)?.usdc ?? 0n);
-  const w2Delta =
-    (snapN.wallets.find((w) => w.address === a2.address)?.usdc ?? 0n) -
-    (snap0.wallets.find((w) => w.address === a2.address)?.usdc ?? 0n);
+  // Cumulative per-wallet deltas (expected for one zero-sum round
+  // with PLATFORM_FEE_BPS fee routed to fee_wallet).
+  const findDelta = (addr: Address): bigint =>
+    (snapN.wallets.find((w) => w.address === addr)?.usdc ?? 0n) -
+    (snap0.wallets.find((w) => w.address === addr)?.usdc ?? 0n);
+  const w0Delta = findDelta(a0.address);
+  const w1Delta = findDelta(a1.address);
+  const w2Delta = findDelta(a2.address);
+  const feeDelta = findDelta(feeWallet.address);
 
   console.log("");
   console.log(c.bold("── Round cumulative Δ ──"));
-  console.log(`  w0 funder: ${fmtUsdc(w0Delta).padStart(14)}   (expected: -${fmtUsdc(fundAmount).replace(/^-/, "")} — bounty paid to winner)`);
-  console.log(`  w1 solver: ${fmtUsdc(w1Delta).padStart(14)}   (expected: +${fmtUsdc(fundAmount).replace(/^-/, "")} — won the pool; bond refunded)`);
-  console.log(`  w2 voter:  ${fmtUsdc(w2Delta).padStart(14)}   (expected:  0 — bond refunded)`);
+  console.log(`  w0 funder:   ${fmtUsdc(w0Delta).padStart(14)}   (expected: -${fmtUsdc(fundAmount).replace(/^-/, "")} — full bounty paid)`);
+  console.log(`  w1 solver:   ${fmtUsdc(w1Delta).padStart(14)}   (expected: +${fmtUsdc(winnerAmount).replace(/^-/, "")} — pool × ${10000n - PLATFORM_FEE_BPS}/10000; bond refunded)`);
+  console.log(`  w2 voter:    ${fmtUsdc(w2Delta).padStart(14)}   (expected:  0 — bond refunded)`);
+  console.log(`  fee_wallet:  ${fmtUsdc(feeDelta).padStart(14)}   (expected: +${fmtUsdc(feeAmount).replace(/^-/, "")} — platform ${PLATFORM_FEE_BPS}bp cut)`);
   console.log(`  chain total conserved: ${c.green("✓")}`);
 
   const expectedW0 = -fundAmount;
-  const expectedW1 = fundAmount;
+  const expectedW1 = winnerAmount;
   const expectedW2 = 0n;
-  if (w0Delta !== expectedW0 || w1Delta !== expectedW1 || w2Delta !== expectedW2) {
-    fail("Cumulative round deltas differ from expected zero-sum pattern.");
+  const expectedFee = feeAmount;
+  if (
+    w0Delta !== expectedW0 ||
+    w1Delta !== expectedW1 ||
+    w2Delta !== expectedW2 ||
+    feeDelta !== expectedFee
+  ) {
+    fail("Cumulative round deltas differ from expected split.");
     process.exit(1);
   }
 
   console.log("");
-  console.log(c.green(c.bold("  Fund → Commit → Vote → Settle → Claim → Bond recovery: audit PASS.")));
+  console.log(c.green(c.bold("  Fund → Commit → Vote → Settle → 2-leaf Claim (winner + fee) → Bond recovery: audit PASS.")));
   console.log(c.dim(`  Problem: ${problem.id} (qid ${qid.slice(0, 18)}…)`));
 }
 
