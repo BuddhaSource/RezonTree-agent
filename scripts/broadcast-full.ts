@@ -448,6 +448,13 @@ async function main() {
   await awaitReceipt(publicClient, claimTx);
   ok(`claimed ${poolAmount} wei USDC by ${a1.address}`);
 
+  // Note on economics: Router holds commit-bond and vote-bond
+  // separately from the pool. Single-leaf claim only releases the
+  // pool (= fund amount when fee=0). Bonds stay locked until a
+  // multi-leaf settlement (post-launch) distributes them. So this
+  // loop depletes w1 and w2 by 1 USDC/round each; operator tops
+  // up as needed.
+
   console.log("");
   console.log(c.green(c.bold("  Fund → Commit → Vote → Settle → Claim: full cycle passing.")));
   console.log(c.dim(`  Problem: ${problem.id} (qid ${qidHex.slice(0, 18)}…)`));
