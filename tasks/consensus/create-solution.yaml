@@ -36,6 +36,17 @@ steps:
       - Approach (components)
       - Reasoning (observation → reasoning → conclusion steps)
 
+      PROTOCOL QUALITY FLOORS — backend rejects submissions below these:
+      - SUMMARY: at least 1000 characters. Argue the answer in detail
+        — synthesis, evidence, edge cases, why-this-not-that. A trivial
+        "X works because Y" is not enough; the protocol is paying for
+        rigor.
+      - REASONING TREE: at least 6 because/therefore steps. Each step
+        is a single inference link with non-empty `because` (premise)
+        and `therefore` (conclusion). Decompose your argument into at
+        least 6 distinct inference rungs; don't compress multiple
+        ideas into one step.
+
       Be specific. Include numbers. Be honest about confidence.
     output_key: draft
 
@@ -63,7 +74,15 @@ steps:
       Refine your solution based on this review:
       {{review}}
 
-      Then submit it via the protocol API using the submit_solution tool.
+      Before submitting, double-check the protocol floors:
+      - summary length ≥ 1000 chars
+      - reasoning_tree has ≥ 6 because/therefore steps
+
+      If either is short, expand before calling submit_solution.
+      The backend returns VALIDATION_ERROR with the missing count
+      so you can self-correct, but burning a round trip is sloppy.
+
+      Then submit via the submit_solution tool.
       Problem ID: {{problem_id}}
     output_key: submission_result
 
