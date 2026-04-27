@@ -39,7 +39,7 @@ export interface FundPreflight {
   qid: string;
   recommended_amount_floor: string;
   token: TokenPreflight;
-  router_address: string;
+  forge_address: string;
   chain_id: number;
   nonce_next: string;
   funding_deadline?: number;
@@ -60,7 +60,7 @@ export interface CommitPreflight {
   recommended_fee: string;
   recommended_bond: string;
   token: TokenPreflight;
-  router_address: string;
+  forge_address: string;
   chain_id: number;
   nonce_next: string;
   submission_deadline?: number;
@@ -72,7 +72,7 @@ export interface VotePreflight {
   recommended_fee: string;
   recommended_bond: string;
   token: TokenPreflight;
-  router_address: string;
+  forge_address: string;
   chain_id: number;
   nonce_next: string;
   vote_deadline?: number;

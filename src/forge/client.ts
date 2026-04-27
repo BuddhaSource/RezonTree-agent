@@ -69,7 +69,7 @@ export function makeAgentWalletClient(params: {
 // First sponsor binds all per-Q parameters.
 
 export interface BroadcastSponsorParams {
-  routerAddress: Address;
+  forgeAddress: Address;
   intent: SponsorIntentMessage;
   intentSig: Hex;
   permit: PermitSig;
@@ -84,7 +84,7 @@ export async function broadcastSponsor(
   params: BroadcastSponsorParams,
 ): Promise<Hex> {
   return wallet.writeContract({
-    address: params.routerAddress,
+    address: params.forgeAddress,
     abi: REZON_FORGE_ABI,
     functionName: "sponsor",
     args: [
@@ -123,7 +123,7 @@ export async function broadcastSponsor(
 // Subsequent contributor of an OPEN question.
 
 export interface BroadcastCosponsorParams {
-  routerAddress: Address;
+  forgeAddress: Address;
   intent: CosponsorIntentMessage;
   intentSig: Hex;
   permit: PermitSig;
@@ -135,7 +135,7 @@ export async function broadcastCosponsor(
   params: BroadcastCosponsorParams,
 ): Promise<Hex> {
   return wallet.writeContract({
-    address: params.routerAddress,
+    address: params.forgeAddress,
     abi: REZON_FORGE_ABI,
     functionName: "cosponsor",
     args: [
@@ -166,7 +166,7 @@ export async function broadcastCosponsor(
 // ─── commitSolution() ──────────────────────────────────────────
 
 export interface BroadcastCommitParams {
-  routerAddress: Address;
+  forgeAddress: Address;
   intent: CommitIntentMessage;
   intentSig: Hex;
   permit: PermitSig;
@@ -178,7 +178,7 @@ export async function broadcastCommit(
   params: BroadcastCommitParams,
 ): Promise<Hex> {
   return wallet.writeContract({
-    address: params.routerAddress,
+    address: params.forgeAddress,
     abi: REZON_FORGE_ABI,
     functionName: "commitSolution",
     args: [
@@ -211,7 +211,7 @@ export async function broadcastCommit(
 // ─── castVote() ────────────────────────────────────────────────
 
 export interface BroadcastVoteParams {
-  routerAddress: Address;
+  forgeAddress: Address;
   intent: VoteIntentMessage;
   intentSig: Hex;
   permit: PermitSig;
@@ -223,7 +223,7 @@ export async function broadcastVote(
   params: BroadcastVoteParams,
 ): Promise<Hex> {
   return wallet.writeContract({
-    address: params.routerAddress,
+    address: params.forgeAddress,
     abi: REZON_FORGE_ABI,
     functionName: "castVote",
     args: [
@@ -256,7 +256,7 @@ export async function broadcastVote(
 // ─── claim() ───────────────────────────────────────────────────
 
 export interface BroadcastClaimParams {
-  routerAddress: Address;
+  forgeAddress: Address;
   questionId: Hex;
   amount: bigint;
   proof: Hex[];
@@ -266,8 +266,18 @@ export async function broadcastClaim(
   wallet: WalletClient,
   params: BroadcastClaimParams,
 ): Promise<Hex> {
+  // F21 (mega-audit T2 fence): the contract reverts
+  // ForgeZeroClaimAmount when amount == 0. Reject here to skip the
+  // wasted broadcast + revert. Validators in this SDK + Solidity
+  // guards must agree byte-for-byte; see internal/signer for the
+  // backend equivalent.
+  if (params.amount <= 0n) {
+    throw new Error(
+      "claim: amount must be > 0 (chain reverts ForgeZeroClaimAmount per F21)",
+    );
+  }
   return wallet.writeContract({
-    address: params.routerAddress,
+    address: params.forgeAddress,
     abi: REZON_FORGE_ABI,
     functionName: "claim",
     args: [params.questionId, params.amount, params.proof],
@@ -279,36 +289,46 @@ export async function broadcastClaim(
 // ─── publishSettlement() — oracle path ─────────────────────────
 
 export interface BroadcastPublishSettlementParams {
-  routerAddress: Address;
+  forgeAddress: Address;
   questionId: Hex;
   merkleRoot: Hex;
+  totalClaimable: bigint;
+  sampleRecipient: Address;
+  sampleAmount: bigint;
+  sampleProof: readonly Hex[];
   expiresAt: bigint;
   slashedCommitHashes: readonly Hex[];
   slashedVoteHashes: readonly Hex[];
   oracleSig: Hex;
 }
 
-/** Broadcasts `RezonForge.publishSettlement(qid, root, expiresAt,
- *  slashedCommit, slashedVote, sig)`. Caller must be the oracle
- *  address set in RezonForge's constructor. Slashed bonds move
- *  into the pool atomically with the root commit.
+/** Broadcasts `RezonForge.publishSettlement(SettlementIntent intent,
+ *  bytes oracleSig)`. Caller must be the oracle address set in
+ *  RezonForge's constructor. Slashed bonds move into the pool
+ *  atomically with the root commit. The intent struct shape mirrors
+ *  RezonForge.SettlementIntent exactly — see abi.ts for the tuple
+ *  layout.
  */
 export async function broadcastPublishSettlement(
   wallet: WalletClient,
   params: BroadcastPublishSettlementParams,
 ): Promise<Hex> {
+  const intent = {
+    questionId: params.questionId,
+    merkleRoot: params.merkleRoot,
+    totalClaimable: params.totalClaimable,
+    sampleRecipient: params.sampleRecipient,
+    sampleAmount: params.sampleAmount,
+    sampleProof: params.sampleProof as Hex[],
+    expiresAt: params.expiresAt,
+    slashedCommitHashes: params.slashedCommitHashes as Hex[],
+    slashedVoteHashes: params.slashedVoteHashes as Hex[],
+  };
   return wallet.writeContract({
-    address: params.routerAddress,
+    address: params.forgeAddress,
     abi: REZON_FORGE_ABI,
     functionName: "publishSettlement",
-    args: [
-      params.questionId,
-      params.merkleRoot,
-      params.expiresAt,
-      params.slashedCommitHashes as Hex[],
-      params.slashedVoteHashes as Hex[],
-      params.oracleSig,
-    ],
+    args: [intent, params.oracleSig],
     account: wallet.account as Account,
     chain: wallet.chain,
   });

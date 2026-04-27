@@ -40,7 +40,7 @@ function preflight(overrides: Partial<CommitPreflight> = {}): CommitPreflight {
       symbol: "USDC",
       chain_id: 84532,
     },
-    router_address: ROUTER,
+    forge_address: ROUTER,
     chain_id: 84532,
     nonce_next: "11",
     _actions: [],

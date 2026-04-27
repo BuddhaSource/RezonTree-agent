@@ -22,9 +22,9 @@ const CHAIN_ID = 84532;
 const USDC =
   (process.env.RT_USDC_ADDRESS as Address) ??
   "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
-const ROUTER = process.env.RT_ROUTER_ADDRESS as Address | undefined;
+const ROUTER = process.env.RT_FORGE_ADDRESS as Address | undefined;
 const MNEMONIC = process.env.RT_AGENT_MNEMONIC;
-if (!ROUTER) throw new Error("RT_ROUTER_ADDRESS required");
+if (!ROUTER) throw new Error("RT_FORGE_ADDRESS required");
 if (!MNEMONIC) throw new Error("RT_AGENT_MNEMONIC required");
 
 const positional = process.argv.slice(2);

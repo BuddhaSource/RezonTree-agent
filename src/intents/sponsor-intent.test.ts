@@ -40,7 +40,7 @@ function sponsorPreflight(
       symbol: "USDC",
       chain_id: 84532,
     },
-    router_address: ROUTER,
+    forge_address: ROUTER,
     chain_id: 84532,
     nonce_next: "7",
     oracle: ORACLE,
@@ -67,7 +67,7 @@ function cosponsorPreflight(
       symbol: "USDC",
       chain_id: 84532,
     },
-    router_address: ROUTER,
+    forge_address: ROUTER,
     chain_id: 84532,
     nonce_next: "7",
     _actions: [],
@@ -187,6 +187,50 @@ describe("buildSponsorIntentTypedData", () => {
     expect(td.message.expiresAt).toBe(
       BigInt(NOW + DEFAULT_SPONSOR_TTL_SECONDS),
     );
+  });
+
+  // Mega-audit T2 fence parity — off-chain validator must reject the
+  // exact inputs the contract reverts on (R2-EB-1 / F15 / bondBps cap).
+  it("rejects minSponsorship=0 (R2-EB-1 fence)", () => {
+    expect(() =>
+      buildSponsorIntentTypedData({
+        preflight: sponsorPreflight({ min_sponsorship: "0" }),
+        sponsor: SPONSOR,
+        amountWei: BigInt("1000000"),
+        feeShareBps: policy.bps,
+        feeShares: policy.shares,
+        nowSeconds: NOW,
+      }),
+    ).toThrow(/ForgeZeroMinSponsorship/);
+  });
+
+  it("rejects voteFee=0 AND minBondFloor=0 (F15 fence)", () => {
+    expect(() =>
+      buildSponsorIntentTypedData({
+        preflight: sponsorPreflight({
+          vote_fee: "0",
+          min_bond_floor: "0",
+        }),
+        sponsor: SPONSOR,
+        amountWei: BigInt("1000000"),
+        feeShareBps: policy.bps,
+        feeShares: policy.shares,
+        nowSeconds: NOW,
+      }),
+    ).toThrow(/ForgeZeroEconomicFloor/);
+  });
+
+  it("rejects bondBasisPoints > 5000 (chain cap)", () => {
+    expect(() =>
+      buildSponsorIntentTypedData({
+        preflight: sponsorPreflight({ bond_basis_points: "5001" }),
+        sponsor: SPONSOR,
+        amountWei: BigInt("1000000"),
+        feeShareBps: policy.bps,
+        feeShares: policy.shares,
+        nowSeconds: NOW,
+      }),
+    ).toThrow(/exceeds max 5000/);
   });
 });
 

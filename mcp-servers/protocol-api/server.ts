@@ -14,7 +14,7 @@
  *   RT_AGENT_INDEX                        HD index for this agent
  *   RT_AGENT_BACKEND_URL                  Backend base URL
  *   RT_AGENT_DOMAIN_VERIFYING_CONTRACT    EIP-712 domain contract
- *   RT_ROUTER_ADDRESS                     Router contract address
+ *   RT_FORGE_ADDRESS                     Router contract address
  *   RT_RPC_URL                            JSON-RPC endpoint
  *   RT_USDC_ADDRESS                       USDC token contract
  *   RT_AGENT_CHAIN_ID                     EVM chain id (default 84532)
@@ -25,16 +25,20 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import type { Address, Hex } from "viem";
-import { createPublicClient, http } from "viem";
+import { createPublicClient, http, parseUnits } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { deriveAgentWallet } from "../../src/wallet/derive.js";
 import { loadLoginDomain } from "../../src/wallet/domain.js";
 import { signWalletLoginIntent } from "../../src/wallet/signer.js";
 import {
-  buildFundIntentTypedData,
-  buildFundRequestBody,
+  buildSponsorFundRequestBody,
+  buildSponsorIntentTypedData,
   parseAmountToWei,
-} from "../../src/intents/fund-intent.js";
+} from "../../src/intents/sponsor-intent.js";
+import {
+  buildCosponsorFundRequestBody,
+  buildCosponsorIntentTypedData,
+} from "../../src/intents/cosponsor-intent.js";
 import {
   buildCommitIntentTypedData,
   buildSubmitCommitRequestBody,
@@ -55,11 +59,12 @@ import {
   awaitReceipt,
   broadcastClaim,
   broadcastCommit,
-  broadcastFund,
+  broadcastCosponsor,
+  broadcastSponsor,
   broadcastVote,
   makeAgentWalletClient,
-} from "../../src/router/client.js";
-import { signUSDCPermit } from "../../src/router/permit.js";
+} from "../../src/forge/client.js";
+import { signUSDCPermit } from "../../src/forge/permit.js";
 
 const API_URL =
   process.env.RT_AGENT_BACKEND_URL || "http://localhost:8080";
@@ -73,7 +78,7 @@ const AGENT_INDEX = Number.parseInt(process.env.RT_AGENT_INDEX || "-1", 10);
 // When missing, chain-broadcast tools throw a teaching error at
 // first call; backend-only tools (list_*, get_*) keep working so
 // read-only agents can still use the server.
-const ROUTER_ADDRESS = process.env.RT_ROUTER_ADDRESS as Address | undefined;
+const ROUTER_ADDRESS = process.env.RT_FORGE_ADDRESS as Address | undefined;
 const RPC_URL = process.env.RT_RPC_URL || "https://sepolia.base.org";
 const CHAIN_ID = Number.parseInt(
   process.env.RT_AGENT_CHAIN_ID || "84532",
@@ -85,13 +90,13 @@ const USDC_ADDRESS =
 
 /**
  * Router broadcast helpers lazy-derive the agent wallet + cache
- * viem clients. Missing RT_ROUTER_ADDRESS errors at first call,
+ * viem clients. Missing RT_FORGE_ADDRESS errors at first call,
  * not at server boot, so read-only tools still work.
  */
 function requireRouterEnv(): { router: Address; rpc: string; chainId: number } {
   if (!ROUTER_ADDRESS) {
     throw new Error(
-      "RT_ROUTER_ADDRESS is not set. Chain-broadcast tools (fund_problem, submit_solution, cast_vote, claim_payout) need the deployed Router address. Set it in your MCP server env; see RUNBOOK.md.",
+      "RT_FORGE_ADDRESS is not set. Chain-broadcast tools (fund_problem, submit_solution, cast_vote, claim_payout) need the deployed Router address. Set it in your MCP server env; see RUNBOOK.md.",
     );
   }
   return { router: ROUTER_ADDRESS, rpc: RPC_URL, chainId: CHAIN_ID };
@@ -524,7 +529,7 @@ server.tool(
         });
 
         const txHash = await broadcastCommit(walletClient, {
-          routerAddress: env.router,
+          forgeAddress: env.router,
           intent: td.message,
           intentSig,
           permit,
@@ -666,7 +671,7 @@ server.tool(
         });
 
         const txHash = await broadcastVote(walletClient, {
-          routerAddress: env.router,
+          forgeAddress: env.router,
           intent: td.message,
           intentSig,
           permit,
@@ -687,7 +692,7 @@ server.tool(
 
 server.tool(
   "fund_problem",
-  "Fund a problem via the Router flow: preflight → sign FundIntent → POST /fund → USDC permit → Router.fund() on-chain. Adds to the problem's bounty pool. Amount is in human USDC (e.g. '1.5' = 1.5 USDC, 1500000 wei at 6dp). Minimum 1 USDC (L2 floor).",
+  "Fund a problem via RezonForge v2.5 flow: preflight → sign Sponsor or Cosponsor intent (auto-detected from preflight.mode) → POST /fund → USDC permit → broadcast sponsor()/cosponsor(). The first contributor of an OPEN question signs SponsorIntent (binds per-Q params on-chain); subsequent contributors sign CosponsorIntent (params inherited from chain state). Amount is in human USDC (e.g. '1.5' = 1.5 USDC, 1500000 wei at 6dp).",
   {
     problem_id: z.string().describe("The problem ID to fund"),
     amount: z
@@ -710,40 +715,84 @@ server.tool(
         )) as FundPreflight;
 
         const amountWei = parseAmountToWei(params.amount, pre.token.decimals);
-        const td = buildFundIntentTypedData({
-          preflight: pre,
-          funder: address,
-          amountWei,
-        });
-        const intentSig = (await privateKeyToAccount(privateKey).signTypedData(
-          td,
-        )) as Hex;
+        const account = privateKeyToAccount(privateKey);
 
-        const fundResp = (await apiCall(
-          "POST",
-          `/v1/problems/${params.problem_id}/fund`,
-          buildFundRequestBody({ typedData: td, signature: intentSig }),
-        )) as { intent_hash: string; contribution_id: string };
+        // Per-contribution feeShares default to none — the funder's
+        // share of pool revenue is captured implicitly by the contract's
+        // first-sponsor accounting. Power users wanting custom splits
+        // can call /v1/problems/:id/fund directly.
+        const fundResp = await (async () => {
+          if (pre.mode === "sponsor") {
+            const td = buildSponsorIntentTypedData({
+              preflight: pre,
+              sponsor: address,
+              amountWei,
+              feeShareBps: 0n,
+              feeShares: [],
+            });
+            const intentSig = (await account.signTypedData(td)) as Hex;
 
-        const permit = await signUSDCPermit(walletClient, publicClient, {
-          usdc: USDC_ADDRESS,
-          spender: env.router,
-          value: amountWei,
-          deadline: td.message.expiresAt,
-        });
+            const resp = (await apiCall(
+              "POST",
+              `/v1/problems/${params.problem_id}/fund`,
+              buildSponsorFundRequestBody({ typedData: td, signature: intentSig }),
+            )) as { intent_hash: string; contribution_id: string };
 
-        const txHash = await broadcastFund(walletClient, {
-          routerAddress: env.router,
-          intent: td.message,
-          intentSig,
-          permit,
-        });
-        await awaitReceipt(publicClient, txHash);
+            const permit = await signUSDCPermit(walletClient, publicClient, {
+              usdc: USDC_ADDRESS,
+              spender: env.router,
+              value: amountWei,
+              deadline: td.message.expiresAt,
+            });
+
+            const txHash = await broadcastSponsor(walletClient, {
+              forgeAddress: env.router,
+              intent: td.message,
+              intentSig,
+              permit,
+            });
+            await awaitReceipt(publicClient, txHash);
+            return { ...resp, txHash, mode: "sponsor" as const };
+          }
+
+          // mode === "cosponsor"
+          const td = buildCosponsorIntentTypedData({
+            preflight: pre,
+            sponsor: address,
+            amountWei,
+            feeShareBps: 0n,
+            feeShares: [],
+          });
+          const intentSig = (await account.signTypedData(td)) as Hex;
+
+          const resp = (await apiCall(
+            "POST",
+            `/v1/problems/${params.problem_id}/fund`,
+            buildCosponsorFundRequestBody({ typedData: td, signature: intentSig }),
+          )) as { intent_hash: string; contribution_id: string };
+
+          const permit = await signUSDCPermit(walletClient, publicClient, {
+            usdc: USDC_ADDRESS,
+            spender: env.router,
+            value: amountWei,
+            deadline: td.message.expiresAt,
+          });
+
+          const txHash = await broadcastCosponsor(walletClient, {
+            forgeAddress: env.router,
+            intent: td.message,
+            intentSig,
+            permit,
+          });
+          await awaitReceipt(publicClient, txHash);
+          return { ...resp, txHash, mode: "cosponsor" as const };
+        })();
 
         return {
+          mode: fundResp.mode,
           contribution_id: fundResp.contribution_id,
           intent_hash: fundResp.intent_hash,
-          fund_tx_hash: txHash,
+          fund_tx_hash: fundResp.txHash,
           amount_wei: amountWei.toString(),
         };
       },
@@ -755,45 +804,114 @@ server.tool(
 
 server.tool(
   "claim_payout",
-  "Claim your share of a SETTLED question's payout pool. Requires the question_id (bytes32), your amount (uint256 wei), and the Merkle proof (array of 0x-prefixed 32-byte hex). For the one-leaf-takes-all bring-up case, proof is an empty array. Router verifies the proof against the stored root and transfers USDC on success.",
+  "Claim your share of a SETTLED problem's payout pool. Pass just problem_id — the tool fetches your role + amount + Merkle proof from GET /v1/problems/:id/claims/:address and broadcasts Router.claim. Optional question_id/amount_wei/proof overrides exist for power-user paths (manual settlement outside the standard pipeline). Router verifies the proof against the stored root and transfers USDC on success.",
   {
+    problem_id: z
+      .string()
+      .describe("The problem ID (prb_...) whose settled round you're claiming from"),
     question_id: z
       .string()
+      .optional()
       .describe(
-        "bytes32 question_id (0x-prefixed 66-char hex) — see problems.chain_question_id",
+        "Override: bytes32 question_id (0x-prefixed 66-char hex). If omitted, derived from backend.",
       ),
-    amount: z
+    amount_wei: z
       .string()
-      .describe("Your share amount in token wei (6dp for USDC)"),
+      .optional()
+      .describe(
+        "Override: amount in token wei (6dp for USDC). If omitted, derived from backend (USD decimal × 10^6, truncating sub-cent).",
+      ),
     proof: z
       .array(z.string())
+      .optional()
       .describe(
-        "Merkle proof as array of 0x-prefixed 32-byte hex strings; [] for single-leaf trees",
+        "Override: Merkle proof as array of 0x-prefixed 32-byte hex strings; [] for single-leaf trees. If omitted, derived from backend.",
       ),
   },
   async (params) => {
     const env = requireRouterEnv();
     const { walletClient, publicClient, address } = getClients();
 
+    let questionId: Hex;
+    let amountWei: bigint;
+    let proof: Hex[];
+    let role = "override";
+
+    const fullOverride =
+      params.question_id !== undefined &&
+      params.amount_wei !== undefined &&
+      params.proof !== undefined;
+
+    if (fullOverride) {
+      // Power-user path: caller supplies all three. Used for manual
+      // settlements that didn't go through the standard pipeline.
+      questionId = params.question_id as Hex;
+      amountWei = BigInt(params.amount_wei!);
+      proof = params.proof as Hex[];
+    } else {
+      // Default path: derive everything from the backend's claim
+      // endpoint (R-API-FOR-AGENTS — the API teaches the agent what
+      // to send to chain). Backend rebuilds the Merkle tree from
+      // the persisted RoundResult and returns the proof for this
+      // address; amount is in USD decimal so we shift to USDC 6dp
+      // wei to match the on-chain leaf encoding.
+      const claim = (await apiCall(
+        "GET",
+        `/v1/problems/${params.problem_id}/claims/${address}`,
+      )) as {
+        question_id: string | null;
+        role: string;
+        amount: string;
+        proof: string[];
+        merkle_root: string | null;
+      };
+
+      if (!claim.question_id) {
+        throw new Error(
+          `Problem ${params.problem_id} has no chain_question_id yet — round may not be funded on-chain.`,
+        );
+      }
+      if (claim.role === "none") {
+        throw new Error(
+          `Address ${address} did not participate in problem ${params.problem_id}; nothing to claim.`,
+        );
+      }
+      if (!claim.merkle_root) {
+        throw new Error(
+          `Round for problem ${params.problem_id} is not yet settled on-chain — no merkle_root persisted. Wait for SettlementPublished, then retry.`,
+        );
+      }
+
+      questionId = claim.question_id as Hex;
+      amountWei = parseUnits(claim.amount as `${number}`, 6); // USDC 6dp
+      proof = claim.proof as Hex[];
+      role = claim.role;
+    }
+
     // Router enforces one claim per (qid, recipient) — a retry
-    // reverts RouterAlreadyClaimed. The cache keeps retries from
-    // hitting the on-chain revert when the first call's response
-    // was lost in transit, and replays the original tx_hash.
+    // reverts RouterAlreadyClaimed. The cache replays the original
+    // tx_hash when the first call's response was lost in transit.
     return withIdempotency(
       "claim_payout",
-      { addr: address, qid: params.question_id, amount: params.amount },
+      { addr: address, qid: questionId, amount: amountWei.toString() },
       async () => {
         const txHash = await broadcastClaim(walletClient, {
-          routerAddress: env.router,
-          questionId: params.question_id as Hex,
-          amount: BigInt(params.amount),
-          proof: params.proof as Hex[],
+          forgeAddress: env.router,
+          questionId,
+          amount: amountWei,
+          proof,
         });
         await awaitReceipt(publicClient, txHash);
         return {
           claim_tx_hash: txHash,
-          amount_wei: params.amount,
-          note: "Router emitted Claimed event; USDC transferred to your wallet.",
+          question_id: questionId,
+          amount_wei: amountWei.toString(),
+          role,
+          proof_length: proof.length,
+          note:
+            proof.length === 0
+              ? "Single-leaf tree (one-winner-takes-all); empty proof is correct."
+              : "Multi-leaf tree; Router verified proof against stored root.",
         };
       },
     );

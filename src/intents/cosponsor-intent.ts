@@ -89,7 +89,7 @@ export function buildCosponsorIntentTypedData(params: {
   return {
     domain: buildForgeDomain({
       chainId: params.preflight.chain_id,
-      routerAddress: params.preflight.router_address as `0x${string}`,
+      forgeAddress: params.preflight.forge_address as `0x${string}`,
     }),
     types: COSPONSOR_INTENT_TYPES,
     primaryType: "CosponsorIntent",

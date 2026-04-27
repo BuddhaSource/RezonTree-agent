@@ -112,7 +112,7 @@ export function buildCommitIntentTypedData(params: {
   return {
     domain: buildForgeDomain({
       chainId: params.preflight.chain_id,
-      routerAddress: params.preflight.router_address as `0x${string}`,
+      forgeAddress: params.preflight.forge_address as `0x${string}`,
     }),
     types: COMMIT_INTENT_TYPES,
     primaryType: "CommitIntent",

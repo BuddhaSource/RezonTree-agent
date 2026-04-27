@@ -9,10 +9,10 @@
 // byte-for-byte.
 //
 // The concrete `verifyingContract` is the deployed RezonForge address.
-// Operators set RT_ROUTER_ADDRESS / NEXT_PUBLIC_ROUTER_ADDRESS at
-// build time per environment (staging / mainnet); dev defaults to
-// the preflight response's `router_address` field at runtime,
-// avoiding a build-time hard-code in development.
+// Operators set RT_FORGE_ADDRESS / NEXT_PUBLIC_FORGE_ADDRESS at build
+// time per environment (staging / mainnet); dev defaults to the
+// preflight response's `forge_address` field at runtime, avoiding a
+// build-time hard-code in development.
 
 export const FORGE_DOMAIN_NAME = "RezonForge" as const;
 export const FORGE_DOMAIN_VERSION = "2.5" as const;
@@ -33,7 +33,7 @@ export interface ForgeIntentDomain {
  */
 export function buildForgeDomain(params: {
   chainId: number | bigint;
-  routerAddress: `0x${string}`;
+  forgeAddress: `0x${string}`;
 }): ForgeIntentDomain {
   const chainId =
     typeof params.chainId === "bigint"
@@ -43,6 +43,6 @@ export function buildForgeDomain(params: {
     name: FORGE_DOMAIN_NAME,
     version: FORGE_DOMAIN_VERSION,
     chainId,
-    verifyingContract: params.routerAddress,
+    verifyingContract: params.forgeAddress,
   };
 }

@@ -16,7 +16,7 @@
 #
 # Env (required, sourced from .env):
 #   RT_AGENT_MNEMONIC     (operator mnemonic, wallets 0/1/2 used)
-#   RT_ROUTER_ADDRESS     (deployed Router v2)
+#   RT_FORGE_ADDRESS     (deployed Router v2)
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -24,8 +24,8 @@ cd "$(dirname "$0")/.."
 # shellcheck disable=SC1091
 set -a; source .env; set +a
 
-export RT_ROUTER_ADDRESS="${RT_ROUTER_ADDRESS:-0x0BB8e006F6DF07ce634AA1d3C852c4f98493Aba6}"
-export RT_AGENT_DOMAIN_VERIFYING_CONTRACT="${RT_AGENT_DOMAIN_VERIFYING_CONTRACT:-$RT_ROUTER_ADDRESS}"
+export RT_FORGE_ADDRESS="${RT_FORGE_ADDRESS:-0x0BB8e006F6DF07ce634AA1d3C852c4f98493Aba6}"
+export RT_AGENT_DOMAIN_VERIFYING_CONTRACT="${RT_AGENT_DOMAIN_VERIFYING_CONTRACT:-$RT_FORGE_ADDRESS}"
 export RT_RPC_URL="${RT_RPC_URL:-https://sepolia.base.org}"
 
 : "${RT_AGENT_MNEMONIC:?RT_AGENT_MNEMONIC required}"

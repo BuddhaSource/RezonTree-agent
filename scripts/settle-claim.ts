@@ -19,7 +19,7 @@
 //
 // Usage:
 //   RT_QID=0x... RT_WINNER_WALLET_INDEX=1 \
-//   RT_ROUTER_ADDRESS=0x... npx tsx scripts/settle-claim.ts
+//   RT_FORGE_ADDRESS=0x... npx tsx scripts/settle-claim.ts
 //
 // The oracle key is derived from RT_AGENT_MNEMONIC at path 0/0
 // (matches Router deploy — operator wallet is the oracle).
@@ -45,12 +45,12 @@ const RPC = process.env.RT_RPC_URL ?? "https://sepolia.base.org";
 const CHAIN_ID = 84532;
 const USDC = (process.env.RT_USDC_ADDRESS as Address) ??
   "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
-const ROUTER = process.env.RT_ROUTER_ADDRESS as Address | undefined;
+const ROUTER = process.env.RT_FORGE_ADDRESS as Address | undefined;
 const MNEMONIC = process.env.RT_AGENT_MNEMONIC;
 const QID = process.env.RT_QID as Hex | undefined;
 const WINNER_INDEX = Number.parseInt(process.env.RT_WINNER_WALLET_INDEX ?? "1", 10);
 
-if (!ROUTER) throw new Error("RT_ROUTER_ADDRESS required");
+if (!ROUTER) throw new Error("RT_FORGE_ADDRESS required");
 if (!MNEMONIC) throw new Error("RT_AGENT_MNEMONIC required");
 if (!QID) throw new Error("RT_QID required (the bytes32 question_id, e.g. captured from run-battle.ts output)");
 
@@ -122,14 +122,21 @@ async function main() {
   ok(`merkleRoot ${root}`);
 
   // Step 3 — sign SettlementIntent.
+  // Single-leaf tree → totalClaimable = poolAmount, sample = winner,
+  // proof = []. The contract verifies the sample proof against the
+  // root as a self-check at settle time.
   log("3/5", "sign SettlementIntent (oracle)");
   const now = Math.floor(Date.now() / 1000);
   const expiresAt = BigInt(now + DEFAULT_SETTLEMENT_TTL_SECONDS);
   const td = buildSettlementIntentTypedData({
-    routerAddress: ROUTER!,
+    forgeAddress: ROUTER!,
     chainId: CHAIN_ID,
     questionId: QID!,
     merkleRoot: root,
+    totalClaimable: poolAmount,
+    sampleRecipient: winner.address,
+    sampleAmount: poolAmount,
+    sampleProof: [],
     expiresAtSeconds: Number(expiresAt),
     nowSeconds: now,
   });
@@ -140,10 +147,16 @@ async function main() {
   // Step 4 — broadcast publishSettlement.
   log("4/5", "broadcast Router.publishSettlement");
   const settleTx = await broadcastPublishSettlement(oracleWallet, {
-    routerAddress: ROUTER!,
+    forgeAddress: ROUTER!,
     questionId: QID!,
     merkleRoot: root,
+    totalClaimable: poolAmount,
+    sampleRecipient: winner.address,
+    sampleAmount: poolAmount,
+    sampleProof: [],
     expiresAt,
+    slashedCommitHashes: [],
+    slashedVoteHashes: [],
     oracleSig,
   });
   info(`settle tx ${settleTx}`);
@@ -171,7 +184,7 @@ async function main() {
   // Single-leaf tree → empty proof.
   const proof: Hex[] = [];
   const claimTx = await broadcastClaim(winnerWallet, {
-    routerAddress: ROUTER!,
+    forgeAddress: ROUTER!,
     questionId: QID!,
     amount: poolAmount,
     proof,

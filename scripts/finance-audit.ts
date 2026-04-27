@@ -86,7 +86,7 @@ export interface ProblemRecord {
 export interface FinanceSnapshot {
   takenAtMs: number;
   walletBalances: Record<Address, bigint>;
-  routerTotalUsdc: bigint;
+  forgeTotalUsdc: bigint;
   pools: Record<Hex, bigint>;
   solutionBonds: Record<Hex, bigint>;
   voteBonds: Record<Hex, bigint>;
@@ -132,7 +132,7 @@ export interface AttackResult {
 export async function snapshotFinance(params: {
   publicClient: PublicClient;
   usdc: Address;
-  router: Address;
+  forge: Address;
   wallets: Address[];
   qids: Hex[];
   commitIntents: Hex[];
@@ -146,16 +146,16 @@ export async function snapshotFinance(params: {
       args: [addr],
     }) as Promise<bigint>,
   );
-  const routerTotalP = params.publicClient.readContract({
+  const forgeTotalP = params.publicClient.readContract({
     address: params.usdc,
     abi: erc20Abi,
     functionName: "balanceOf",
-    args: [params.router],
+    args: [params.forge],
   }) as Promise<bigint>;
 
   const poolCalls = params.qids.map((qid) =>
     params.publicClient.readContract({
-      address: params.router,
+      address: params.forge,
       abi: ROUTER_READ_ABI,
       functionName: "questions",
       args: [qid],
@@ -163,7 +163,7 @@ export async function snapshotFinance(params: {
   );
   const sBondCalls = params.commitIntents.map((h) =>
     params.publicClient.readContract({
-      address: params.router,
+      address: params.forge,
       abi: ROUTER_READ_ABI,
       functionName: "solutionBond",
       args: [h],
@@ -171,16 +171,16 @@ export async function snapshotFinance(params: {
   );
   const vBondCalls = params.voteIntents.map((h) =>
     params.publicClient.readContract({
-      address: params.router,
+      address: params.forge,
       abi: ROUTER_READ_ABI,
       functionName: "voteBond",
       args: [h],
     }) as Promise<bigint>,
   );
 
-  const [balances, routerTotal, poolStates, sBonds, vBonds] = await Promise.all([
+  const [balances, forgeTotal, poolStates, sBonds, vBonds] = await Promise.all([
     Promise.all(balanceCalls),
-    routerTotalP,
+    forgeTotalP,
     Promise.all(poolCalls),
     Promise.all(sBondCalls),
     Promise.all(vBondCalls),
@@ -208,11 +208,11 @@ export async function snapshotFinance(params: {
   return {
     takenAtMs: Date.now(),
     walletBalances,
-    routerTotalUsdc: routerTotal,
+    forgeTotalUsdc: forgeTotal,
     pools,
     solutionBonds,
     voteBonds,
-    totalUsdc: totalWallets + routerTotal,
+    totalUsdc: totalWallets + forgeTotal,
   };
 }
 

@@ -34,7 +34,7 @@
 
 version: 1
 chain: base-sepolia
-router_address_env: RT_ROUTER_ADDRESS
+forge_address_env: RT_FORGE_ADDRESS
 backend_url_env: RT_BACKEND_URL
 
 # Wallet pool — operator funds these BEFORE running the battle.

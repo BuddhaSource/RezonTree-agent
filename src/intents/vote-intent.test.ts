@@ -49,7 +49,7 @@ function preflight(overrides: Partial<VotePreflight> = {}): VotePreflight {
       symbol: "USDC",
       chain_id: 84532,
     },
-    router_address: ROUTER,
+    forge_address: ROUTER,
     chain_id: 84532,
     nonce_next: "3",
     _actions: [],

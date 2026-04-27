@@ -117,11 +117,11 @@ const CHAIN_ID = Number.parseInt(process.env.RT_CHAIN_ID ?? "84532", 10);
 const USDC =
   (process.env.RT_USDC_ADDRESS as Address) ??
   "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
-const ROUTER = process.env.RT_ROUTER_ADDRESS as Address | undefined;
+const FORGE = process.env.RT_FORGE_ADDRESS as Address | undefined;
 const MNEMONIC = process.env.RT_AGENT_MNEMONIC;
 const PLATFORM_FEE_BPS = BigInt(process.env.RT_PLATFORM_FEE_BPS ?? "1000");
 
-if (!ROUTER) throw new Error("RT_ROUTER_ADDRESS required");
+if (!FORGE) throw new Error("RT_FORGE_ADDRESS required");
 if (!MNEMONIC) throw new Error("RT_AGENT_MNEMONIC required");
 
 const c = {
@@ -289,7 +289,7 @@ class BattleRunner {
     return snapshotFinance({
       publicClient,
       usdc: USDC,
-      router: ROUTER!,
+      forge: FORGE!,
       wallets: this.actors.map((a) => a.address),
       qids: this.knownQids,
       commitIntents: this.knownCommits,
@@ -299,7 +299,7 @@ class BattleRunner {
 
   async run(): Promise<BattleAudit> {
     const startedAt = new Date().toISOString();
-    log("battle", c.bold(`backend ${BACKEND} | router ${ROUTER}`));
+    log("battle", c.bold(`backend ${BACKEND} | forge ${FORGE}`));
     info(`wallets: ${this.actors.map((a) => `${a.name}(${a.address.slice(0, 6)})`).join(", ")}`);
 
     this.startSnapshot = await this.snap();
@@ -436,13 +436,13 @@ class BattleRunner {
       publicClient,
       {
         usdc: USDC,
-        spender: ROUTER!,
+        spender: FORGE!,
         value: sponsorAmountWei,
         deadline: sponsorTd.message.expiresAt,
       },
     );
     const sponsorTx = await broadcastSponsor(this.makeWalletClient(sponsorWallet), {
-      routerAddress: ROUTER!,
+      forgeAddress: FORGE!,
       intent: sponsorTd.message,
       intentSig: sponsorSig,
       permit: sponsorPermit,
@@ -482,10 +482,10 @@ class BattleRunner {
       const permit = await signUSDCPermit(
         this.makeWalletClient(wallet),
         publicClient,
-        { usdc: USDC, spender: ROUTER!, value: amountWei, deadline: td.message.expiresAt },
+        { usdc: USDC, spender: FORGE!, value: amountWei, deadline: td.message.expiresAt },
       );
       const tx = await broadcastCosponsor(this.makeWalletClient(wallet), {
-        routerAddress: ROUTER!,
+        forgeAddress: FORGE!,
         intent: td.message,
         intentSig: sig,
         permit,
@@ -546,10 +546,10 @@ class BattleRunner {
       const permit = await signUSDCPermit(
         this.makeWalletClient(wallet),
         publicClient,
-        { usdc: USDC, spender: ROUTER!, value: fee + bond, deadline: td.message.expiresAt },
+        { usdc: USDC, spender: FORGE!, value: fee + bond, deadline: td.message.expiresAt },
       );
       const tx = await broadcastCommit(this.makeWalletClient(wallet), {
-        routerAddress: ROUTER!,
+        forgeAddress: FORGE!,
         intent: td.message,
         intentSig: sig,
         permit,
@@ -625,10 +625,10 @@ class BattleRunner {
       const permit = await signUSDCPermit(
         this.makeWalletClient(wallet),
         publicClient,
-        { usdc: USDC, spender: ROUTER!, value: fee + bond, deadline: td.message.expiresAt },
+        { usdc: USDC, spender: FORGE!, value: fee + bond, deadline: td.message.expiresAt },
       );
       const tx = await broadcastVote(this.makeWalletClient(wallet), {
-        routerAddress: ROUTER!,
+        forgeAddress: FORGE!,
         intent: td.message,
         intentSig: sig,
         permit,
@@ -647,7 +647,7 @@ class BattleRunner {
     const feeWallet = this.wallets["operator"]; // operator doubles as fee_wallet for the demo
 
     const qState = (await publicClient.readContract({
-      address: ROUTER!,
+      address: FORGE!,
       abi: ROUTER_READ_ABI,
       functionName: "questions",
       args: [qid],
@@ -666,7 +666,7 @@ class BattleRunner {
     // contract verifies the sample proof against the root so any
     // tree-root mismatch is caught at settle time.
     const settleTd = buildSettlementIntentTypedData({
-      routerAddress: ROUTER!,
+      forgeAddress: FORGE!,
       chainId: CHAIN_ID,
       questionId: qid,
       merkleRoot: root,
@@ -680,7 +680,7 @@ class BattleRunner {
     });
     const oracleSig = (await privateKeyToAccount(oracle.privateKey).signTypedData(settleTd)) as Hex;
     const settleTx = await broadcastPublishSettlement(this.makeWalletClient(oracle), {
-      routerAddress: ROUTER!,
+      forgeAddress: FORGE!,
       questionId: qid,
       merkleRoot: root,
       totalClaimable: poolAmount,
@@ -698,7 +698,7 @@ class BattleRunner {
     // 7) Claim winner + fee.
     const winnerClient = this.makeWalletClient(this.wallets[s.intended_winner_profile]);
     const wTx = await broadcastClaim(winnerClient, {
-      routerAddress: ROUTER!,
+      forgeAddress: FORGE!,
       questionId: qid,
       amount: winnerAmount,
       proof: winnerProof,
@@ -707,7 +707,7 @@ class BattleRunner {
     ok(`claim winner ${fmtUsdc6(winnerAmount)} USDC`);
     const feeClient = this.makeWalletClient(feeWallet);
     const fTx = await broadcastClaim(feeClient, {
-      routerAddress: ROUTER!,
+      forgeAddress: FORGE!,
       questionId: qid,
       amount: feeAmount,
       proof: feeProof,
@@ -723,7 +723,7 @@ class BattleRunner {
     let bondsRefunded = 0n;
     {
       const tx = await winnerClient.writeContract({
-        address: ROUTER!,
+        address: FORGE!,
         abi: REZON_FORGE_ABI,
         functionName: "claimSolutionBond",
         args: [qid, winnerInfo.intentHash],
@@ -737,7 +737,7 @@ class BattleRunner {
       const v = votesByLetter[voterLetter];
       const wc = this.makeWalletClient(this.wallets[voterLetter]);
       const tx = await wc.writeContract({
-        address: ROUTER!,
+        address: FORGE!,
         abi: REZON_FORGE_ABI,
         functionName: "claimVoteBond",
         args: [qid, v.intentHash],
@@ -761,7 +761,7 @@ class BattleRunner {
     // pattern used by finance-audit so the type checker doesn't
     // see "solutionBond"/"voteBond" as outside REZON_FORGE_ABI.
     const finalQ = (await publicClient.readContract({
-      address: ROUTER!,
+      address: FORGE!,
       abi: ROUTER_READ_ABI,
       functionName: "questions",
       args: [qid],
@@ -769,7 +769,7 @@ class BattleRunner {
     let finalSBonds = 0n;
     for (const v of Object.values(solutionsByLetter)) {
       const b = (await publicClient.readContract({
-        address: ROUTER!,
+        address: FORGE!,
         abi: ROUTER_READ_ABI,
         functionName: "solutionBond",
         args: [v.intentHash],
@@ -779,7 +779,7 @@ class BattleRunner {
     let finalVBonds = 0n;
     for (const v of Object.values(votesByLetter)) {
       const b = (await publicClient.readContract({
-        address: ROUTER!,
+        address: FORGE!,
         abi: ROUTER_READ_ABI,
         functionName: "voteBond",
         args: [v.intentHash],
@@ -923,13 +923,13 @@ class BattleRunner {
             publicClient,
             {
               usdc: USDC,
-              spender: ROUTER!,
+              spender: FORGE!,
               value: BigInt(td.message.feeAmount) + subFloor,
               deadline: td.message.expiresAt,
             },
           );
           await broadcastCommit(this.makeWalletClient(this.wallets["mallory"]), {
-            routerAddress: ROUTER!,
+            forgeAddress: FORGE!,
             intent: td.message,
             intentSig: sig,
             permit,
@@ -972,13 +972,13 @@ class BattleRunner {
         publicClient,
         {
           usdc: USDC,
-          spender: ROUTER!,
+          spender: FORGE!,
           value: td.message.amount,
           deadline: td.message.expiresAt,
         },
       );
       const tx = await broadcastSponsor(this.makeWalletClient(this.wallets["alice"]), {
-        routerAddress: ROUTER!,
+        forgeAddress: FORGE!,
         intent: td.message,
         intentSig: sig,
         permit,
@@ -987,7 +987,7 @@ class BattleRunner {
       // Now try to broadcast the SAME intent again.
       try {
         await broadcastSponsor(this.makeWalletClient(this.wallets["alice"]), {
-          routerAddress: ROUTER!,
+          forgeAddress: FORGE!,
           intent: td.message,
           intentSig: sig,
           permit,
@@ -1021,7 +1021,7 @@ class BattleRunner {
       const fakeProof: Hex[] = [];
       try {
         await broadcastClaim(this.makeWalletClient(this.wallets["mallory"]), {
-          routerAddress: ROUTER!,
+          forgeAddress: FORGE!,
           questionId: fakeQid,
           amount: parseAmountToWei("1", 6),
           proof: fakeProof,
@@ -1093,10 +1093,10 @@ class BattleRunner {
     const permit = await signUSDCPermit(
       this.makeWalletClient(authed.wallet),
       publicClient,
-      { usdc: USDC, spender: ROUTER!, value: amountWei, deadline: td.message.expiresAt },
+      { usdc: USDC, spender: FORGE!, value: amountWei, deadline: td.message.expiresAt },
     );
     const tx = await broadcastSponsor(this.makeWalletClient(authed.wallet), {
-      routerAddress: ROUTER!,
+      forgeAddress: FORGE!,
       intent: td.message,
       intentSig: sig,
       permit,

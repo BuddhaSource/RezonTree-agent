@@ -87,6 +87,11 @@ export interface SponsorIntentTypedData {
 // latency, well under the backend's MaxPermitTTL of 15 min.
 export const DEFAULT_SPONSOR_TTL_SECONDS = 10 * 60;
 
+// MAX_BOND_BASIS_POINTS mirrors RezonForge.MAX_BOND_BASIS_POINTS
+// (5000 bps = 50%). Exceeding it reverts on-chain; mirror as a hard
+// cap in the off-chain validator.
+export const MAX_BOND_BASIS_POINTS = 5000n;
+
 // ── Builder ──────────────────────────────────────────────────────
 
 export function buildSponsorIntentTypedData(params: {
@@ -135,10 +140,31 @@ export function buildSponsorIntentTypedData(params: {
     params.abandonmentGracePeriod ??
     BigInt(params.preflight.abandonment_grace_period ?? "0");
 
+  // ─── Contract-mirroring fence (mega-audit T2) ────────────────
+  // R2-EB-1 / F15 / bondBasisPoints cap match RezonForge.sol guards
+  // exactly. Rejecting here costs zero gas; signing-then-reverting
+  // costs one wasted broadcast. Keep parity with Go signer
+  // (internal/signer/sponsor_intent.go Validate) and Solidity guards.
+  if (minSponsorship <= 0n) {
+    throw new Error(
+      "sponsor intent: minSponsorship must be > 0 (chain reverts ForgeZeroMinSponsorship per R2-EB-1)",
+    );
+  }
+  if (voteFee === 0n && minBondFloor === 0n) {
+    throw new Error(
+      "sponsor intent: voteFee > 0 OR minBondFloor > 0 required (chain reverts ForgeZeroEconomicFloor per F15)",
+    );
+  }
+  if (bondBasisPoints > MAX_BOND_BASIS_POINTS) {
+    throw new Error(
+      `sponsor intent: bondBasisPoints ${bondBasisPoints} exceeds max ${MAX_BOND_BASIS_POINTS} (chain reverts on >5000)`,
+    );
+  }
+
   return {
     domain: buildForgeDomain({
       chainId: params.preflight.chain_id,
-      routerAddress: params.preflight.router_address as `0x${string}`,
+      forgeAddress: params.preflight.forge_address as `0x${string}`,
     }),
     types: SPONSOR_INTENT_TYPES,
     primaryType: "SponsorIntent",

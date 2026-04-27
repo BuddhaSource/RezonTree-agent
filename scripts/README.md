@@ -100,7 +100,7 @@ scenario shows up in `perProblem` with `notes`.
 
 All scripts source `.env` for:
 - `RT_AGENT_MNEMONIC` — operator BIP-44 mnemonic (wallets 0..N derived)
-- `RT_ROUTER_ADDRESS` — RezonForge v2.5 deploy address on Base Sepolia
+- `RT_FORGE_ADDRESS` — RezonForge v2.5 deploy address on Base Sepolia
 - `RT_RPC_URL` — defaults to `https://sepolia.base.org`
 - `RT_BACKEND_URL` — defaults to `http://localhost:8080`
 - `RT_PLATFORM_FEE_BPS` — settlement fee in basis points (default 1000 = 10%)
