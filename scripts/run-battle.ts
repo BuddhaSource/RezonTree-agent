@@ -242,6 +242,40 @@ async function call<T = unknown>(
   return parsed as T;
 }
 
+// makeSolutionBody returns a >=1000-char synthetic solution body.
+// Backend's MinSolutionSummaryChars (Phase C) guards against drive-
+// by submissions; smoke runs need a body that satisfies the floor
+// without reading like noise. This template hits ~1100 chars.
+function makeSolutionBody(solver: string, scenarioId: string): string {
+  return [
+    `Solution by ${solver} for scenario ${scenarioId}.`,
+    "Approach: dual-write the new column behind an application flag while shadow-",
+    "filling rows in chunks of 10k via a background job. Reads tolerate NULL during",
+    "the fill window; writes go to both columns. Once shadow-fill completes the",
+    "constraint is added with NOT VALID and validated separately so the validation",
+    "scan does not block writers (Postgres > 12 pattern, see ALTER TABLE ... VALIDATE",
+    "CONSTRAINT semantics).",
+    "",
+    "Evidence: this is the canonical Strangler approach — Stripe's CHECK-then-VALIDATE",
+    "post on Skycfg, GitHub's gh-ost playbooks, and pgsql-hackers archives all",
+    "converge on shadow-fill + validate-without-lock. Skipping NOT VALID forces a",
+    "full table scan under AccessExclusiveLock; the wedge here is hours of write",
+    "downtime on a 50M-row table.",
+    "",
+    "Edge cases: backfill must respect FOR UPDATE SKIP LOCKED so concurrent app",
+    "writes do not deadlock with the chunker; an idempotent UPSERT pattern lets",
+    "the chunker re-run without producing duplicates if interrupted; readers must",
+    "treat NULL as 'not yet migrated' and not silently coerce. Replication slot",
+    "headroom must be monitored — long backfill batches inflate WAL retention and",
+    "can fill the slot's reserved disk.",
+    "",
+    "Why-not alternatives: pg_repack rewrites the whole table (acceptable but slow",
+    "and leaves replicas behind); ALTER TABLE ... SET DEFAULT in PG11+ rewrites",
+    "the column metadata only — but that does not satisfy NOT NULL when historical",
+    "rows are present.",
+  ].join("\n");
+}
+
 // ── Finance helpers ──────────────────────────────────────────────
 
 const publicClient = createPublicClient({ transport: http(RPC) });
@@ -505,7 +539,7 @@ class BattleRunner {
         "GET",
         `/v1/problems/${problem.id}/commit/preflight?submitter=${sa.address}`,
       );
-      const body = `Solution by ${solverLetter} for ${s.id}: argued from first principles.`;
+      const body = makeSolutionBody(solverLetter, s.id);
       const contentHash = computeContentHash(body);
       const td = buildCommitIntentTypedData({
         preflight: commitPre,
@@ -528,7 +562,12 @@ class BattleRunner {
           intent_hash: intentResp.intent_hash,
           summary: body,
           reasoning_tree: [
-            { because: `${solverLetter}'s grounding`, therefore: "the answer follows" },
+            { because: `${solverLetter} examined the live workload first`, therefore: "ALTER TABLE without NOT VALID would lock writers for the validation scan" },
+            { because: "Validation scan walks every row at AccessExclusiveLock", therefore: "use ADD CONSTRAINT … NOT VALID then VALIDATE CONSTRAINT separately" },
+            { because: "VALIDATE CONSTRAINT acquires only ShareUpdateExclusiveLock", therefore: "concurrent writers can keep going while the constraint is verified" },
+            { because: "New rows must satisfy NOT NULL from the moment of cutover", therefore: "wire dual-write through the application before the constraint flips" },
+            { because: "Backfill chunks must not deadlock with live writers", therefore: "use SELECT FOR UPDATE SKIP LOCKED with idempotent UPSERTs in 10k-row batches" },
+            { because: "Replication slots inflate WAL during long backfills", therefore: "monitor pg_replication_slots and pause if the slot retention nears disk" },
           ],
           claims: s.success_criteria.map((sc, i) => ({
             criterion_id: problem.success_criteria[i].id,
@@ -646,13 +685,21 @@ class BattleRunner {
     void oracleAuth;
     const feeWallet = this.wallets["operator"]; // operator doubles as fee_wallet for the demo
 
+    // QuestionState is 14 fields; we only need poolAmount (index 11).
+    // Indices match RezonForge.sol's struct declaration order — see
+    // ROUTER_READ_ABI in finance-audit.ts.
     const qState = (await publicClient.readContract({
       address: FORGE!,
       abi: ROUTER_READ_ABI,
       functionName: "questions",
       args: [qid],
-    })) as readonly [number, Address, number, bigint, bigint];
-    const poolAmount = qState[3];
+    })) as readonly [
+      number, Address, Address, Address,
+      bigint, bigint, bigint, bigint, bigint,
+      number,
+      bigint, bigint, bigint, bigint,
+    ];
+    const poolAmount = qState[11];
     const feeAmount = (poolAmount * PLATFORM_FEE_BPS) / 10000n;
     const winnerAmount = poolAmount - feeAmount;
     const leaves: MerkleLeaf[] = [
@@ -765,7 +812,12 @@ class BattleRunner {
       abi: ROUTER_READ_ABI,
       functionName: "questions",
       args: [qid],
-    })) as readonly [number, Address, number, bigint, bigint];
+    })) as readonly [
+      number, Address, Address, Address,
+      bigint, bigint, bigint, bigint, bigint,
+      number,
+      bigint, bigint, bigint, bigint,
+    ];
     let finalSBonds = 0n;
     for (const v of Object.values(solutionsByLetter)) {
       const b = (await publicClient.readContract({
@@ -798,7 +850,8 @@ class BattleRunner {
       feeShareDistributedWei: 0n,
       protocolFeeWei: feeAmount,
     };
-    const audit = reconcileProblem(trace, finalQ[3], finalSBonds, finalVBonds);
+    // poolAmount is QuestionState's 12th field (0-indexed 11).
+    const audit = reconcileProblem(trace, finalQ[11], finalSBonds, finalVBonds);
     this.auditedScenarios.push(audit);
     if (audit.conserves) ok(`conserves ✓ (drift 0)`);
     else fail(`drift ${audit.drift.toString()} wei`);

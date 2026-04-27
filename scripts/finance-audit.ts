@@ -39,10 +39,19 @@ export const ROUTER_READ_ABI = [
     inputs: [{ name: "", type: "bytes32" }],
     outputs: [
       { name: "status", type: "uint8" },
-      { name: "tokenAddr", type: "address" },
+      { name: "token", type: "address" },
+      { name: "oracle", type: "address" },
+      { name: "sponsor", type: "address" },
+      { name: "minBondFloor", type: "uint256" },
+      { name: "bondBasisPoints", type: "uint256" },
+      { name: "minSponsorship", type: "uint256" },
+      { name: "voteFee", type: "uint256" },
+      { name: "abandonmentGracePeriod", type: "uint256" },
       { name: "solutionCount", type: "uint32" },
+      { name: "totalSponsorship", type: "uint256" },
       { name: "poolAmount", type: "uint256" },
       { name: "fundingDeadline", type: "uint256" },
+      { name: "totalClaimable", type: "uint256" },
     ],
   },
   {
@@ -194,7 +203,10 @@ export async function snapshotFinance(params: {
   }
   const pools: Record<Hex, bigint> = {};
   for (let i = 0; i < params.qids.length; i++) {
-    pools[params.qids[i]] = poolStates[i][3];
+    // poolAmount is the 12th field (0-indexed 11) of QuestionState —
+    // see RezonForge.sol struct declaration. Index drift here was
+    // the loop 0137 "uint256 in safe-int range" crash.
+    pools[params.qids[i]] = poolStates[i][11];
   }
   const solutionBonds: Record<Hex, bigint> = {};
   for (let i = 0; i < params.commitIntents.length; i++) {

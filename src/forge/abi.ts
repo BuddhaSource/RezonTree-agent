@@ -185,21 +185,30 @@ export const REZON_FORGE_ABI = [
     outputs: [],
   },
 
-  // ── publishSettlement(bytes32 qid, bytes32 merkleRoot,
-  //    uint256 expiresAt, bytes32[] slashedCommitHashes,
-  //    bytes32[] slashedVoteHashes, bytes oracleSig) ──────────
+  // ── publishSettlement(SettlementIntent intent, bytes oracleSig) ──
   // Oracle-only. Exposed to the SDK so an operator can run a
-  // manual settle-claim cycle.
+  // manual settle-claim cycle. Field order mirrors RezonForge.sol's
+  // SettlementIntent struct exactly.
   {
     type: "function",
     name: "publishSettlement",
     stateMutability: "nonpayable",
     inputs: [
-      { name: "questionId", type: "bytes32" },
-      { name: "merkleRoot", type: "bytes32" },
-      { name: "expiresAt", type: "uint256" },
-      { name: "slashedCommitHashes", type: "bytes32[]" },
-      { name: "slashedVoteHashes", type: "bytes32[]" },
+      {
+        name: "intent",
+        type: "tuple",
+        components: [
+          { name: "questionId", type: "bytes32" },
+          { name: "merkleRoot", type: "bytes32" },
+          { name: "totalClaimable", type: "uint256" },
+          { name: "sampleRecipient", type: "address" },
+          { name: "sampleAmount", type: "uint256" },
+          { name: "sampleProof", type: "bytes32[]" },
+          { name: "expiresAt", type: "uint256" },
+          { name: "slashedCommitHashes", type: "bytes32[]" },
+          { name: "slashedVoteHashes", type: "bytes32[]" },
+        ],
+      },
       { name: "oracleSig", type: "bytes" },
     ],
     outputs: [],
@@ -207,7 +216,11 @@ export const REZON_FORGE_ABI = [
 
   // ── questions(bytes32) view returns (QuestionState) ─────────
   // Used to read poolAmount before publishing settlement. Fields
-  // match RezonForge.sol's QuestionState in declaration order.
+  // match RezonForge.sol's QuestionState in declaration order. The
+  // public mapping getter returns all 14 fields as a flat tuple, so
+  // every field must be enumerated in source-order or the
+  // calldata/return decoding misaligns and viem coerces a misread
+  // uint256 chunk into Number — out-of-safe-range crash.
   {
     type: "function",
     name: "questions",
@@ -215,10 +228,19 @@ export const REZON_FORGE_ABI = [
     inputs: [{ name: "", type: "bytes32" }],
     outputs: [
       { name: "status", type: "uint8" },
-      { name: "tokenAddr", type: "address" },
+      { name: "token", type: "address" },
+      { name: "oracle", type: "address" },
+      { name: "sponsor", type: "address" },
+      { name: "minBondFloor", type: "uint256" },
+      { name: "bondBasisPoints", type: "uint256" },
+      { name: "minSponsorship", type: "uint256" },
+      { name: "voteFee", type: "uint256" },
+      { name: "abandonmentGracePeriod", type: "uint256" },
       { name: "solutionCount", type: "uint32" },
+      { name: "totalSponsorship", type: "uint256" },
       { name: "poolAmount", type: "uint256" },
       { name: "fundingDeadline", type: "uint256" },
+      { name: "totalClaimable", type: "uint256" },
     ],
   },
 
