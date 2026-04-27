@@ -1,31 +1,23 @@
 // vote-intent.ts — VoteIntent EIP-712 typed-data + POST body
-// builders (loop 0068). Mirrors Commit (loop 0067) with
-// allocationsHash replacing contentHash.
+// builders for RezonForge v2.5 (10-field — extends v2.4's 8-field
+// shape with feeShareBps + feeShares).
 //
-// Struct must match backend's internal/signer/vote_intent.go
-// byte-for-byte:
+// Pinned typehash:
+//   VoteIntent(bytes32 questionId,address voter,bytes32 allocationsHash,
+//     uint256 feeAmount,uint256 bondAmount,uint256 feeShareBps,
+//     FeeShare[] feeShares,uint256 nonce,uint256 chainId,
+//     uint256 expiresAt)
+//   FeeShare(address recipient,uint256 basisPoints)
 //
-//   VoteIntent(
-//     bytes32 questionId,
-//     address voter,
-//     bytes32 allocationsHash,
-//     uint256 feeAmount,
-//     uint256 bondAmount,
-//     uint256 nonce,
-//     uint256 chainId,
-//     uint256 expiresAt
-//   )
+// Mirrors contracts/src/RezonForge.sol's VOTE_INTENT_TYPEHASH +
+// internal/signer/vote_intent.go +
+// RezonTree-UI/lib/intents/vote-intent.ts byte-for-byte.
 //
 // ─── ALLOCATIONS CANONICAL ENCODING ─────────────────────────────
 //
-// The backend + Router v2 accept `allocationsHash` as an opaque
+// The backend + RezonForge accept `allocationsHash` as an opaque
 // bytes32 — neither defines the "canonical allocations encoding"
-// the hash preimage uses. This file is the first concrete
-// implementation, so it ESTABLISHES that encoding for all future
-// cross-language consumers (agent SDK, potential indexer
-// recomputation, analytics).
-//
-// Canonical encoding, frozen here:
+// the hash preimage uses. Encoding is frozen here:
 //
 //   1. Allocations are an array of {solution_id, points} objects.
 //   2. Sort ASCENDING by solution_id (UTF-16 codepoint compare,
@@ -38,28 +30,36 @@
 //   5. keccak256 of those bytes → the 32-byte allocationsHash.
 //
 // Whoever recomputes the hash (backend audit, SDK, indexer) MUST
-// follow these rules byte-for-byte. Pinned against a vector in
-// tests/unit/vote-intent.test.ts to fence drift.
+// follow these rules byte-for-byte. Pinned against a vector in the
+// test suite to fence drift.
 //
+// R-CHAIN-VERIFIES-INTENT — RezonForge verifies this signature.
 // R-CLIENT-IS-TRUST-ORIGIN — client hashes + signs; server never
 // rewrites what the user agreed to.
 
 import { keccak256, toBytes } from "viem";
 import {
-  buildRouterDomain,
-  type RouterIntentDomain,
-} from "./router-domain.js";
+  buildForgeDomain,
+  type ForgeIntentDomain,
+} from "./forge-domain.js";
+import type { FeeShare } from "./fee-share.js";
 import type { VotePreflight } from "./preflight-types.js";
 
 // ── Typed-data primitives ────────────────────────────────────────
 
 export const VOTE_INTENT_TYPES = {
+  FeeShare: [
+    { name: "recipient", type: "address" },
+    { name: "basisPoints", type: "uint256" },
+  ],
   VoteIntent: [
     { name: "questionId", type: "bytes32" },
     { name: "voter", type: "address" },
     { name: "allocationsHash", type: "bytes32" },
     { name: "feeAmount", type: "uint256" },
     { name: "bondAmount", type: "uint256" },
+    { name: "feeShareBps", type: "uint256" },
+    { name: "feeShares", type: "FeeShare[]" },
     { name: "nonce", type: "uint256" },
     { name: "chainId", type: "uint256" },
     { name: "expiresAt", type: "uint256" },
@@ -72,13 +72,15 @@ export interface VoteIntentMessage {
   allocationsHash: `0x${string}`;
   feeAmount: bigint;
   bondAmount: bigint;
+  feeShareBps: bigint;
+  feeShares: FeeShare[];
   nonce: bigint;
   chainId: bigint;
   expiresAt: bigint;
 }
 
 export interface VoteIntentTypedData {
-  domain: RouterIntentDomain;
+  domain: ForgeIntentDomain;
   types: typeof VOTE_INTENT_TYPES;
   primaryType: "VoteIntent";
   message: VoteIntentMessage;
@@ -163,6 +165,8 @@ export function buildVoteIntentTypedData(params: {
   preflight: VotePreflight;
   voter: `0x${string}`;
   allocationsHash: `0x${string}`;
+  feeShareBps: bigint;
+  feeShares: FeeShare[];
   feeWei?: bigint;
   bondWei?: bigint;
   expiresAtSeconds?: number;
@@ -177,7 +181,7 @@ export function buildVoteIntentTypedData(params: {
     params.bondWei ?? BigInt(params.preflight.recommended_bond || "0");
 
   return {
-    domain: buildRouterDomain({
+    domain: buildForgeDomain({
       chainId: params.preflight.chain_id,
       routerAddress: params.preflight.router_address as `0x${string}`,
     }),
@@ -189,6 +193,8 @@ export function buildVoteIntentTypedData(params: {
       allocationsHash: params.allocationsHash,
       feeAmount: fee,
       bondAmount: bond,
+      feeShareBps: params.feeShareBps,
+      feeShares: params.feeShares,
       nonce,
       chainId: BigInt(params.preflight.chain_id),
       expiresAt: BigInt(ttl),
@@ -203,9 +209,7 @@ export function buildVoteIntentTypedData(params: {
 // alongside the `allocations_hash`. The backend recomputes the
 // canonical-form hash from `allocations` and rejects on mismatch,
 // preventing the sign-hash-but-display-different-data class of
-// attack. Callers MUST send the same allocations the UI hashed +
-// signed over; any divergence fails server-side validation with
-// a teaching action.
+// attack.
 
 export interface SubmitVoteIntentRequestBody {
   question_id: string;
@@ -214,6 +218,8 @@ export interface SubmitVoteIntentRequestBody {
   allocations: Allocation[];
   fee_amount: string;
   bond_amount: string;
+  fee_share_bps: string;
+  fee_shares: { recipient: string; basis_points: string }[];
   nonce: string;
   chain_id: string;
   expires_at: string;
@@ -233,6 +239,11 @@ export function buildSubmitVoteIntentRequestBody(params: {
     allocations: [...params.allocations],
     fee_amount: m.feeAmount.toString(),
     bond_amount: m.bondAmount.toString(),
+    fee_share_bps: m.feeShareBps.toString(),
+    fee_shares: m.feeShares.map((s) => ({
+      recipient: s.recipient,
+      basis_points: s.basisPoints.toString(),
+    })),
     nonce: m.nonce.toString(),
     chain_id: m.chainId.toString(),
     expires_at: m.expiresAt.toString(),

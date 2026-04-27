@@ -1,46 +1,49 @@
 // commit-intent.ts — CommitIntent EIP-712 typed-data + POST body
-// builders (loop 0067). Mirrors the Fund primitive (loop 0066)
-// with the added wrinkle that CommitIntent signs over a
-// `contentHash`, not the content itself. The solution body is
-// never signed — only its keccak256. The backend separately
-// asserts `keccak256(content) == intent.contentHash` on the
-// relevant content-submission path.
+// builders for RezonForge v2.5 (10-field — extends v2.4's 8-field
+// shape with feeShareBps + feeShares per migration 043).
 //
-// Struct must match backend's internal/signer/commit_intent.go
-// byte-for-byte:
+// CommitIntent signs over a `contentHash`, NOT the content body.
+// The body is POSTed separately to /v1/problems/:id/solutions; the
+// backend asserts `keccak256(content) == intent.contentHash` to
+// bind body to signature.
 //
-//   CommitIntent(
-//     bytes32 questionId,
-//     address submitter,
-//     bytes32 contentHash,
-//     uint256 feeAmount,
-//     uint256 bondAmount,
-//     uint256 nonce,
-//     uint256 chainId,
-//     uint256 expiresAt
-//   )
+// Pinned typehash:
+//   CommitIntent(bytes32 questionId,address submitter,bytes32 contentHash,
+//     uint256 feeAmount,uint256 bondAmount,uint256 feeShareBps,
+//     FeeShare[] feeShares,uint256 nonce,uint256 chainId,
+//     uint256 expiresAt)
+//   FeeShare(address recipient,uint256 basisPoints)
 //
-// Any drift → RouterBadSigner on-chain. Treat as schema contract.
+// Mirrors contracts/src/RezonForge.sol's COMMIT_INTENT_TYPEHASH +
+// internal/signer/commit_intent.go +
+// RezonTree-UI/lib/intents/commit-intent.ts byte-for-byte.
 //
-// R-CHAIN-VERIFIES-INTENT — Router v2 verifies this signature.
+// R-CHAIN-VERIFIES-INTENT — RezonForge verifies this signature.
 // R-INTENT-CARRIES-EXPIRY — ExpiresAt mandatory + short.
 
 import { keccak256, toBytes } from "viem";
 import {
-  buildRouterDomain,
-  type RouterIntentDomain,
-} from "./router-domain.js";
+  buildForgeDomain,
+  type ForgeIntentDomain,
+} from "./forge-domain.js";
+import type { FeeShare } from "./fee-share.js";
 import type { CommitPreflight } from "./preflight-types.js";
 
 // ── Typed-data primitives ────────────────────────────────────────
 
 export const COMMIT_INTENT_TYPES = {
+  FeeShare: [
+    { name: "recipient", type: "address" },
+    { name: "basisPoints", type: "uint256" },
+  ],
   CommitIntent: [
     { name: "questionId", type: "bytes32" },
     { name: "submitter", type: "address" },
     { name: "contentHash", type: "bytes32" },
     { name: "feeAmount", type: "uint256" },
     { name: "bondAmount", type: "uint256" },
+    { name: "feeShareBps", type: "uint256" },
+    { name: "feeShares", type: "FeeShare[]" },
     { name: "nonce", type: "uint256" },
     { name: "chainId", type: "uint256" },
     { name: "expiresAt", type: "uint256" },
@@ -53,19 +56,20 @@ export interface CommitIntentMessage {
   contentHash: `0x${string}`;
   feeAmount: bigint;
   bondAmount: bigint;
+  feeShareBps: bigint;
+  feeShares: FeeShare[];
   nonce: bigint;
   chainId: bigint;
   expiresAt: bigint;
 }
 
 export interface CommitIntentTypedData {
-  domain: RouterIntentDomain;
+  domain: ForgeIntentDomain;
   types: typeof COMMIT_INTENT_TYPES;
   primaryType: "CommitIntent";
   message: CommitIntentMessage;
 }
 
-// ── TTL policy (shared with Fund) ────────────────────────────────
 export const DEFAULT_COMMIT_TTL_SECONDS = 10 * 60;
 
 // ── contentHash ──────────────────────────────────────────────────
@@ -90,6 +94,8 @@ export function buildCommitIntentTypedData(params: {
   preflight: CommitPreflight;
   submitter: `0x${string}`;
   contentHash: `0x${string}`;
+  feeShareBps: bigint;
+  feeShares: FeeShare[];
   feeWei?: bigint;
   bondWei?: bigint;
   expiresAtSeconds?: number;
@@ -104,7 +110,7 @@ export function buildCommitIntentTypedData(params: {
     params.bondWei ?? BigInt(params.preflight.recommended_bond || "0");
 
   return {
-    domain: buildRouterDomain({
+    domain: buildForgeDomain({
       chainId: params.preflight.chain_id,
       routerAddress: params.preflight.router_address as `0x${string}`,
     }),
@@ -116,6 +122,8 @@ export function buildCommitIntentTypedData(params: {
       contentHash: params.contentHash,
       feeAmount: fee,
       bondAmount: bond,
+      feeShareBps: params.feeShareBps,
+      feeShares: params.feeShares,
       nonce,
       chainId: BigInt(params.preflight.chain_id),
       expiresAt: BigInt(ttl),
@@ -134,6 +142,8 @@ export interface SubmitCommitRequestBody {
   content_hash: string;
   fee_amount: string;
   bond_amount: string;
+  fee_share_bps: string;
+  fee_shares: { recipient: string; basis_points: string }[];
   nonce: string;
   chain_id: string;
   expires_at: string;
@@ -151,6 +161,11 @@ export function buildSubmitCommitRequestBody(params: {
     content_hash: m.contentHash,
     fee_amount: m.feeAmount.toString(),
     bond_amount: m.bondAmount.toString(),
+    fee_share_bps: m.feeShareBps.toString(),
+    fee_shares: m.feeShares.map((s) => ({
+      recipient: s.recipient,
+      basis_points: s.basisPoints.toString(),
+    })),
     nonce: m.nonce.toString(),
     chain_id: m.chainId.toString(),
     expires_at: m.expiresAt.toString(),

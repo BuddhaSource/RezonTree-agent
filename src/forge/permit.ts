@@ -1,6 +1,6 @@
 // permit.ts — EIP-2612 USDC permit signer.
 //
-// Router v2's fund/commitSolution/castVote entries pull USDC from
+// RezonForge's fund/commitSolution/castVote entries pull USDC from
 // the caller's wallet via permit — a gasless authorization that
 // avoids the approve+transferFrom dance. The permit is a SEPARATE
 // signature from the VoteIntent/CommitIntent/FundIntent — Router
@@ -117,8 +117,13 @@ export async function signUSDCPermit(
     ],
   } as const;
 
+  // wallet.account narrowed at the guard on line 76 — the !owner check
+  // above already returned, so wallet.account is non-null here. TS
+  // can't narrow `wallet.account` from a check on `wallet.account?.address`
+  // alone, so we re-assert.
+  const account = wallet.account!;
   const signature = await wallet.signTypedData({
-    account: wallet.account,
+    account,
     domain: {
       name,
       version,

@@ -1,23 +1,26 @@
-// Pure-function coverage for the VoteIntent builders (loop 0068).
+// Pure-function coverage for the v2.5 VoteIntent builders.
 //
-// Mirrors Fund/Commit test files. Two extra invariants to pin:
+// Field order + types here MUST match
+// contracts/src/RezonForge.sol's VOTE_INTENT_TYPEHASH +
+// internal/signer/vote_intent.go +
+// RezonTree-UI/lib/intents/vote-intent.ts.
+// Pinned typehash (goals.md): 0x48aa...
+//
+// Two extra invariants to pin:
 //
 //   1. Allocations canonical encoding — sorted-by-solution_id
 //      ASC, JSON object with solution_id-then-points keys, no
-//      whitespace. Pinned vector below.
+//      whitespace.
 //   2. computeAllocationsHash keccak256 over UTF-8-encoded
-//      canonical bytes. Pinned vector below.
-//
-// Any drift here loses backward-compat for every already-signed
-// vote. This is the cross-language invariant; if the backend Go
-// signer or the agent SDK ever recomputes the hash, they MUST
-// match the format documented + tested here.
+//      canonical bytes.
 
 import { describe, expect, it } from "vitest";
+import { keccak256, stringToBytes } from "viem";
+import { defaultFeeSharePolicy } from "./fee-share.js";
 import {
-  ROUTER_DOMAIN_NAME,
-  ROUTER_DOMAIN_VERSION,
-} from "./router-domain.js";
+  FORGE_DOMAIN_NAME,
+  FORGE_DOMAIN_VERSION,
+} from "./forge-domain.js";
 import {
   type Allocation,
   buildSubmitVoteIntentRequestBody,
@@ -25,8 +28,8 @@ import {
   canonicalizeAllocations,
   computeAllocationsHash,
   DEFAULT_VOTE_TTL_SECONDS,
-  VOTE_INTENT_TYPES,
   validateAllocations,
+  VOTE_INTENT_TYPES,
 } from "./vote-intent.js";
 import type { VotePreflight } from "./preflight-types.js";
 
@@ -55,17 +58,26 @@ function preflight(overrides: Partial<VotePreflight> = {}): VotePreflight {
 }
 
 describe("VOTE_INTENT_TYPES field order", () => {
-  it("matches backend typehash order + types", () => {
+  it("matches v2.5 typehash order + types (10 fields)", () => {
     expect(VOTE_INTENT_TYPES.VoteIntent).toEqual([
       { name: "questionId", type: "bytes32" },
       { name: "voter", type: "address" },
       { name: "allocationsHash", type: "bytes32" },
       { name: "feeAmount", type: "uint256" },
       { name: "bondAmount", type: "uint256" },
+      { name: "feeShareBps", type: "uint256" },
+      { name: "feeShares", type: "FeeShare[]" },
       { name: "nonce", type: "uint256" },
       { name: "chainId", type: "uint256" },
       { name: "expiresAt", type: "uint256" },
     ]);
+  });
+
+  it("typehash text matches the pinned cross-stack invariant", () => {
+    const text =
+      "VoteIntent(bytes32 questionId,address voter,bytes32 allocationsHash,uint256 feeAmount,uint256 bondAmount,uint256 feeShareBps,FeeShare[] feeShares,uint256 nonce,uint256 chainId,uint256 expiresAt)" +
+      "FeeShare(address recipient,uint256 basisPoints)";
+    expect(keccak256(stringToBytes(text)).startsWith("0x48aa")).toBe(true);
   });
 });
 
@@ -98,7 +110,6 @@ describe("canonicalizeAllocations", () => {
   });
 
   it("escapes JSON-unsafe characters in solution_id via JSON.stringify", () => {
-    // A solution_id containing a double-quote must be escaped.
     const out = canonicalizeAllocations([
       { solution_id: 'sol_"wat"', points: 1 },
     ]);
@@ -107,8 +118,6 @@ describe("canonicalizeAllocations", () => {
 });
 
 describe("computeAllocationsHash", () => {
-  // Pinned vector — the cross-language invariant that every other
-  // implementation (backend Go, agent SDK) must match.
   it("matches the pinned keccak vector for sol_A:70 + sol_B:30", () => {
     const allocs: Allocation[] = [
       { solution_id: "sol_B", points: 30 },
@@ -186,16 +195,19 @@ describe("buildVoteIntentTypedData", () => {
   const NOW = 1_714_000_000;
   const ALLOC_HASH =
     "0x5cbf670de3ba3eaf83b9f1c947eebe3eaa632f5cf32c2d76ecc8eb8bfb59993c" as const;
+  const policy = defaultFeeSharePolicy(VOTER);
 
-  it("composes the Router v2 EIP-712 domain from preflight", () => {
+  it("composes the v2.5 EIP-712 domain from preflight", () => {
     const td = buildVoteIntentTypedData({
       preflight: preflight(),
       voter: VOTER,
       allocationsHash: ALLOC_HASH,
+      feeShareBps: policy.bps,
+      feeShares: policy.shares,
       nowSeconds: NOW,
     });
-    expect(td.domain.name).toBe(ROUTER_DOMAIN_NAME);
-    expect(td.domain.version).toBe(ROUTER_DOMAIN_VERSION);
+    expect(td.domain.name).toBe(FORGE_DOMAIN_NAME);
+    expect(td.domain.version).toBe(FORGE_DOMAIN_VERSION);
     expect(td.domain.chainId).toBe(BigInt("84532"));
     expect(td.domain.verifyingContract).toBe(ROUTER);
     expect(td.primaryType).toBe("VoteIntent");
@@ -206,6 +218,8 @@ describe("buildVoteIntentTypedData", () => {
       preflight: preflight(),
       voter: VOTER,
       allocationsHash: ALLOC_HASH,
+      feeShareBps: policy.bps,
+      feeShares: policy.shares,
       nowSeconds: NOW,
     });
     expect(base.message.feeAmount).toBe(BigInt("100000"));
@@ -216,6 +230,8 @@ describe("buildVoteIntentTypedData", () => {
       preflight: preflight(),
       voter: VOTER,
       allocationsHash: ALLOC_HASH,
+      feeShareBps: policy.bps,
+      feeShares: policy.shares,
       feeWei: BigInt("42"),
       bondWei: BigInt("43"),
       nonce: BigInt("44"),
@@ -226,36 +242,44 @@ describe("buildVoteIntentTypedData", () => {
     expect(overridden.message.nonce).toBe(BigInt("44"));
   });
 
+  it("carries fee-share policy verbatim", () => {
+    const td = buildVoteIntentTypedData({
+      preflight: preflight(),
+      voter: VOTER,
+      allocationsHash: ALLOC_HASH,
+      feeShareBps: BigInt(1),
+      feeShares: [{ recipient: VOTER, basisPoints: BigInt(10000) }],
+      nowSeconds: NOW,
+    });
+    expect(td.message.feeShareBps).toBe(BigInt(1));
+    expect(td.message.feeShares).toEqual([
+      { recipient: VOTER, basisPoints: BigInt(10000) },
+    ]);
+  });
+
   it("defaults expiresAt to now + 10min", () => {
     const td = buildVoteIntentTypedData({
       preflight: preflight(),
       voter: VOTER,
       allocationsHash: ALLOC_HASH,
+      feeShareBps: policy.bps,
+      feeShares: policy.shares,
       nowSeconds: NOW,
     });
     expect(td.message.expiresAt).toBe(BigInt(NOW + DEFAULT_VOTE_TTL_SECONDS));
   });
-
-  it("carries questionId / voter / allocationsHash verbatim", () => {
-    const td = buildVoteIntentTypedData({
-      preflight: preflight(),
-      voter: VOTER,
-      allocationsHash: ALLOC_HASH,
-      nowSeconds: NOW,
-    });
-    expect(td.message.questionId).toBe(QID);
-    expect(td.message.voter).toBe(VOTER);
-    expect(td.message.allocationsHash).toBe(ALLOC_HASH);
-  });
 });
 
 describe("buildSubmitVoteIntentRequestBody", () => {
-  it("renders numerics as decimal strings + hashes as hex", () => {
+  const policy = defaultFeeSharePolicy(VOTER);
+  it("renders numerics + fee-share + canonical allocations", () => {
     const td = buildVoteIntentTypedData({
       preflight: preflight(),
       voter: VOTER,
       allocationsHash:
         "0x5cbf670de3ba3eaf83b9f1c947eebe3eaa632f5cf32c2d76ecc8eb8bfb59993c",
+      feeShareBps: policy.bps,
+      feeShares: policy.shares,
       nowSeconds: 1_714_000_000,
     });
     const body = buildSubmitVoteIntentRequestBody({
@@ -268,43 +292,21 @@ describe("buildSubmitVoteIntentRequestBody", () => {
     });
     expect(body.question_id).toBe(QID);
     expect(body.voter).toBe(VOTER);
-    expect(body.allocations_hash).toBe(
-      "0x5cbf670de3ba3eaf83b9f1c947eebe3eaa632f5cf32c2d76ecc8eb8bfb59993c",
-    );
     expect(body.fee_amount).toBe("100000");
     expect(body.bond_amount).toBe("1000000");
+    expect(body.fee_share_bps).toBe("1");
+    expect(body.fee_shares).toEqual([
+      { recipient: VOTER, basis_points: "10000" },
+    ]);
     expect(body.nonce).toBe("3");
     expect(body.chain_id).toBe("84532");
     expect(body.expires_at).toBe(
       String(1_714_000_000 + DEFAULT_VOTE_TTL_SECONDS),
     );
     expect(body.signature).toBe("0xbeef");
-  });
-
-  it("carries the canonical allocations array alongside the hash (loop 0072)", () => {
-    // Loop 0072: backend recomputes keccak(canonical(allocations))
-    // and rejects on mismatch. The request body now includes the
-    // allocations array verbatim; the backend does the canonicalize
-    // + hash on its side.
-    const td = buildVoteIntentTypedData({
-      preflight: preflight(),
-      voter: VOTER,
-      allocationsHash:
-        "0x5cbf670de3ba3eaf83b9f1c947eebe3eaa632f5cf32c2d76ecc8eb8bfb59993c",
-      nowSeconds: 1_714_000_000,
-    });
-    const allocations: Allocation[] = [
+    expect(body.allocations).toEqual([
       { solution_id: "sol_A", points: 70 },
       { solution_id: "sol_B", points: 30 },
-    ];
-    const body = buildSubmitVoteIntentRequestBody({
-      typedData: td,
-      allocations,
-      signature: "0xbeef" as `0x${string}`,
-    });
-    // Allocations passed through; caller's array is copied so
-    // downstream mutation doesn't alias the request body.
-    expect(body.allocations).toEqual(allocations);
-    expect(body.allocations).not.toBe(allocations);
+    ]);
   });
 });

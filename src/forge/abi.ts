@@ -1,25 +1,26 @@
-// abi.ts — Router function ABI. Hand-written from Router.sol.
-// Includes the entry points agents call (fund, commitSolution,
-// castVote, claim, claim{Solution,Vote}Bond), oracle-only
-// publishSettlement + sweepResiduals, and view getters used by
-// health checks and tests.
+// abi.ts — RezonForge v2.5 function ABI. Hand-written from
+// contracts/src/RezonForge.sol.
 //
-// Cross-language drift risk: any rename or reorder of a Router
-// struct field silently breaks agent calldata. The backend's
-// embedded ABI (services/indexer/abi.go) covers the EVENT side;
-// this file covers the FUNCTION side. Both must be updated when
-// Router.sol changes.
+// Includes the entry points agents call (sponsor, cosponsor,
+// commitSolution, castVote, claim, claim{Solution,Vote}Bond),
+// oracle-only publishSettlement + sweepResiduals, and view getters
+// used by health checks and tests.
+//
+// Cross-language drift risk: any rename or reorder of a struct
+// field silently breaks agent calldata. The backend's embedded ABI
+// (services/indexer/abi.go) covers the EVENT side; this file
+// covers the FUNCTION side. Both must be updated when
+// RezonForge.sol changes.
 
 import type { Abi } from "viem";
 
-export const ROUTER_V2_ABI = [
-  // ── Structs (anonymous tuples per viem convention) ────────────
-
-  // ── fund(FundIntent intent, bytes intentSig, uint8 permitV,
-  //    bytes32 permitR, bytes32 permitS) ──────────────────────
+export const REZON_FORGE_ABI = [
+  // ── sponsor(SponsorIntent intent, bytes intentSig, uint8 permitV,
+  //    bytes32 permitR, bytes32 permitS) ─────────────────────────
+  // RezonForge v2.5: first sponsor binds all per-Q parameters.
   {
     type: "function",
-    name: "fund",
+    name: "sponsor",
     stateMutability: "nonpayable",
     inputs: [
       {
@@ -27,8 +28,61 @@ export const ROUTER_V2_ABI = [
         type: "tuple",
         components: [
           { name: "questionId", type: "bytes32" },
-          { name: "funder", type: "address" },
+          { name: "oracle", type: "address" },
+          { name: "token", type: "address" },
+          { name: "minBondFloor", type: "uint256" },
+          { name: "bondBasisPoints", type: "uint256" },
+          { name: "minSponsorship", type: "uint256" },
+          { name: "voteFee", type: "uint256" },
+          { name: "abandonmentGracePeriod", type: "uint256" },
+          { name: "sponsor", type: "address" },
           { name: "amount", type: "uint256" },
+          { name: "feeShareBps", type: "uint256" },
+          {
+            name: "feeShares",
+            type: "tuple[]",
+            components: [
+              { name: "recipient", type: "address" },
+              { name: "basisPoints", type: "uint256" },
+            ],
+          },
+          { name: "nonce", type: "uint256" },
+          { name: "chainId", type: "uint256" },
+          { name: "expiresAt", type: "uint256" },
+        ],
+      },
+      { name: "intentSig", type: "bytes" },
+      { name: "permitV", type: "uint8" },
+      { name: "permitR", type: "bytes32" },
+      { name: "permitS", type: "bytes32" },
+    ],
+    outputs: [],
+  },
+
+  // ── cosponsor(CosponsorIntent intent, ...) ─────────────────────
+  // RezonForge v2.5: subsequent contributors inherit per-Q params
+  // from chain state.
+  {
+    type: "function",
+    name: "cosponsor",
+    stateMutability: "nonpayable",
+    inputs: [
+      {
+        name: "intent",
+        type: "tuple",
+        components: [
+          { name: "questionId", type: "bytes32" },
+          { name: "sponsor", type: "address" },
+          { name: "amount", type: "uint256" },
+          { name: "feeShareBps", type: "uint256" },
+          {
+            name: "feeShares",
+            type: "tuple[]",
+            components: [
+              { name: "recipient", type: "address" },
+              { name: "basisPoints", type: "uint256" },
+            ],
+          },
           { name: "nonce", type: "uint256" },
           { name: "chainId", type: "uint256" },
           { name: "expiresAt", type: "uint256" },
@@ -43,6 +97,7 @@ export const ROUTER_V2_ABI = [
   },
 
   // ── commitSolution(CommitIntent, bytes intentSig, permit V/R/S) ──
+  // v2.5: 10-field intent with feeShareBps + feeShares.
   {
     type: "function",
     name: "commitSolution",
@@ -57,6 +112,15 @@ export const ROUTER_V2_ABI = [
           { name: "contentHash", type: "bytes32" },
           { name: "feeAmount", type: "uint256" },
           { name: "bondAmount", type: "uint256" },
+          { name: "feeShareBps", type: "uint256" },
+          {
+            name: "feeShares",
+            type: "tuple[]",
+            components: [
+              { name: "recipient", type: "address" },
+              { name: "basisPoints", type: "uint256" },
+            ],
+          },
           { name: "nonce", type: "uint256" },
           { name: "chainId", type: "uint256" },
           { name: "expiresAt", type: "uint256" },
@@ -71,6 +135,7 @@ export const ROUTER_V2_ABI = [
   },
 
   // ── castVote(VoteIntent, bytes intentSig, permit V/R/S) ────
+  // v2.5: 10-field intent with feeShareBps + feeShares.
   {
     type: "function",
     name: "castVote",
@@ -85,6 +150,15 @@ export const ROUTER_V2_ABI = [
           { name: "allocationsHash", type: "bytes32" },
           { name: "feeAmount", type: "uint256" },
           { name: "bondAmount", type: "uint256" },
+          { name: "feeShareBps", type: "uint256" },
+          {
+            name: "feeShares",
+            type: "tuple[]",
+            components: [
+              { name: "recipient", type: "address" },
+              { name: "basisPoints", type: "uint256" },
+            ],
+          },
           { name: "nonce", type: "uint256" },
           { name: "chainId", type: "uint256" },
           { name: "expiresAt", type: "uint256" },
@@ -133,7 +207,7 @@ export const ROUTER_V2_ABI = [
 
   // ── questions(bytes32) view returns (QuestionState) ─────────
   // Used to read poolAmount before publishing settlement. Fields
-  // match Router.sol's QuestionState in declaration order.
+  // match RezonForge.sol's QuestionState in declaration order.
   {
     type: "function",
     name: "questions",
@@ -176,14 +250,15 @@ export const ROUTER_V2_ABI = [
     outputs: [],
   },
 
-  // ── sweepResiduals(address to, uint256 amount) ─────────────
-  // Admin-only drain of USDC that isn't claimable via any
-  // intent-owner path (dust, accidental transfers).
+  // ── sweepResiduals(address token, address to, uint256 amount) ──
+  // Per-token admin-only drain of dust that isn't claimable via
+  // any intent-owner path.
   {
     type: "function",
     name: "sweepResiduals",
     stateMutability: "nonpayable",
     inputs: [
+      { name: "token", type: "address" },
       { name: "to", type: "address" },
       { name: "amount", type: "uint256" },
     ],
@@ -193,34 +268,28 @@ export const ROUTER_V2_ABI = [
   // ── Read-only sanity (used by health checks / tests) ──────
   {
     type: "function",
-    name: "oracle",
+    name: "admin",
     stateMutability: "view",
     inputs: [],
     outputs: [{ name: "", type: "address" }],
   },
   {
     type: "function",
-    name: "usdc",
+    name: "paused",
     stateMutability: "view",
     inputs: [],
-    outputs: [{ name: "", type: "address" }],
-  },
-  {
-    type: "function",
-    name: "minBond",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "uint256" }],
+    outputs: [{ name: "", type: "bool" }],
   },
 ] as const satisfies Abi;
 
 /** Names agents call. Exported for tooling (e.g. cast-send
  *  templates). */
-export const ROUTER_WRITE_FUNCTIONS = [
-  "fund",
+export const FORGE_WRITE_FUNCTIONS = [
+  "sponsor",
+  "cosponsor",
   "commitSolution",
   "castVote",
   "claim",
 ] as const;
 
-export type RouterWriteFunction = (typeof ROUTER_WRITE_FUNCTIONS)[number];
+export type ForgeWriteFunction = (typeof FORGE_WRITE_FUNCTIONS)[number];

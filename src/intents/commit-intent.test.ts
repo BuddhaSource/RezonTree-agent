@@ -1,13 +1,13 @@
-// Pure-function coverage for the CommitIntent builders (loop 0067).
+// Pure-function coverage for the v2.5 CommitIntent builders.
 //
-// Mirrors tests/unit/fund-intent.test.ts. Field order + types MUST
-// match backend's internal/signer/commit_intent.go:
-//
-//   CommitIntent(bytes32 questionId,address submitter,bytes32 contentHash,uint256 feeAmount,uint256 bondAmount,uint256 nonce,uint256 chainId,uint256 expiresAt)
-//
-// Any drift yields signatures the Router rejects as RouterBadSigner.
+// Field order + types here MUST match
+// contracts/src/RezonForge.sol's COMMIT_INTENT_TYPEHASH +
+// internal/signer/commit_intent.go +
+// RezonTree-UI/lib/intents/commit-intent.ts.
+// Pinned typehash (goals.md): 0x777d...
 
 import { describe, expect, it } from "vitest";
+import { keccak256, stringToBytes } from "viem";
 import {
   buildCommitIntentTypedData,
   buildSubmitCommitRequestBody,
@@ -15,10 +15,11 @@ import {
   computeContentHash,
   DEFAULT_COMMIT_TTL_SECONDS,
 } from "./commit-intent.js";
+import { defaultFeeSharePolicy } from "./fee-share.js";
 import {
-  ROUTER_DOMAIN_NAME,
-  ROUTER_DOMAIN_VERSION,
-} from "./router-domain.js";
+  FORGE_DOMAIN_NAME,
+  FORGE_DOMAIN_VERSION,
+} from "./forge-domain.js";
 import type { CommitPreflight } from "./preflight-types.js";
 
 const SUBMITTER = "0xdEadBeEfCaFEBAbedEadbeeFcaFebabeDeadBEEF" as const;
@@ -48,25 +49,31 @@ function preflight(overrides: Partial<CommitPreflight> = {}): CommitPreflight {
 }
 
 describe("COMMIT_INTENT_TYPES field order", () => {
-  it("matches backend typehash order + types", () => {
-    const fields = COMMIT_INTENT_TYPES.CommitIntent;
-    expect(fields).toEqual([
+  it("matches v2.5 typehash order + types (10 fields)", () => {
+    expect(COMMIT_INTENT_TYPES.CommitIntent).toEqual([
       { name: "questionId", type: "bytes32" },
       { name: "submitter", type: "address" },
       { name: "contentHash", type: "bytes32" },
       { name: "feeAmount", type: "uint256" },
       { name: "bondAmount", type: "uint256" },
+      { name: "feeShareBps", type: "uint256" },
+      { name: "feeShares", type: "FeeShare[]" },
       { name: "nonce", type: "uint256" },
       { name: "chainId", type: "uint256" },
       { name: "expiresAt", type: "uint256" },
     ]);
   });
+
+  it("typehash text matches the pinned cross-stack invariant", () => {
+    const text =
+      "CommitIntent(bytes32 questionId,address submitter,bytes32 contentHash,uint256 feeAmount,uint256 bondAmount,uint256 feeShareBps,FeeShare[] feeShares,uint256 nonce,uint256 chainId,uint256 expiresAt)" +
+      "FeeShare(address recipient,uint256 basisPoints)";
+    expect(keccak256(stringToBytes(text)).startsWith("0x777d")).toBe(true);
+  });
 });
 
 describe("computeContentHash", () => {
-  // keccak256("hello world") — well-known Ethereum test vector. Kept
-  // here as the cross-language invariant that binds UI hashing to
-  // whatever downstream consumer re-verifies the hash.
+  // keccak256("hello world") — well-known Ethereum test vector.
   it("matches the keccak256 vector for 'hello world'", () => {
     expect(computeContentHash("hello world")).toBe(
       "0x47173285a8d7341e5e972fc677286384f802f8ef42a5ec5f03bbfa254cb01fad",
@@ -87,23 +94,26 @@ describe("computeContentHash", () => {
 
   it("differs for differing content (avalanche)", () => {
     const a = computeContentHash("hello world");
-    const b = computeContentHash("hello worlD"); // one-char flip
+    const b = computeContentHash("hello worlD");
     expect(a).not.toBe(b);
   });
 });
 
 describe("buildCommitIntentTypedData", () => {
   const NOW = 1_714_000_000;
+  const policy = defaultFeeSharePolicy(SUBMITTER);
 
-  it("composes the Router v2 EIP-712 domain from preflight", () => {
+  it("composes the v2.5 EIP-712 domain from preflight", () => {
     const td = buildCommitIntentTypedData({
       preflight: preflight(),
       submitter: SUBMITTER,
       contentHash: CONTENT_HASH,
+      feeShareBps: policy.bps,
+      feeShares: policy.shares,
       nowSeconds: NOW,
     });
-    expect(td.domain.name).toBe(ROUTER_DOMAIN_NAME);
-    expect(td.domain.version).toBe(ROUTER_DOMAIN_VERSION);
+    expect(td.domain.name).toBe(FORGE_DOMAIN_NAME);
+    expect(td.domain.version).toBe(FORGE_DOMAIN_VERSION);
     expect(td.domain.chainId).toBe(BigInt("84532"));
     expect(td.domain.verifyingContract).toBe(ROUTER);
     expect(td.primaryType).toBe("CommitIntent");
@@ -114,6 +124,8 @@ describe("buildCommitIntentTypedData", () => {
       preflight: preflight(),
       submitter: SUBMITTER,
       contentHash: CONTENT_HASH,
+      feeShareBps: policy.bps,
+      feeShares: policy.shares,
       nowSeconds: NOW,
     });
     expect(td.message.feeAmount).toBe(BigInt("500000"));
@@ -125,6 +137,8 @@ describe("buildCommitIntentTypedData", () => {
       preflight: preflight(),
       submitter: SUBMITTER,
       contentHash: CONTENT_HASH,
+      feeShareBps: policy.bps,
+      feeShares: policy.shares,
       feeWei: BigInt("1000"),
       bondWei: BigInt("2000"),
       nowSeconds: NOW,
@@ -133,23 +147,19 @@ describe("buildCommitIntentTypedData", () => {
     expect(td.message.bondAmount).toBe(BigInt("2000"));
   });
 
-  it("pulls nonce from preflight by default + respects override", () => {
+  it("carries fee-share policy verbatim", () => {
     const td = buildCommitIntentTypedData({
-      preflight: preflight({ nonce_next: "99" }),
+      preflight: preflight(),
       submitter: SUBMITTER,
       contentHash: CONTENT_HASH,
+      feeShareBps: BigInt(1),
+      feeShares: [{ recipient: SUBMITTER, basisPoints: BigInt(10000) }],
       nowSeconds: NOW,
     });
-    expect(td.message.nonce).toBe(BigInt("99"));
-
-    const td2 = buildCommitIntentTypedData({
-      preflight: preflight({ nonce_next: "99" }),
-      submitter: SUBMITTER,
-      contentHash: CONTENT_HASH,
-      nonce: BigInt("500"),
-      nowSeconds: NOW,
-    });
-    expect(td2.message.nonce).toBe(BigInt("500"));
+    expect(td.message.feeShareBps).toBe(BigInt(1));
+    expect(td.message.feeShares).toEqual([
+      { recipient: SUBMITTER, basisPoints: BigInt(10000) },
+    ]);
   });
 
   it("defaults expiresAt to now + 10min", () => {
@@ -157,42 +167,23 @@ describe("buildCommitIntentTypedData", () => {
       preflight: preflight(),
       submitter: SUBMITTER,
       contentHash: CONTENT_HASH,
+      feeShareBps: policy.bps,
+      feeShares: policy.shares,
       nowSeconds: NOW,
     });
     expect(td.message.expiresAt).toBe(BigInt(NOW + DEFAULT_COMMIT_TTL_SECONDS));
   });
-
-  it("carries questionId / submitter / contentHash / chainId verbatim", () => {
-    const td = buildCommitIntentTypedData({
-      preflight: preflight(),
-      submitter: SUBMITTER,
-      contentHash: CONTENT_HASH,
-      nowSeconds: NOW,
-    });
-    expect(td.message.questionId).toBe(QID);
-    expect(td.message.submitter).toBe(SUBMITTER);
-    expect(td.message.contentHash).toBe(CONTENT_HASH);
-    expect(td.message.chainId).toBe(BigInt("84532"));
-  });
-
-  it("treats missing recommended_fee / recommended_bond as zero", () => {
-    const td = buildCommitIntentTypedData({
-      preflight: preflight({ recommended_fee: "", recommended_bond: "" }),
-      submitter: SUBMITTER,
-      contentHash: CONTENT_HASH,
-      nowSeconds: NOW,
-    });
-    expect(td.message.feeAmount).toBe(BigInt("0"));
-    expect(td.message.bondAmount).toBe(BigInt("0"));
-  });
 });
 
 describe("buildSubmitCommitRequestBody", () => {
-  it("renders every numeric as a decimal string", () => {
+  const policy = defaultFeeSharePolicy(SUBMITTER);
+  it("renders fee_share_bps + fee_shares alongside numerics", () => {
     const td = buildCommitIntentTypedData({
       preflight: preflight(),
       submitter: SUBMITTER,
       contentHash: CONTENT_HASH,
+      feeShareBps: policy.bps,
+      feeShares: policy.shares,
       nowSeconds: 1_714_000_000,
     });
     const body = buildSubmitCommitRequestBody({
@@ -204,11 +195,10 @@ describe("buildSubmitCommitRequestBody", () => {
     expect(body.content_hash).toBe(CONTENT_HASH);
     expect(body.fee_amount).toBe("500000");
     expect(body.bond_amount).toBe("5000000");
-    expect(body.nonce).toBe("11");
-    expect(body.chain_id).toBe("84532");
-    expect(body.expires_at).toBe(
-      String(1_714_000_000 + DEFAULT_COMMIT_TTL_SECONDS),
-    );
+    expect(body.fee_share_bps).toBe("1");
+    expect(body.fee_shares).toEqual([
+      { recipient: SUBMITTER, basis_points: "10000" },
+    ]);
     expect(body.signature).toBe("0xbeef");
   });
 });

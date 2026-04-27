@@ -1,14 +1,14 @@
-// client.ts — Router write client. Wraps viem's writeContract for
-// the agent-facing entry points (fund, commitSolution, castVote,
-// claim, publishSettlement).
+// client.ts — RezonForge v2.5 write client. Wraps viem's
+// writeContract for the agent-facing entry points (sponsor,
+// cosponsor, commitSolution, castVote, claim, publishSettlement).
 //
 // Scope: calldata + broadcast + receipt wait. Intent signing lives
 // in src/intents/*; USDC permit signing lives in ./permit.ts. This
 // file just takes fully-formed (intent, intentSig, permitV/R/S)
 // bundles and broadcasts.
 //
-// R-CHAIN-VERIFIES-INTENT — Router verifies the signature on-chain;
-// the client doesn't re-check.
+// R-CHAIN-VERIFIES-INTENT — RezonForge verifies the signature
+// on-chain; the client doesn't re-check.
 // R-REUSE-FIRST — viem's writeContract + waitForTransactionReceipt
 // handle RPC + nonce + receipt plumbing.
 
@@ -23,17 +23,16 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
-import type {
-  CommitIntentMessage,
-} from "../intents/commit-intent.js";
-import type { FundIntentMessage } from "../intents/fund-intent.js";
+import type { CommitIntentMessage } from "../intents/commit-intent.js";
+import type { CosponsorIntentMessage } from "../intents/cosponsor-intent.js";
+import type { SponsorIntentMessage } from "../intents/sponsor-intent.js";
 import type { VoteIntentMessage } from "../intents/vote-intent.js";
-import { ROUTER_V2_ABI } from "./abi.js";
+import { REZON_FORGE_ABI } from "./abi.js";
 
 /**
  * Permit signature bundle — the USDC EIP-2612 permit that
- * authorizes the Router to pull tokens. Router takes the three
- * components as separate args to match the USDC ABI, which
+ * authorizes RezonForge to pull tokens. The contract takes the
+ * three components as separate args to match the USDC ABI, which
  * doesn't support a combined 65-byte sig.
  */
 export interface PermitSig {
@@ -66,38 +65,89 @@ export function makeAgentWalletClient(params: {
   });
 }
 
-// ─── fund() ─────────────────────────────────────────────────────
+// ─── sponsor() ─────────────────────────────────────────────────
+// First sponsor binds all per-Q parameters.
 
-export interface BroadcastFundParams {
+export interface BroadcastSponsorParams {
   routerAddress: Address;
-  intent: FundIntentMessage;
+  intent: SponsorIntentMessage;
   intentSig: Hex;
   permit: PermitSig;
   /** Gas override. Public Base Sepolia's eth_estimateGas occasionally
    *  returns a value ~10% under actual consumption, causing an
-   *  out-of-gas revert. Pass 350_000n to leave headroom. */
+   *  out-of-gas revert. Pass 400_000n to leave headroom. */
   gas?: bigint;
 }
 
-/**
- * Broadcasts `Router.fund(intent, sig, permitV, permitR, permitS)`.
- * Caller's WalletClient must already be authenticated for the
- * funder's address (so `msg.sender` matches `intent.funder` —
- * Router's `_verifyIntent` rejects otherwise).
- */
-export async function broadcastFund(
+export async function broadcastSponsor(
   wallet: WalletClient,
-  params: BroadcastFundParams,
+  params: BroadcastSponsorParams,
 ): Promise<Hex> {
   return wallet.writeContract({
     address: params.routerAddress,
-    abi: ROUTER_V2_ABI,
-    functionName: "fund",
+    abi: REZON_FORGE_ABI,
+    functionName: "sponsor",
     args: [
       {
         questionId: params.intent.questionId,
-        funder: params.intent.funder,
+        oracle: params.intent.oracle,
+        token: params.intent.token,
+        minBondFloor: params.intent.minBondFloor,
+        bondBasisPoints: params.intent.bondBasisPoints,
+        minSponsorship: params.intent.minSponsorship,
+        voteFee: params.intent.voteFee,
+        abandonmentGracePeriod: params.intent.abandonmentGracePeriod,
+        sponsor: params.intent.sponsor,
         amount: params.intent.amount,
+        feeShareBps: params.intent.feeShareBps,
+        feeShares: params.intent.feeShares.map((s) => ({
+          recipient: s.recipient,
+          basisPoints: s.basisPoints,
+        })),
+        nonce: params.intent.nonce,
+        chainId: params.intent.chainId,
+        expiresAt: params.intent.expiresAt,
+      },
+      params.intentSig,
+      params.permit.v,
+      params.permit.r,
+      params.permit.s,
+    ],
+    account: wallet.account as Account,
+    chain: wallet.chain,
+    ...(params.gas ? { gas: params.gas } : {}),
+  });
+}
+
+// ─── cosponsor() ───────────────────────────────────────────────
+// Subsequent contributor of an OPEN question.
+
+export interface BroadcastCosponsorParams {
+  routerAddress: Address;
+  intent: CosponsorIntentMessage;
+  intentSig: Hex;
+  permit: PermitSig;
+  gas?: bigint;
+}
+
+export async function broadcastCosponsor(
+  wallet: WalletClient,
+  params: BroadcastCosponsorParams,
+): Promise<Hex> {
+  return wallet.writeContract({
+    address: params.routerAddress,
+    abi: REZON_FORGE_ABI,
+    functionName: "cosponsor",
+    args: [
+      {
+        questionId: params.intent.questionId,
+        sponsor: params.intent.sponsor,
+        amount: params.intent.amount,
+        feeShareBps: params.intent.feeShareBps,
+        feeShares: params.intent.feeShares.map((s) => ({
+          recipient: s.recipient,
+          basisPoints: s.basisPoints,
+        })),
         nonce: params.intent.nonce,
         chainId: params.intent.chainId,
         expiresAt: params.intent.expiresAt,
@@ -129,7 +179,7 @@ export async function broadcastCommit(
 ): Promise<Hex> {
   return wallet.writeContract({
     address: params.routerAddress,
-    abi: ROUTER_V2_ABI,
+    abi: REZON_FORGE_ABI,
     functionName: "commitSolution",
     args: [
       {
@@ -138,6 +188,11 @@ export async function broadcastCommit(
         contentHash: params.intent.contentHash,
         feeAmount: params.intent.feeAmount,
         bondAmount: params.intent.bondAmount,
+        feeShareBps: params.intent.feeShareBps,
+        feeShares: params.intent.feeShares.map((s) => ({
+          recipient: s.recipient,
+          basisPoints: s.basisPoints,
+        })),
         nonce: params.intent.nonce,
         chainId: params.intent.chainId,
         expiresAt: params.intent.expiresAt,
@@ -169,7 +224,7 @@ export async function broadcastVote(
 ): Promise<Hex> {
   return wallet.writeContract({
     address: params.routerAddress,
-    abi: ROUTER_V2_ABI,
+    abi: REZON_FORGE_ABI,
     functionName: "castVote",
     args: [
       {
@@ -178,6 +233,11 @@ export async function broadcastVote(
         allocationsHash: params.intent.allocationsHash,
         feeAmount: params.intent.feeAmount,
         bondAmount: params.intent.bondAmount,
+        feeShareBps: params.intent.feeShareBps,
+        feeShares: params.intent.feeShares.map((s) => ({
+          recipient: s.recipient,
+          basisPoints: s.basisPoints,
+        })),
         nonce: params.intent.nonce,
         chainId: params.intent.chainId,
         expiresAt: params.intent.expiresAt,
@@ -208,7 +268,7 @@ export async function broadcastClaim(
 ): Promise<Hex> {
   return wallet.writeContract({
     address: params.routerAddress,
-    abi: ROUTER_V2_ABI,
+    abi: REZON_FORGE_ABI,
     functionName: "claim",
     args: [params.questionId, params.amount, params.proof],
     account: wallet.account as Account,
@@ -228,10 +288,10 @@ export interface BroadcastPublishSettlementParams {
   oracleSig: Hex;
 }
 
-/** Broadcasts `Router.publishSettlement(qid, root, expiresAt,
+/** Broadcasts `RezonForge.publishSettlement(qid, root, expiresAt,
  *  slashedCommit, slashedVote, sig)`. Caller must be the oracle
- *  address set in Router's constructor. Slashed bonds move into
- *  the pool atomically with the root commit.
+ *  address set in RezonForge's constructor. Slashed bonds move
+ *  into the pool atomically with the root commit.
  */
 export async function broadcastPublishSettlement(
   wallet: WalletClient,
@@ -239,7 +299,7 @@ export async function broadcastPublishSettlement(
 ): Promise<Hex> {
   return wallet.writeContract({
     address: params.routerAddress,
-    abi: ROUTER_V2_ABI,
+    abi: REZON_FORGE_ABI,
     functionName: "publishSettlement",
     args: [
       params.questionId,
@@ -260,10 +320,6 @@ export async function broadcastPublishSettlement(
  * Awaits the transaction receipt + asserts `status === "success"`.
  * Throws on revert with the tx hash so the caller can explore
  * the failure on the block explorer.
- *
- * Caller supplies a `PublicClient` — construction of one is
- * cheap, but we don't create it inside writeContract wrappers
- * because a long-lived client amortizes across many broadcasts.
  */
 export async function awaitReceipt(
   client: PublicClient,
@@ -272,7 +328,7 @@ export async function awaitReceipt(
   const receipt = await client.waitForTransactionReceipt({ hash });
   if (receipt.status !== "success") {
     throw new Error(
-      `Router call reverted: tx ${hash}; check block explorer for revert reason.`,
+      `RezonForge call reverted: tx ${hash}; check block explorer for revert reason.`,
     );
   }
 }

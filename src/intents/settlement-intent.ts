@@ -8,7 +8,7 @@
 //   "SettlementIntent(bytes32 questionId,bytes32 merkleRoot,uint256 expiresAt,bytes32[] slashedCommitHashes,bytes32[] slashedVoteHashes)"
 
 import type { Address, Hex, TypedDataDomain } from "viem";
-import { buildRouterDomain } from "./router-domain.js";
+import { buildForgeDomain } from "./forge-domain.js";
 
 /** EIP-712 types for SettlementIntent. Field order matches the
  *  Router's typehash; reordering breaks on-chain signature recovery. */
@@ -67,7 +67,7 @@ export function buildSettlementIntentTypedData(
   const expiresAt = BigInt(input.expiresAtSeconds ?? now + DEFAULT_SETTLEMENT_TTL_SECONDS);
 
   return {
-    domain: buildRouterDomain({
+    domain: buildForgeDomain({
       chainId: input.chainId,
       routerAddress: input.routerAddress,
     }),

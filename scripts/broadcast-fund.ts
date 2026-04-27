@@ -1,27 +1,25 @@
 #!/usr/bin/env tsx
-// broadcast-fund.ts — single-wallet end-to-end Fund closure.
+// broadcast-fund.ts — single-wallet end-to-end Sponsor/Cosponsor closure
+// (v2.5).
 //
 // Closes fund-lock through indexer ingestion:
 //   1. Derive one wallet from RT_AGENT_MNEMONIC (path 0/0).
 //   2. POST /auth/wallet + POST /v1/problems (backend row created).
-//   3. GET /fund/preflight, sign FundIntent, POST /fund (pending row).
-//   4. Sign USDC permit, call Router.fund() on-chain, wait receipt.
+//   3. GET /fund/preflight, sign Sponsor or Cosponsor intent, POST /fund.
+//   4. Sign USDC permit, call RezonForge.sponsor() / cosponsor() on
+//      chain, wait receipt.
 //   5. Poll Postgres for contribution.confirmation_status = confirmed.
 //
 // This is a bring-up script, not a primitive — lives in scripts/,
-// not src/. Loop 0076 will promote the broadcast wrappers into
-// the production SDK path.
+// not src/.
 //
 // Required env:
 //   RT_AGENT_MNEMONIC        — mnemonic of a funded Base Sepolia wallet
-//   RT_ROUTER_ADDRESS        — deployed Router v2 address
+//   RT_ROUTER_ADDRESS        — deployed RezonForge address
 //   RT_USDC_ADDRESS          — canonical USDC address (Base Sepolia default below)
 //   RT_BACKEND_URL           — defaults to http://localhost:8080
 //   RT_RPC_URL               — defaults to https://sepolia.base.org
-//   RT_AGENT_DOMAIN_VERIFYING_CONTRACT — wallet-login domain contract
-//                              (should equal RT_ROUTER_ADDRESS in the
-//                              current deploy since both domains share
-//                              the same verifyingContract).
+//   RT_AGENT_DOMAIN_VERIFYING_CONTRACT — wallet-login domain contract.
 
 import { execSync } from "node:child_process";
 import type { Hex } from "viem";
@@ -30,18 +28,24 @@ import { privateKeyToAccount } from "viem/accounts";
 import { deriveAgentWallet } from "../src/wallet/derive.js";
 import { loadLoginDomain } from "../src/wallet/domain.js";
 import { signWalletLoginIntent } from "../src/wallet/signer.js";
+import { defaultFeeSharePolicy } from "../src/intents/fee-share.js";
 import {
-  buildFundIntentTypedData,
-  buildFundRequestBody,
+  buildSponsorFundRequestBody,
+  buildSponsorIntentTypedData,
   parseAmountToWei,
-} from "../src/intents/fund-intent.js";
+} from "../src/intents/sponsor-intent.js";
+import {
+  buildCosponsorFundRequestBody,
+  buildCosponsorIntentTypedData,
+} from "../src/intents/cosponsor-intent.js";
 import type { FundPreflight } from "../src/intents/preflight-types.js";
 import {
   awaitReceipt,
-  broadcastFund,
+  broadcastCosponsor,
+  broadcastSponsor,
   makeAgentWalletClient,
-} from "../src/router/client.js";
-import { signUSDCPermit } from "../src/router/permit.js";
+} from "../src/forge/client.js";
+import { signUSDCPermit } from "../src/forge/permit.js";
 
 const BACKEND = process.env.RT_BACKEND_URL ?? "http://localhost:8080";
 const RPC = process.env.RT_RPC_URL ?? "https://sepolia.base.org";
@@ -137,8 +141,8 @@ async function main() {
   );
   ok(`problem ${problem.id}`);
 
-  // Step 4 — preflight + sign FundIntent + POST /fund.
-  log("3/6", "sign FundIntent + POST /fund");
+  // Step 4 — preflight + sign Sponsor/Cosponsor intent + POST /fund.
+  log("3/6", "sign Sponsor/Cosponsor intent + POST /fund");
   const pre = await call<FundPreflight>(
     "GET",
     `/v1/problems/${problem.id}/fund/preflight?funder=${wallet.address}`,
@@ -146,22 +150,63 @@ async function main() {
   info(`preflight qid ${pre.qid.slice(0, 10)}… nonce_next ${pre.nonce_next}`);
 
   const amountWei = parseAmountToWei("1", pre.token.decimals); // min L2 bounty
-  const fundTd = buildFundIntentTypedData({
-    preflight: pre,
-    funder: wallet.address,
-    amountWei,
-  });
+  info(`preflight mode=${pre.mode}`);
+
+  // Default fee-share policy: 1 bps + 100% to self. Smallest chain-valid
+  // shape (RezonForge.sol rejects empty fee-share arrays unconditionally).
+  const policy = defaultFeeSharePolicy(wallet.address);
+
   const fundAccount = privateKeyToAccount(wallet.privateKey);
-  const fundSig = (await fundAccount.signTypedData(fundTd)) as Hex;
+  let fundSig: Hex;
+  let fundBody:
+    | ReturnType<typeof buildSponsorFundRequestBody>
+    | ReturnType<typeof buildCosponsorFundRequestBody>;
+  let intentMessageForBroadcast:
+    | { mode: "sponsor"; td: ReturnType<typeof buildSponsorIntentTypedData> }
+    | {
+        mode: "cosponsor";
+        td: ReturnType<typeof buildCosponsorIntentTypedData>;
+      };
+  let permitDeadline: bigint;
+
+  if (pre.mode === "sponsor") {
+    const td = buildSponsorIntentTypedData({
+      preflight: pre,
+      sponsor: wallet.address,
+      amountWei,
+      feeShareBps: policy.bps,
+      feeShares: policy.shares,
+    });
+    fundSig = (await fundAccount.signTypedData(td)) as Hex;
+    fundBody = buildSponsorFundRequestBody({ typedData: td, signature: fundSig });
+    intentMessageForBroadcast = { mode: "sponsor", td };
+    permitDeadline = td.message.expiresAt;
+  } else {
+    const td = buildCosponsorIntentTypedData({
+      preflight: pre,
+      sponsor: wallet.address,
+      amountWei,
+      feeShareBps: policy.bps,
+      feeShares: policy.shares,
+    });
+    fundSig = (await fundAccount.signTypedData(td)) as Hex;
+    fundBody = buildCosponsorFundRequestBody({
+      typedData: td,
+      signature: fundSig,
+    });
+    intentMessageForBroadcast = { mode: "cosponsor", td };
+    permitDeadline = td.message.expiresAt;
+  }
+
   const fundResp = await call<{ intent_hash: string; contribution_id: string }>(
     "POST",
     `/v1/problems/${problem.id}/fund`,
-    buildFundRequestBody({ typedData: fundTd, signature: fundSig }),
+    fundBody,
     token,
   );
   ok(`backend row ${fundResp.contribution_id} intent ${fundResp.intent_hash.slice(0, 10)}…`);
 
-  // Step 5 — USDC permit + Router.fund() on-chain.
+  // Step 5 — USDC permit + RezonForge.sponsor() / cosponsor() on-chain.
   log("4/6", "sign USDC permit");
   const walletClient = makeAgentWalletClient({
     privateKey: wallet.privateKey,
@@ -172,7 +217,6 @@ async function main() {
     chain: walletClient.chain,
     transport: http(RPC),
   });
-  const permitDeadline = fundTd.message.expiresAt; // align with intent TTL
   const permit = await signUSDCPermit(walletClient, publicClient, {
     usdc: USDC,
     spender: ROUTER!,
@@ -181,13 +225,24 @@ async function main() {
   });
   ok(`permit v=${permit.v} r=${permit.r.slice(0, 10)}… deadline=${permit.deadline}`);
 
-  log("5/6", "broadcast Router.fund()");
-  const txHash = await broadcastFund(walletClient, {
-    routerAddress: ROUTER!,
-    intent: fundTd.message,
-    intentSig: fundSig,
-    permit,
-  });
+  log(
+    "5/6",
+    `broadcast RezonForge.${intentMessageForBroadcast.mode === "sponsor" ? "sponsor" : "cosponsor"}()`,
+  );
+  const txHash =
+    intentMessageForBroadcast.mode === "sponsor"
+      ? await broadcastSponsor(walletClient, {
+          routerAddress: ROUTER!,
+          intent: intentMessageForBroadcast.td.message,
+          intentSig: fundSig,
+          permit,
+        })
+      : await broadcastCosponsor(walletClient, {
+          routerAddress: ROUTER!,
+          intent: intentMessageForBroadcast.td.message,
+          intentSig: fundSig,
+          permit,
+        });
   info(`tx ${txHash}`);
   await awaitReceipt(publicClient, txHash);
   ok("tx confirmed");

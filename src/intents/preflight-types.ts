@@ -1,14 +1,19 @@
 // preflight-types.ts — response shapes for the backend's per-flow
-// preflight endpoints (backend loop 0038). Mirrors
-// RezonTree-UI/src/services/preflight.ts types exactly; any drift
-// lands as an SDK VALIDATION_ERROR when the agent POSTs the
-// resulting intent.
+// preflight endpoints. Mirrors RezonTree-UI's preflight types
+// exactly; any drift lands as an SDK VALIDATION_ERROR when the
+// agent POSTs the resulting intent.
 //
 // The SDK's existing `src/bootstrap/preflight.ts` is a different
 // thing — it's a startup health check that pings the backend to
 // confirm it's reachable. These types describe the per-flow
 // preflight shapes (/fund/preflight, /commit/preflight,
 // /vote/preflight) that the intent builders consume.
+//
+// v2.5: FundPreflight discriminates `sponsor` vs `cosponsor` mode
+// (replacing v2.4's `init` / `join`). Sponsor-mode preflights
+// advertise the full per-Q parameter set the first sponsor binds
+// on-chain; cosponsor-mode preflights are minimal — per-Q params
+// are inherited from chain state.
 
 export interface TokenPreflight {
   contract_address: string;
@@ -24,7 +29,13 @@ export interface HypermediaAction {
   desc?: string;
 }
 
+// RezonForge v2.5 fund preflight: `mode` discriminates sponsor vs
+// cosponsor. When mode === "sponsor", the sponsor-only fields
+// (oracle, min_bond_floor, bond_basis_points, min_sponsorship,
+// vote_fee, abandonment_grace_period) are populated with backend-
+// suggested defaults the sponsor can override before signing.
 export interface FundPreflight {
+  mode: "sponsor" | "cosponsor";
   qid: string;
   recommended_amount_floor: string;
   token: TokenPreflight;
@@ -32,6 +43,15 @@ export interface FundPreflight {
   chain_id: number;
   nonce_next: string;
   funding_deadline?: number;
+
+  // Sponsor-only suggested defaults.
+  oracle?: string;
+  min_bond_floor?: string;
+  bond_basis_points?: string;
+  min_sponsorship?: string;
+  vote_fee?: string;
+  abandonment_grace_period?: string;
+
   _actions: HypermediaAction[];
 }
 

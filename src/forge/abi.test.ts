@@ -1,58 +1,80 @@
-// abi.test.ts — pins the Router v2 ABI shape as a cross-language
-// contract. Any rename / reorder on Router.sol must mirror here;
-// the test catches drift at SDK-test time instead of at
-// on-chain-revert time.
+// abi.test.ts — pins the RezonForge v2.5 ABI shape as a
+// cross-language contract. Any rename / reorder on RezonForge.sol
+// must mirror here; the test catches drift at SDK-test time
+// instead of at on-chain-revert time.
 
 import { describe, expect, it } from "vitest";
 import {
-  ROUTER_V2_ABI,
-  ROUTER_WRITE_FUNCTIONS,
-  type RouterWriteFunction,
+  REZON_FORGE_ABI,
+  FORGE_WRITE_FUNCTIONS,
+  type ForgeWriteFunction,
 } from "./abi.js";
 
 function findFunction(name: string) {
-  return ROUTER_V2_ABI.find(
+  return REZON_FORGE_ABI.find(
     (item) => item.type === "function" && item.name === name,
   );
 }
 
-describe("ROUTER_V2_ABI shape", () => {
-  it("exports exactly 4 agent-writable functions", () => {
-    expect(ROUTER_WRITE_FUNCTIONS).toEqual([
-      "fund",
+describe("REZON_FORGE_ABI shape (v2.5)", () => {
+  it("exports the v2.5 agent-writable functions", () => {
+    expect(FORGE_WRITE_FUNCTIONS).toEqual([
+      "sponsor",
+      "cosponsor",
       "commitSolution",
       "castVote",
       "claim",
     ]);
   });
 
-  it("fund tuple matches FundIntent struct (6 fields in typehash order)", () => {
-    const fund = findFunction("fund");
-    expect(fund).toBeDefined();
-    const intentInput = fund!.inputs[0] as {
+  it("sponsor tuple matches SponsorIntent struct (15 fields in typehash order)", () => {
+    const fn = findFunction("sponsor");
+    expect(fn).toBeDefined();
+    const intentInput = fn!.inputs[0] as {
       type: string;
       components: { name: string; type: string }[];
     };
     expect(intentInput.type).toBe("tuple");
     expect(intentInput.components.map((c) => c.name)).toEqual([
       "questionId",
-      "funder",
+      "oracle",
+      "token",
+      "minBondFloor",
+      "bondBasisPoints",
+      "minSponsorship",
+      "voteFee",
+      "abandonmentGracePeriod",
+      "sponsor",
       "amount",
+      "feeShareBps",
+      "feeShares",
       "nonce",
       "chainId",
       "expiresAt",
     ]);
-    expect(intentInput.components.map((c) => c.type)).toEqual([
-      "bytes32",
-      "address",
-      "uint256",
-      "uint256",
-      "uint256",
-      "uint256",
+  });
+
+  it("cosponsor tuple matches CosponsorIntent struct (8 fields)", () => {
+    const fn = findFunction("cosponsor");
+    expect(fn).toBeDefined();
+    const intentInput = fn!.inputs[0] as {
+      type: string;
+      components: { name: string; type: string }[];
+    };
+    expect(intentInput.type).toBe("tuple");
+    expect(intentInput.components.map((c) => c.name)).toEqual([
+      "questionId",
+      "sponsor",
+      "amount",
+      "feeShareBps",
+      "feeShares",
+      "nonce",
+      "chainId",
+      "expiresAt",
     ]);
   });
 
-  it("commitSolution tuple matches CommitIntent struct (8 fields)", () => {
+  it("commitSolution tuple matches v2.5 CommitIntent struct (10 fields)", () => {
     const fn = findFunction("commitSolution");
     const intentInput = fn!.inputs[0] as {
       components: { name: string; type: string }[];
@@ -63,13 +85,15 @@ describe("ROUTER_V2_ABI shape", () => {
       "contentHash",
       "feeAmount",
       "bondAmount",
+      "feeShareBps",
+      "feeShares",
       "nonce",
       "chainId",
       "expiresAt",
     ]);
   });
 
-  it("castVote tuple matches VoteIntent struct (8 fields)", () => {
+  it("castVote tuple matches v2.5 VoteIntent struct (10 fields)", () => {
     const fn = findFunction("castVote");
     const intentInput = fn!.inputs[0] as {
       components: { name: string; type: string }[];
@@ -80,6 +104,8 @@ describe("ROUTER_V2_ABI shape", () => {
       "allocationsHash",
       "feeAmount",
       "bondAmount",
+      "feeShareBps",
+      "feeShares",
       "nonce",
       "chainId",
       "expiresAt",
@@ -100,8 +126,13 @@ describe("ROUTER_V2_ABI shape", () => {
     ]);
   });
 
-  it("write functions all expect (intent, intentSig, permitV, permitR, permitS) shape (except claim)", () => {
-    for (const name of ["fund", "commitSolution", "castVote"] as const) {
+  it("intent-bearing write functions share (intent, intentSig, permitV, permitR, permitS) shape", () => {
+    for (const name of [
+      "sponsor",
+      "cosponsor",
+      "commitSolution",
+      "castVote",
+    ] as const) {
       const fn = findFunction(name);
       expect(fn!.inputs.map((i) => i.name)).toEqual([
         "intent",
@@ -121,15 +152,15 @@ describe("ROUTER_V2_ABI shape", () => {
   });
 
   it("each write function is declared nonpayable + no outputs", () => {
-    for (const name of ROUTER_WRITE_FUNCTIONS) {
+    for (const name of FORGE_WRITE_FUNCTIONS) {
       const fn = findFunction(name);
       expect(fn!.stateMutability).toBe("nonpayable");
       expect(fn!.outputs).toEqual([]);
     }
   });
 
-  it("RouterWriteFunction type is exported + inferable", () => {
-    const valid: RouterWriteFunction = "fund";
-    expect(valid).toBe("fund");
+  it("ForgeWriteFunction type is exported + inferable", () => {
+    const valid: ForgeWriteFunction = "sponsor";
+    expect(valid).toBe("sponsor");
   });
 });
