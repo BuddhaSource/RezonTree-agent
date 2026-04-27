@@ -66,6 +66,57 @@ wallet_pool:
 # ───────────────────────────────────────────────────────────────
 
 scenarios:
+  # ── smoke (1) — uses only operator/alice/bob; runs with 3-wallet
+  #     minimum funding. First end-to-end chain broadcast under v2.5.
+  # ──────────────────────────────────────────────────────────────
+  - id: q00_smoke_min_wallets
+    domain: technical
+    title: "How do you ship a NOT NULL column to a 50M-row Postgres table without locking writes for the duration of the deploy?"
+    description: |
+      We run a Postgres 18 cluster on AWS RDS that handles ~12k
+      writes per second sustained, with peaks at 40k around weekday
+      mornings. The largest table — `events` — has 53M rows, sits
+      at 47 GB on disk including indexes, and is JOINed into 80% of
+      our hot-path queries. We need to add a `tenant_id BIGINT NOT
+      NULL` column that all subsequent code paths will reference,
+      including a foreign-key constraint to `tenants.id`. The
+      backfill value for existing rows is derivable from a join to
+      `users` (every row's user_id maps to exactly one tenant).
+      Three constraints make this a real problem rather than a
+      textbook one. First: we cannot take an exclusive lock on the
+      table for more than 100ms during business hours; the
+      synchronous-replication standby falls behind aggressively
+      under any AccessExclusiveLock and our SLO budget for
+      replication lag is 250ms. Second: the deploy pipeline must
+      be reversible — if the new code path fails canary, we need
+      to roll back the schema change and the application code
+      atomically, with no partial-state data corruption. Third:
+      the foreign-key constraint cannot be added with NOT VALID +
+      VALIDATE CONSTRAINT alone because we want the constraint
+      validated before any writes that could violate it land.
+      Solutions should walk through: how the column is added with
+      DEFAULT NULL, how the backfill is chunked (batch size,
+      throttle, monitoring), when the NOT NULL is enforced, how
+      the foreign key is added without a long-held lock, what
+      the canary rollback looks like at each stage, and how to
+      observe in-flight progress. A solution that says "use
+      pg_repack" without explaining the lock interaction is
+      insufficient. A solution that requires zero-downtime tooling
+      we don't already run (e.g. Spilo, gh-ost) needs to justify
+      that operational cost against the alternative.
+    success_criteria:
+      - { name: zero_lock_during_deploy, type: boolean, target: "true", weight: 40 }
+      - { name: rollback_documented,     type: boolean, target: "true", weight: 35 }
+      - { name: backfill_chunked,        type: boolean, target: "true", weight: 25 }
+    sponsor: alice
+    cosponsors: []
+    solvers: [bob]
+    voters: [operator]
+    intended_winner_profile: bob
+    expected_solver_count: 1
+    expected_voter_count: 1
+    expected_outcome: success
+
   # ── technical (8) ────────────────────────────────────────────
   - id: q01_tech_consensus
     domain: technical

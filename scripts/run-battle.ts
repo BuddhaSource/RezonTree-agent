@@ -212,7 +212,9 @@ class HttpError extends Error {
     public body: unknown,
   ) {
     const code = (body as { error?: ApiError })?.error?.code ?? "?";
-    super(`${method} ${path} → ${status} (${code})`);
+    const action = (body as { error?: ApiError })?.error?.action ?? "";
+    const message = (body as { error?: ApiError })?.error?.message ?? "";
+    super(`${method} ${path} → ${status} (${code}) ${message} | ${action}`);
   }
   errorCode(): string | undefined {
     return (this.body as { error?: ApiError })?.error?.code;
@@ -303,11 +305,16 @@ class BattleRunner {
     this.startSnapshot = await this.snap();
     info(`opening chain total ${fmtUsdc6(this.startSnapshot.totalUsdc)} USDC`);
 
-    // Happy-path + sybil scenarios share the lifecycle.
+    // Happy-path + sybil scenarios share the lifecycle. SCENARIO_FILTER
+    // env (comma list of ids) optionally narrows the run — useful for
+    // 3-wallet smoke before the full pool is funded.
+    const filter = (process.env.SCENARIO_FILTER ?? "").split(",").map(s => s.trim()).filter(Boolean);
+    const filterFn = (s: Scenario | SybilScenario) =>
+      filter.length === 0 || filter.includes(s.id);
     const lifecycleScenarios = [
       ...this.cfg.scenarios,
       ...this.cfg.sybil_scenarios,
-    ];
+    ].filter(filterFn);
     for (const s of lifecycleScenarios) {
       try {
         await this.walkScenario(s);
@@ -321,8 +328,13 @@ class BattleRunner {
       }
     }
 
-    // Attack lane.
-    for (const a of this.cfg.attack_scenarios) {
+    // Attack lane. Same SCENARIO_FILTER applies (skipped entirely if
+    // filter is set and no attack id matches — smoke runs typically
+    // skip attacks).
+    const attackList = this.cfg.attack_scenarios.filter(
+      (a) => filter.length === 0 || filter.includes(a.id),
+    );
+    for (const a of attackList) {
       try {
         const r = await this.walkAttack(a);
         this.attackResults.push(r);
@@ -405,7 +417,7 @@ class BattleRunner {
       sponsor: sponsor.address,
       amountWei: sponsorAmountWei,
       feeShareBps: 0n,
-      feeShares: [],
+      feeShares: this.defaultFeeShares(),
     });
     const sponsorSig = (await privateKeyToAccount(sponsorWallet.privateKey).signTypedData(sponsorTd)) as Hex;
     const sponsorResp = await call<{ contribution_id: string }>(
@@ -458,7 +470,7 @@ class BattleRunner {
         sponsor: ca.address,
         amountWei,
         feeShareBps: 0n,
-        feeShares: [],
+        feeShares: this.defaultFeeShares(),
       });
       const sig = (await privateKeyToAccount(wallet.privateKey).signTypedData(td)) as Hex;
       await call(
@@ -500,7 +512,7 @@ class BattleRunner {
         submitter: sa.address,
         contentHash,
         feeShareBps: 0n,
-        feeShares: [],
+        feeShares: this.defaultFeeShares(),
       });
       const sig = (await privateKeyToAccount(wallet.privateKey).signTypedData(td)) as Hex;
       const intentResp = await call<{ intent_hash: string }>(
@@ -593,7 +605,7 @@ class BattleRunner {
         voter: va.address,
         allocationsHash,
         feeShareBps: 0n,
-        feeShares: [],
+        feeShares: this.defaultFeeShares(),
       });
       const sig = (await privateKeyToAccount(wallet.privateKey).signTypedData(td)) as Hex;
       const voteResp = await call<{ intent_hash: string }>(
@@ -650,11 +662,18 @@ class BattleRunner {
     const root = merkleRoot(leaves);
     const winnerProof = merkleProof(leaves.map(hashLeaf), 0);
     const feeProof = merkleProof(leaves.map(hashLeaf), 1);
+    // Two-leaf tree (winner + fee). Sample the winner leaf; the
+    // contract verifies the sample proof against the root so any
+    // tree-root mismatch is caught at settle time.
     const settleTd = buildSettlementIntentTypedData({
       routerAddress: ROUTER!,
       chainId: CHAIN_ID,
       questionId: qid,
       merkleRoot: root,
+      totalClaimable: poolAmount,
+      sampleRecipient: winnerSolution.submitter.address,
+      sampleAmount: winnerAmount,
+      sampleProof: winnerProof,
       slashedCommitHashes: [],
       slashedVoteHashes: [],
       expiresAtSeconds: Math.floor(Date.now() / 1000) + DEFAULT_SETTLEMENT_TTL_SECONDS,
@@ -664,6 +683,10 @@ class BattleRunner {
       routerAddress: ROUTER!,
       questionId: qid,
       merkleRoot: root,
+      totalClaimable: poolAmount,
+      sampleRecipient: winnerSolution.submitter.address,
+      sampleAmount: winnerAmount,
+      sampleProof: winnerProof,
       expiresAt: settleTd.message.expiresAt,
       slashedCommitHashes: [],
       slashedVoteHashes: [],
@@ -1013,6 +1036,15 @@ class BattleRunner {
   }
 
   // ─ Helpers ────────────────────────────────────────────────────
+
+  private defaultFeeShares(): { recipient: `0x${string}`; basisPoints: bigint }[] {
+    // Per the v2.5 contract guard: FeeShares must be non-empty even
+    // when feeShareBps=0 (sum-to-10000 is enforced; the array shape is
+    // hashed into the EIP-712 digest). Smoke runs route the (zero) fee
+    // bucket to the demo fee_wallet — alias for carol in the pool.
+    const feeWallet = this.wallets["fee_wallet"] ?? this.wallets["operator"];
+    return [{ recipient: feeWallet.address as `0x${string}`, basisPoints: 10000n }];
+  }
 
   private makeWalletClient(w: AgentWallet) {
     return makeAgentWalletClient({
