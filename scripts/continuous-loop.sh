@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
-# continuous-loop.sh — run broadcast-full.ts indefinitely.
+# continuous-loop.sh — run scripts/run-battle.ts indefinitely.
 #
-# Between iterations, w1 (winning solver) rebalances 1 USDC each
+# (Phase D update: previously this wrapped scripts/broadcast-full.ts.
+# That script + the rest of the broadcast-* family was removed in
+# the v2.5 migration; the battle harness in run-battle.ts is the
+# canonical multi-wallet, multi-scenario lifecycle driver now.)
+#
+# Between iterations w1 (winning solver) rebalances 1 USDC each
 # back to w0 and w2 so the USDC ping-pongs and every wallet has
 # enough for the next round. Logs each run to logs/continuous-loop/.
 #
@@ -58,7 +63,7 @@ while :; do
   start_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   echo ""
   echo "── iter $i ($start_ts) → $iter_log ──"
-  if npx tsx scripts/broadcast-full.ts > "$iter_log" 2>&1; then
+  if npx tsx scripts/run-battle.ts > "$iter_log" 2>&1; then
     ok_count=$((ok_count + 1))
     # Capture the problem id + final pool amount for the summary line.
     prob_id=$(grep -oE 'problem prb_[a-z0-9]+' "$iter_log" | head -1 | awk '{print $2}')

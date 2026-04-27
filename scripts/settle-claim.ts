@@ -33,13 +33,13 @@ import {
   buildSettlementIntentTypedData,
 } from "../src/intents/settlement-intent.js";
 import { hashLeaf, type MerkleLeaf } from "../src/intents/merkle.js";
-import { ROUTER_V2_ABI } from "../src/router/abi.js";
+import { REZON_FORGE_ABI } from "../src/forge/abi.js";
 import {
   awaitReceipt,
   broadcastClaim,
   broadcastPublishSettlement,
   makeAgentWalletClient,
-} from "../src/router/client.js";
+} from "../src/forge/client.js";
 
 const RPC = process.env.RT_RPC_URL ?? "https://sepolia.base.org";
 const CHAIN_ID = 84532;
@@ -52,7 +52,7 @@ const WINNER_INDEX = Number.parseInt(process.env.RT_WINNER_WALLET_INDEX ?? "1", 
 
 if (!ROUTER) throw new Error("RT_ROUTER_ADDRESS required");
 if (!MNEMONIC) throw new Error("RT_AGENT_MNEMONIC required");
-if (!QID) throw new Error("RT_QID required (the bytes32 question_id from broadcast-full.ts)");
+if (!QID) throw new Error("RT_QID required (the bytes32 question_id, e.g. captured from run-battle.ts output)");
 
 const c = {
   cyan: (s: string) => `\x1b[36m${s}\x1b[0m`,
@@ -94,7 +94,7 @@ async function main() {
   log("1/5", "read pool from Router.questions(qid)");
   const q = await publicClient.readContract({
     address: ROUTER!,
-    abi: ROUTER_V2_ABI,
+    abi: REZON_FORGE_ABI,
     functionName: "questions",
     args: [QID!],
   });
