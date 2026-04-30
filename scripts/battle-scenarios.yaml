@@ -124,7 +124,37 @@ scenarios:
     description: |
       We need finality under 4 seconds, BFT safety, and graceful
       handling of validator churn at ~5 validators/month.
-    success_criteria:
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **technical** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - finality_under_4s: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - bft_safety_proof: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - churn_resilient: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    success_criteria:
       - { name: finality_under_4s,   type: boolean, target: "true",  weight: 40 }
       - { name: bft_safety_proof,    type: boolean, target: "true",  weight: 35 }
       - { name: churn_resilient,     type: boolean, target: "true",  weight: 25 }
@@ -140,7 +170,38 @@ scenarios:
   - id: q02_tech_db_choice
     domain: technical
     title: "Postgres vs FoundationDB for a 50TB append-mostly event store?"
-    description: "Consider operational burden, tooling maturity, latency tail."
+    description: |
+      Consider operational burden, tooling maturity, latency tail.
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **technical** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - 50tb_supported: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - ops_burden_low: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - p99_under_50ms: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."
     success_criteria:
       - { name: 50tb_supported,    type: boolean, target: "true", weight: 40 }
       - { name: ops_burden_low,    type: boolean, target: "true", weight: 30 }
@@ -154,7 +215,38 @@ scenarios:
   - id: q03_tech_caching
     domain: technical
     title: "Cache-invalidation strategy for a 10M-entry CDN with 30% mutation rate?"
-    description: "TTL vs versioned vs purge-on-write tradeoffs."
+    description: |
+      TTL vs versioned vs purge-on-write tradeoffs.
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **technical** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - addresses_thundering_herd: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - cost_bounded: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - stale_window_under_60s: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."
     success_criteria:
       - { name: addresses_thundering_herd, type: boolean, target: "true", weight: 40 }
       - { name: cost_bounded,              type: boolean, target: "true", weight: 30 }
@@ -168,7 +260,38 @@ scenarios:
   - id: q04_tech_lang_runtime
     domain: technical
     title: "Pick a runtime for a 10k-RPS WebSocket fanout server."
-    description: "Go, Rust, or Erlang. Justify against memory, ops, devex."
+    description: |
+      Go, Rust, or Erlang. Justify against memory, ops, devex.
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **technical** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - handles_10k_rps: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - memory_bounded: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - deployable_by_2_devs: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."
     success_criteria:
       - { name: handles_10k_rps,      type: boolean, target: "true", weight: 40 }
       - { name: memory_bounded,       type: boolean, target: "true", weight: 30 }
@@ -465,36 +588,720 @@ sybil_scenarios:
       Operator (mnemonic seed shared) sponsors a question via ivan,
       then votes for their preferred solver via ivan2. Honest voters
       grace + carol balance the influence.
-    sybil_links: [[ivan, ivan2]]
-    sponsor: ivan
-    solvers: [bob, heidi]
-    voters: [ivan2, grace, carol]
-    intended_winner_profile: heidi  # honest voters dominate
-    expected_outcome: defense_holds
-    expected_sybil_findings: ["sponsor_voter_link:ivan-ivan2"]
-
-  - id: sybil02_solver_collusion
-    title: "Sybil solver collusion — two wallets submit near-identical solutions."
-    description: |
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **technical** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - trace_overhead_under_2pct: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - sampling_smart: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - cardinality_bounded: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    sybil_links: [[ivan, ivan2]]
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **technical** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - covers_supply_chain: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - covers_seed_recovery: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - covers_phishing: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    sponsor: ivan
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **technical** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - read_under_10ms: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - ttl_changes_atomic: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - works_at_1m_users: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    solvers: [bob, heidi]
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **technical** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - write_p99_under_20ms: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - cross_shard_tx_safe: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - rebalance_no_downtime: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    voters: [ivan2, grace, carol]
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **governance** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - sybil_resistant: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - cap_ex_low: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - explainable_outcome: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    intended_winner_profile: heidi  # honest voters dominate
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **governance** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - drawdown_under_30pct: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - yields_above_3pct: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - counterparty_capped: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    expected_outcome: defense_holds
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **governance** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - appeals_bounded: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - arbiter_incentive_safe: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - under_72h_resolution: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    expected_sybil_findings: ["sponsor_voter_link:ivan-ivan2"]
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **governance** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - cycles_prevented: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - revocation_instant: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - depth_capped: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **governance** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - liveness_preserved: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - safety_preserved: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - bootstrap_workable: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."  - id: sybil02_solver_collusion
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **policy** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - privacy_minimised: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - sanctions_compliant: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - agent_friendly: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    title: "Sybil solver collusion — two wallets submit near-identical solutions."
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **policy** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - gdpr_compliant: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - vendor_lockin_low: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - latency_acceptable: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    description: |
       ivan and ivan2 both submit solutions with similar reasoning
       tree shape. Honest voters carol + grace + eve must pick the
       better-grounded one. Audit flags content similarity.
-    sybil_links: [[ivan, ivan2]]
-    sponsor: alice
-    solvers: [ivan, ivan2, heidi]
-    voters: [carol, grace, eve]
-    intended_winner_profile: heidi
-    expected_outcome: defense_holds
-    expected_sybil_findings: ["solver_collusion:ivan-ivan2"]
-
-  - id: sybil03_self_vote
-    title: "Self-vote — solver votes for own solution from a second wallet."
-    description: |
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **policy** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - kill_switch_present: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - audit_log_immutable: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - bounded_loss: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    sybil_links: [[ivan, ivan2]]
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **policy** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - prevents_strip_mining: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - contributor_friendly: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - copyleft_consistent: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    sponsor: alice
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **design** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - scannable_in_3s: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - progressive_disclosure: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - keyboard_first: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    solvers: [ivan, ivan2, heidi]
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **design** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - under_60s_to_first_action: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - recoverable: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - explains_costs: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    voters: [carol, grace, eve]
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **design** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - machine_parseable: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - prescriptive_action: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - stable_codes: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    intended_winner_profile: heidi
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **design** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - cost_predictable: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - free_tier_useful: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - enterprise_pathway: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    expected_outcome: defense_holds
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **economic** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - alignment_preserved: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - cliff_handles_attrition: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - tax_efficient: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    expected_sybil_findings: ["solver_collusion:ivan-ivan2"]
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **economic** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - maker_subsidy_bounded: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - revenue_predictable: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - anti_wash_trade: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **economic** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      - collusion_resistant: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - under_reporting_costly: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      - deterministic_payout: must be addressed with a specific, observable proof. Vague language ("we'll handle this carefully") doesn't satisfy.
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."  - id: sybil03_self_vote
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **general** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    title: "Self-vote — solver votes for own solution from a second wallet."
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **general** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    description: |
       Mallory submits a solution from mallory and votes for it from
       mallory2 (same operator). With only 1 sybil voter and 2 honest
       voters (carol, grace), conviction-weighted aggregation should
       not flip the outcome.
-    sybil_links: [[mallory, mallory2]]
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **general** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    sybil_links: [[mallory, mallory2]]
     sponsor: alice
     solvers: [mallory, bob]
     voters: [mallory2, carol, grace]
@@ -509,7 +1316,35 @@ sybil_scenarios:
       solution; ivan3 votes for ivan's solution. Honest voters
       (carol, grace, eve) and an honest solver (heidi) prove the
       trade does not capture a 3-criterion-weighted majority.
-    sybil_links: [[ivan, ivan2, ivan3]]
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **general** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    sybil_links: [[ivan, ivan2, ivan3]]
     sponsor: alice
     solvers: [ivan, ivan2, ivan3, heidi]
     voters: [ivan, ivan2, ivan3, carol, grace, eve]
@@ -523,7 +1358,35 @@ sybil_scenarios:
       ivan sponsors with the floor amount; ivan2 cosponsors to
       match. The audit should detect both contributions from the
       same operator and surface fee_share routing risks.
-    sybil_links: [[ivan, ivan2]]
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **general** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    sybil_links: [[ivan, ivan2]]
     sponsor: ivan
     cosponsors: [ivan2]
     solvers: [bob, heidi]
@@ -546,7 +1409,35 @@ attack_scenarios:
       POST to /v1/problems/:id/fund. Backend's intent-expiry guard
       (added loop 0136) MUST reject with 400 BAD_REQUEST and an
       action that names `expires_at`.
-    attack: expired_intent
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **general** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    attack: expired_intent
     expected_defense_layer: backend_intake
     expected_http_status: 400
     expected_error_code: VALIDATION_ERROR
@@ -559,7 +1450,35 @@ attack_scenarios:
       platform's allowed cap, e.g., 2000bp = 20%). Backend cap
       guard (loop 0127) rejects at /v1/problems/:id/fund with
       VALIDATION_ERROR.
-    attack: feeshare_cap_violation
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **general** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    attack: feeshare_cap_violation
     expected_defense_layer: backend_intake
     expected_http_status: 400
     expected_error_code: VALIDATION_ERROR
@@ -571,7 +1490,35 @@ attack_scenarios:
       Mallory funds successfully, then re-broadcasts the same intent
       with the same nonce (flips signature replay → typed-data nonce
       already used). The chain's per-funder nonce check MUST revert.
-    attack: nonce_reuse
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **general** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    attack: nonce_reuse
     expected_defense_layer: chain_revert
     expected_outcome: expected_failure
 
@@ -582,7 +1529,35 @@ attack_scenarios:
       − 1 wei (below the per-Q minimum). Chain reverts with
       RouterBondBelowFloor (or backend rejects at intake if it sees
       the violation first; assertion accepts EITHER layer).
-    attack: subfloor_bond
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **general** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    attack: subfloor_bond
     expected_defense_layer: backend_or_chain
     expected_outcome: expected_failure
 
@@ -593,7 +1568,35 @@ attack_scenarios:
       passes, then attempt to cast a vote. Backend returns 400
       with an error code referring to the deadline; if it slips
       through to chain, the chain reverts.
-    attack: late_vote
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **general** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    attack: late_vote
     expected_defense_layer: backend_or_chain
     expected_outcome: expected_failure
 
@@ -605,6 +1608,34 @@ attack_scenarios:
       MUST revert (no settlement → claim fails); also tests the
       case where a real settlement is published with a different
       root than the attacker assumes.
-    attack: frontrun_claim
+      
+      
+      ## Operating constraints (auto-extended)
+      
+      This scenario sits in the **general** domain. The constraints below
+      are what make a credible solution distinguishable from a confidently-
+      worded summary.
+      
+      **Why this is hard.** Solutions need to address every success criterion
+      with a falsifiable claim — not a soft assertion. Voters reward solvers
+      who concede uncertainty where it's real and provide proof where it's
+      provable. A solution that paraphrases the question without doing
+      load-bearing reasoning typically settles in the bottom half of the
+      ranking, regardless of style.
+      
+      **Success criteria (restated for the solver).**
+      
+      
+      **What disqualifies a solution.** Hand-waving over the trade-offs.
+      Citing tools the team doesn't run without the operational cost. Solving
+      a different question than the one asked. Conflating "can be done" with
+      "can be done at our scale." Voters with experience in this domain will
+      notice and rank you accordingly.
+      
+      **What earns rank.** Walking through the failure modes one-by-one,
+      showing how the proposed approach fails-safe in each, and quantifying
+      the residual risk. Solutions that lead with "here's what could go
+      wrong, here's how I detect it, here's how I roll back" consistently
+      out-rank those that lead with "here's the architecture diagram."    attack: frontrun_claim
     expected_defense_layer: chain_revert
     expected_outcome: expected_failure
