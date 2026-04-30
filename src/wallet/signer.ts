@@ -35,7 +35,7 @@ export interface SignLoginInput {
   /** Unix seconds. Backend enforces ±5 min freshness window;
    *  caller should use Math.floor(Date.now()/1000) immediately
    *  before sign. */
-  issuedAt: number;
+  expiresAt: number;
   /** Defaults to DEFAULT_LOGIN_DOMAIN; override only for tests
    *  or operators using a custom SIGNING_DOMAIN_* env set. */
   domain?: LoginDomain;
@@ -65,9 +65,9 @@ export async function signWalletLoginIntent(
       `wallet chainId ${input.wallet.chainId} does not match domain chainId ${domain.chainId} — signature would be rejected by backend`,
     );
   }
-  if (!Number.isInteger(input.issuedAt) || input.issuedAt <= 0) {
+  if (!Number.isInteger(input.expiresAt) || input.expiresAt <= 0) {
     throw new Error(
-      `issuedAt must be a positive integer unix-seconds, got ${input.issuedAt}`,
+      `expiresAt must be a positive integer unix-seconds, got ${input.expiresAt}`,
     );
   }
 
@@ -75,7 +75,7 @@ export async function signWalletLoginIntent(
   const message: WalletLoginIntent = {
     ethAddress: input.wallet.address,
     chainId: BigInt(domain.chainId),
-    issuedAt: BigInt(input.issuedAt),
+    expiresAt: BigInt(input.expiresAt),
   };
 
   const signature = await account.signTypedData({
@@ -88,7 +88,7 @@ export async function signWalletLoginIntent(
   return {
     address: input.wallet.address,
     chain_id: domain.chainId,
-    issued_at: input.issuedAt,
+    expires_at: input.expiresAt,
     signature,
   };
 }
@@ -108,7 +108,7 @@ export async function verifySignedLoginIntent(
   const message: WalletLoginIntent = {
     ethAddress: body.address as Address,
     chainId: BigInt(body.chain_id),
-    issuedAt: BigInt(body.issued_at),
+    expiresAt: BigInt(body.expires_at),
   };
   return verifyTypedData({
     address: body.address as Address,

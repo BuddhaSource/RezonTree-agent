@@ -13,7 +13,7 @@
 //   - Expected address (public knowledge, derived via any
 //     BIP-44 compliant tool): 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
 //   - chainId: 84532 (Base Sepolia)
-//   - issuedAt: 1_700_000_000 (a fixed past timestamp)
+//   - expiresAt: 1_700_000_000 (a fixed past timestamp)
 //   - Domain: default RezonTree signing domain
 //
 // Expected recovered address after sign-then-verify MUST equal
@@ -71,17 +71,17 @@ describe("deriveAgentWallet — HD path m/44'/60'/0'/0/N", () => {
 });
 
 describe("signWalletLoginIntent — EIP-712 round-trip", () => {
-  const ISSUED_AT = 1_700_000_000;
+  const EXPIRES_AT = 1_700_000_000;
 
   it("produces a signature whose recovered address matches the signer", async () => {
     const wallet = deriveAgentWallet(HARDHAT_TEST_MNEMONIC, 0, 84532);
     const body = await signWalletLoginIntent({
       wallet,
-      issuedAt: ISSUED_AT,
+      expiresAt: EXPIRES_AT,
     });
     expect(body.address.toLowerCase()).toBe(HARDHAT_ACCOUNT_0);
     expect(body.chain_id).toBe(84532);
-    expect(body.issued_at).toBe(ISSUED_AT);
+    expect(body.expires_at).toBe(EXPIRES_AT);
     expect(body.signature).toMatch(/^0x[0-9a-f]{130}$/); // 65 bytes
 
     // Round-trip: the signature verifies against the signer.
@@ -89,10 +89,10 @@ describe("signWalletLoginIntent — EIP-712 round-trip", () => {
     expect(ok).toBe(true);
   });
 
-  it("is deterministic for fixed (wallet, issuedAt, domain) — same signature every time", async () => {
+  it("is deterministic for fixed (wallet, expiresAt, domain) — same signature every time", async () => {
     const wallet = deriveAgentWallet(HARDHAT_TEST_MNEMONIC, 0, 84532);
-    const a = await signWalletLoginIntent({ wallet, issuedAt: ISSUED_AT });
-    const b = await signWalletLoginIntent({ wallet, issuedAt: ISSUED_AT });
+    const a = await signWalletLoginIntent({ wallet, expiresAt: EXPIRES_AT });
+    const b = await signWalletLoginIntent({ wallet, expiresAt: EXPIRES_AT });
     expect(a.signature).toBe(b.signature);
   });
 
@@ -101,32 +101,32 @@ describe("signWalletLoginIntent — EIP-712 round-trip", () => {
     await expect(
       signWalletLoginIntent({
         wallet,
-        issuedAt: ISSUED_AT,
+        expiresAt: EXPIRES_AT,
         // Default domain is 84532; wallet is 1
       }),
     ).rejects.toThrow(/chainId/);
   });
 
-  it("rejects non-positive issuedAt", async () => {
+  it("rejects non-positive expiresAt", async () => {
     const wallet = deriveAgentWallet(HARDHAT_TEST_MNEMONIC, 0, 84532);
     await expect(
-      signWalletLoginIntent({ wallet, issuedAt: 0 }),
-    ).rejects.toThrow(/issuedAt/);
+      signWalletLoginIntent({ wallet, expiresAt: 0 }),
+    ).rejects.toThrow(/expiresAt/);
     await expect(
-      signWalletLoginIntent({ wallet, issuedAt: -1 }),
-    ).rejects.toThrow(/issuedAt/);
+      signWalletLoginIntent({ wallet, expiresAt: -1 }),
+    ).rejects.toThrow(/expiresAt/);
   });
 
   it("LOAD-BEARING: verification FAILS if message fields are tampered with", async () => {
     const wallet = deriveAgentWallet(HARDHAT_TEST_MNEMONIC, 0, 84532);
     const body = await signWalletLoginIntent({
       wallet,
-      issuedAt: ISSUED_AT,
+      expiresAt: EXPIRES_AT,
     });
 
-    // Tamper with issued_at — verification should reject.
-    const tamperedIssuedAt = { ...body, issued_at: ISSUED_AT + 1 };
-    expect(await verifySignedLoginIntent(tamperedIssuedAt)).toBe(false);
+    // Tamper with expires_at — verification should reject.
+    const tamperedExpiresAt = { ...body, expires_at: EXPIRES_AT + 1 };
+    expect(await verifySignedLoginIntent(tamperedExpiresAt)).toBe(false);
 
     // Tamper with claimed address — verification should reject.
     const tamperedAddress = {

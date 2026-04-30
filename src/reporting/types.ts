@@ -38,7 +38,7 @@ export interface ErrorReport {
   /** Stack trace, redacted where useful. */
   stack?: string;
   /** Freeform context — the call site attaches whatever is
-   *  useful for triage (problemId, roundId, tool name, etc.). */
+   *  useful for triage (questionId, roundId, tool name, etc.). */
   context?: Record<string, unknown>;
 }
 

@@ -6,6 +6,119 @@
 > Written at cartridge loop 0068 (8 of 8 testnet-arc loops —
 > the next action is yours: run it end-to-end for the first
 > time).
+
+## Quick path — audited on-chain rounds
+
+Drive the full Fund → Commit → Vote → Settle → Claim (winner + fee)
+→ Bond recovery cycle against a live Router without the LLM agent
+stack. Every step is fund-conservation-audited; any drift aborts
+the script with the responsible line.
+
+```bash
+# one-shot: 8 audited on-chain steps, operator sees final balance sheet
+RT_ROUTER_ADDRESS=0x836d931A384faefB14A72F6323638c373baefE2c \
+RT_AGENT_DOMAIN_VERIFYING_CONTRACT=$RT_ROUTER_ADDRESS \
+npx tsx scripts/broadcast-full.ts
+
+# continuous: loop forever, per-iter log + summary line per result
+ITER_DELAY=3 ./scripts/continuous-loop.sh
+# Ctrl-C: prints ok/fail count
+# summary log: logs/continuous-loop/summary-<run_id>.log
+# per-iter log: logs/continuous-loop/iter-<run_id>-NNN.log
+
+# standalone balance sheet (any time)
+npx tsx scripts/audit-balances.ts
+```
+
+### Wallet roles (BIP-44 `m/44'/60'/0'/0/N` from `RT_AGENT_MNEMONIC`)
+
+| N | Role | Receives | Pays |
+|---|------|----------|------|
+| 0 | questioner + funder + oracle + admin | — | fund (bounty) |
+| 1 | solver | pool × (1 − feeBps/10000) + bond refund | commit bond |
+| 2 | voter | bond refund | vote bond |
+| 3 | `fee_wallet` | pool × (feeBps/10000) | — |
+
+### Economics per round (PLATFORM_FEE_BPS = 1000 default = 10%)
+
+```
+w0  −fundAmount                     (full bounty)
+w1  +fundAmount × 0.9               (pool share; bond refunded separately)
+w2   0                              (bond refunded)
+fee +fundAmount × 0.1               (platform cut)
+Router:  0                          (fund flows through; bonds in+out)
+chain total:  conserved             (USDC never leaves the system)
+```
+
+### Operator responsibilities
+
+- **Refill w0** when it drops below 2 USDC (→ Circle Base Sepolia faucet).
+- **Sweep Router residuals** if non-zero: `cast send <router>
+  sweepResiduals(address,uint256) <to> <amount>` — admin-only.
+- **Withdraw from fee_wallet** whenever the business wants to take
+  fees off-chain (it's a regular EOA, `cast send <usdc> transfer(...)`).
+
+### Wallet economics — sponsor drain + rebalance loop
+
+Every successful scenario routes USDC from the **sponsor wallet**
+(alice) to the **solver-winner wallet** (bob) and a small fee slice
+to the **fee_wallet** (operator). This is by design — protocol
+economics demand that sponsors pay solvers via the pool — so over a
+long battle:
+
+| Wallet  | Direction      | Why                                  |
+|---------|----------------|--------------------------------------|
+| alice   | always loses   | sponsor — bounty source              |
+| bob     | always gains   | solver-winner — prize recipient      |
+| fee_wallet (operator) | small gains | platform fee (PLATFORM_FEE_BPS) |
+
+**Funding floor.** Each role wallet should hold at least
+`min_sponsorship × 1.2` to clear edge-case reverts (gas overhead +
+permit + receipt confirmation slack). For the default Phase D config
+(`min_sponsorship = 1 USDC`) that means ~1.2 USDC per role at all
+times — but practical operating buffer is ≥10 USDC for the sponsor
+so a string of scenarios never wedges the harness mid-run.
+
+**Operational pattern.** The harness now rebalances automatically
+every N=10 scenarios (`RT_REBALANCE_EVERY=10` by default). The
+rebalance helper at `scripts/rebalance.ts` checks alice's balance;
+if she is below `MIN_SPONSOR_BUFFER_USDC` (default 10) it transfers
+`SPONSOR_REFILL_USDC` (default 20) from bob (preferred — keeps total
+in-system-USDC unchanged) or operator (failsafe).
+
+```bash
+# Manual one-shot rebalance (auto-detect source):
+pnpm tsx scripts/rebalance.ts
+
+# Dry-run — print the decision without sending tx:
+pnpm tsx scripts/rebalance.ts --dry
+
+# Targeted top-ups (legacy scripts still work):
+pnpm tsx scripts/topup-from-bob.ts 30        # bob → alice 30 USDC
+pnpm tsx scripts/topup-from-operator.ts 10   # operator → alice 10 USDC
+```
+
+Each script bails out cleanly (exit 0) if alice is already above the
+buffer, and refuses (exit 2) to drain the source below
+`SOURCE_MIN_USDC`.
+
+Tunable env knobs:
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `MIN_SPONSOR_BUFFER_USDC` | 10 | Top-up trigger floor for alice |
+| `SPONSOR_REFILL_USDC`     | 20 | Refill amount per top-up |
+| `SOURCE_MIN_USDC`         | 30 | Min retained on bob/operator |
+| `RT_REBALANCE_EVERY`      | 10 | Scenarios between auto-checks (0 to disable) |
+| `RT_REBALANCE_DRY`        | unset | Set to `1` to dry-run rebalance inside the harness |
+
+### If you want Claude-driven agents (generates LLM content)
+
+Continue with Step 1 below — the existing task YAMLs wire Claude
+through the same MCP tools (which internally take the audited
+Router-v2 path from loop 0080).
+
+---
 >
 > **If something goes wrong at any step, the reporter pipe
 > (loop 0064) captures it to `logs/errors-YYYY-MM-DD.jsonl`

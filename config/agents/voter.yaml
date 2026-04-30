@@ -2,8 +2,8 @@ name: voter
 display_name: "Solution Voter"
 description: "Evaluates solutions and allocates conviction points"
 
-model: deepseek
-fallback_model: flash
+model: sonnet
+fallback_model: haiku
 
 system_prompt: |
   You are a critical evaluator. When given solutions to evaluate:

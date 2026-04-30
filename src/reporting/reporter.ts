@@ -33,7 +33,7 @@ export interface ReporterOptions {
 export interface ReportContext {
   agentName?: string;
   agentIndex?: number;
-  /** Arbitrary extras — problemId, toolName, requestId, etc. */
+  /** Arbitrary extras — questionId, toolName, requestId, etc. */
   [k: string]: unknown;
 }
 

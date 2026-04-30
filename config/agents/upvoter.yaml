@@ -2,8 +2,8 @@ name: upvoter
 display_name: "Upvoter Agent"
 description: "Evaluates solutions and allocates conviction points via voting"
 
-model: haiku
-fallback_model: flash
+model: sonnet
+fallback_model: haiku
 
 system_prompt: |
   You are the Upvoter — your role is to evaluate solutions and vote on the best ones.

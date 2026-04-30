@@ -2,8 +2,8 @@ name: solver-05
 display_name: "Solver 05"
 description: "Answers open problems and votes on solutions on the RezonTree protocol"
 
-model: haiku
-fallback_model: flash
+model: sonnet
+fallback_model: haiku
 
 system_prompt: |
   You are a Solver on the RezonTree protocol. You have TWO capabilities:

@@ -1,0 +1,610 @@
+# battle-scenarios.yaml — Phase D end-to-end demo scenarios.
+#
+# 24 questions cover technical, governance, policy, design, and
+# economic domains, plus dedicated sybil + attack-vector lanes.
+#
+# Roles map to wallet indices derived from RT_AGENT_MNEMONIC via
+# m/44'/60'/0'/0/N. The runner (run-battle.ts) pulls the wallet
+# pool from the bootstrap file at the configured index range.
+#
+# Schema notes:
+#   role pool letters (a..n) — abstract; the runner maps each
+#     letter to a wallet index when bootstrapping (default a=1, b=2,
+#     c=3, … and 0 is reserved for the operator/oracle/fee).
+#   sybil_links — list-of-lists; each inner list names role letters
+#     that share an operator. The runner enforces "same-mnemonic
+#     subgroup" so an operator can run multiple wallets but
+#     reputation/payout audits flag the linkage.
+#   attack — single-string label (one per scenario). The runner
+#     dispatches to a named attack handler that asserts the
+#     defense (HTTP 4xx code at backend OR chain revert OR
+#     no-disproportionate-influence on outcome).
+#   expected_outcome — `success` | `expected_failure` |
+#     `defense_holds` (for attack scenarios that should NOT settle
+#     the way the attacker wanted).
+#
+# R-CHAIN-VERIFIES-INTENT — every signed intent reaches the chain
+#   and is verified there; backend rejection is a fast-fail, not a
+#   substitute for chain enforcement.
+# R-CLIENT-IS-TRUST-ORIGIN — clients construct intents from the
+#   advertised preflight; attacker scenarios deliberately violate
+#   this to test detection.
+# R-MALICIOUS-FLOW — attack catalogue tracks each malicious flow
+#   to its defense layer.
+
+version: 1
+chain: base-sepolia
+forge_address_env: RT_FORGE_ADDRESS
+backend_url_env: RT_BACKEND_URL
+
+# Wallet pool — operator funds these BEFORE running the battle.
+# Each wallet needs:
+#   • ~0.01 ETH gas (Base Sepolia faucet)
+#   • USDC: 5 USDC for sponsors, 2 USDC for solvers/voters (covers
+#     bond+fee at default floors of 0.5 USDC bond, 0.1 USDC fee).
+wallet_pool:
+  operator:    { index: 0, role: "oracle + admin + fee_wallet" }
+  alice:       { index: 1, role: "primary sponsor" }
+  bob:         { index: 2, role: "primary solver" }
+  carol:       { index: 3, role: "primary voter" }
+  dave:        { index: 4, role: "secondary solver" }
+  eve:         { index: 5, role: "secondary voter" }
+  frank:       { index: 6, role: "cosponsor" }
+  grace:       { index: 7, role: "honest voter" }
+  heidi:       { index: 8, role: "honest solver" }
+  ivan:        { index: 9, role: "sybil operator wallet 1" }
+  ivan2:       { index: 10, role: "sybil operator wallet 2 (linked to ivan)" }
+  ivan3:       { index: 11, role: "sybil operator wallet 3 (linked to ivan)" }
+  mallory:     { index: 12, role: "attacker" }
+  mallory2:    { index: 13, role: "attacker secondary" }
+  fee_wallet:  { index: 3, role: "platform fee recipient (alias of carol intentionally — fee_share routing)" }
+
+# ───────────────────────────────────────────────────────────────
+# DOMAIN MIX (24 questions)
+#   technical: 8     governance: 5     policy: 4
+#   design: 4        economic: 3
+# ───────────────────────────────────────────────────────────────
+
+scenarios:
+  # ── smoke (1) — uses only operator/alice/bob; runs with 3-wallet
+  #     minimum funding. First end-to-end chain broadcast under v2.5.
+  # ──────────────────────────────────────────────────────────────
+  - id: q00_smoke_min_wallets
+    domain: technical
+    title: "How do you ship a NOT NULL column to a 50M-row Postgres table without locking writes for the duration of the deploy?"
+    description: |
+      We run a Postgres 18 cluster on AWS RDS that handles ~12k
+      writes per second sustained, with peaks at 40k around weekday
+      mornings. The largest table — `events` — has 53M rows, sits
+      at 47 GB on disk including indexes, and is JOINed into 80% of
+      our hot-path queries. We need to add a `tenant_id BIGINT NOT
+      NULL` column that all subsequent code paths will reference,
+      including a foreign-key constraint to `tenants.id`. The
+      backfill value for existing rows is derivable from a join to
+      `users` (every row's user_id maps to exactly one tenant).
+      Three constraints make this a real problem rather than a
+      textbook one. First: we cannot take an exclusive lock on the
+      table for more than 100ms during business hours; the
+      synchronous-replication standby falls behind aggressively
+      under any AccessExclusiveLock and our SLO budget for
+      replication lag is 250ms. Second: the deploy pipeline must
+      be reversible — if the new code path fails canary, we need
+      to roll back the schema change and the application code
+      atomically, with no partial-state data corruption. Third:
+      the foreign-key constraint cannot be added with NOT VALID +
+      VALIDATE CONSTRAINT alone because we want the constraint
+      validated before any writes that could violate it land.
+      Solutions should walk through: how the column is added with
+      DEFAULT NULL, how the backfill is chunked (batch size,
+      throttle, monitoring), when the NOT NULL is enforced, how
+      the foreign key is added without a long-held lock, what
+      the canary rollback looks like at each stage, and how to
+      observe in-flight progress. A solution that says "use
+      pg_repack" without explaining the lock interaction is
+      insufficient. A solution that requires zero-downtime tooling
+      we don't already run (e.g. Spilo, gh-ost) needs to justify
+      that operational cost against the alternative.
+    success_criteria:
+      - { name: zero_lock_during_deploy, type: boolean, target: "true", weight: 40 }
+      - { name: rollback_documented,     type: boolean, target: "true", weight: 35 }
+      - { name: backfill_chunked,        type: boolean, target: "true", weight: 25 }
+    sponsor: alice
+    cosponsors: []
+    solvers: [bob]
+    voters: [operator]
+    intended_winner_profile: bob
+    expected_solver_count: 1
+    expected_voter_count: 1
+    expected_outcome: success
+
+  # ── technical (8) ────────────────────────────────────────────
+  - id: q01_tech_consensus
+    domain: technical
+    title: "What's the right consensus algorithm for a 100-validator L2 with 1s blocks?"
+    description: |
+      We need finality under 4 seconds, BFT safety, and graceful
+      handling of validator churn at ~5 validators/month.
+    success_criteria:
+      - { name: finality_under_4s,   type: boolean, target: "true",  weight: 40 }
+      - { name: bft_safety_proof,    type: boolean, target: "true",  weight: 35 }
+      - { name: churn_resilient,     type: boolean, target: "true",  weight: 25 }
+    sponsor: alice
+    cosponsors: []
+    solvers: [bob, dave, heidi]
+    voters: [carol, eve, grace]
+    intended_winner_profile: bob
+    expected_solver_count: 3
+    expected_voter_count: 3
+    expected_outcome: success
+
+  - id: q02_tech_db_choice
+    domain: technical
+    title: "Postgres vs FoundationDB for a 50TB append-mostly event store?"
+    description: "Consider operational burden, tooling maturity, latency tail."
+    success_criteria:
+      - { name: 50tb_supported,    type: boolean, target: "true", weight: 40 }
+      - { name: ops_burden_low,    type: boolean, target: "true", weight: 30 }
+      - { name: p99_under_50ms,    type: boolean, target: "true", weight: 30 }
+    sponsor: alice
+    solvers: [bob, heidi]
+    voters: [carol, grace, eve]
+    intended_winner_profile: heidi
+    expected_outcome: success
+
+  - id: q03_tech_caching
+    domain: technical
+    title: "Cache-invalidation strategy for a 10M-entry CDN with 30% mutation rate?"
+    description: "TTL vs versioned vs purge-on-write tradeoffs."
+    success_criteria:
+      - { name: addresses_thundering_herd, type: boolean, target: "true", weight: 40 }
+      - { name: cost_bounded,              type: boolean, target: "true", weight: 30 }
+      - { name: stale_window_under_60s,    type: boolean, target: "true", weight: 30 }
+    sponsor: frank
+    solvers: [bob, dave]
+    voters: [carol, grace]
+    intended_winner_profile: bob
+    expected_outcome: success
+
+  - id: q04_tech_lang_runtime
+    domain: technical
+    title: "Pick a runtime for a 10k-RPS WebSocket fanout server."
+    description: "Go, Rust, or Erlang. Justify against memory, ops, devex."
+    success_criteria:
+      - { name: handles_10k_rps,      type: boolean, target: "true", weight: 40 }
+      - { name: memory_bounded,       type: boolean, target: "true", weight: 30 }
+      - { name: deployable_by_2_devs, type: boolean, target: "true", weight: 30 }
+    sponsor: alice
+    solvers: [heidi, bob]
+    voters: [carol, eve, grace]
+    intended_winner_profile: heidi
+    expected_outcome: success
+
+  - id: q05_tech_observability
+    domain: technical
+    title: "Tracing strategy for a 40-service mesh under 50ms p50 budget."
+    success_criteria:
+      - { name: trace_overhead_under_2pct, type: boolean, target: "true", weight: 40 }
+      - { name: sampling_smart,            type: boolean, target: "true", weight: 30 }
+      - { name: cardinality_bounded,       type: boolean, target: "true", weight: 30 }
+    sponsor: alice
+    solvers: [dave]
+    voters: [carol, grace]
+    intended_winner_profile: dave
+    expected_outcome: success
+
+  - id: q06_tech_security
+    domain: technical
+    title: "Threat model for a self-custody mobile wallet."
+    success_criteria:
+      - { name: covers_supply_chain,  type: boolean, target: "true", weight: 35 }
+      - { name: covers_seed_recovery, type: boolean, target: "true", weight: 35 }
+      - { name: covers_phishing,      type: boolean, target: "true", weight: 30 }
+    sponsor: alice
+    cosponsors: [frank]
+    solvers: [bob, heidi]
+    voters: [carol, grace, eve]
+    intended_winner_profile: heidi
+    expected_outcome: success
+
+  - id: q07_tech_data_model
+    domain: technical
+    title: "Schema design for hierarchical org permissions with up to 5 nesting levels."
+    success_criteria:
+      - { name: read_under_10ms,      type: boolean, target: "true", weight: 40 }
+      - { name: ttl_changes_atomic,   type: boolean, target: "true", weight: 30 }
+      - { name: works_at_1m_users,    type: boolean, target: "true", weight: 30 }
+    sponsor: alice
+    solvers: [bob, dave]
+    voters: [carol, grace]
+    intended_winner_profile: bob
+    expected_outcome: success
+
+  - id: q08_tech_scalability
+    domain: technical
+    title: "Sharding plan for a 500GB/day write-mostly Postgres cluster."
+    success_criteria:
+      - { name: write_p99_under_20ms, type: boolean, target: "true", weight: 40 }
+      - { name: cross_shard_tx_safe,  type: boolean, target: "true", weight: 35 }
+      - { name: rebalance_no_downtime, type: boolean, target: "true", weight: 25 }
+    sponsor: frank
+    solvers: [heidi]
+    voters: [carol, grace, eve]
+    intended_winner_profile: heidi
+    expected_outcome: success
+
+  # ── governance (5) ──────────────────────────────────────────
+  - id: q09_gov_voting
+    domain: governance
+    title: "Quadratic vs conviction voting for a 5k-member DAO with weekly proposals?"
+    success_criteria:
+      - { name: sybil_resistant,    type: boolean, target: "true", weight: 40 }
+      - { name: cap_ex_low,         type: boolean, target: "true", weight: 30 }
+      - { name: explainable_outcome, type: boolean, target: "true", weight: 30 }
+    sponsor: alice
+    solvers: [bob, dave]
+    voters: [carol, grace]
+    intended_winner_profile: bob
+    expected_outcome: success
+
+  - id: q10_gov_treasury
+    domain: governance
+    title: "Treasury diversification policy for a $50M DAO."
+    success_criteria:
+      - { name: drawdown_under_30pct, type: boolean, target: "true", weight: 40 }
+      - { name: yields_above_3pct,    type: boolean, target: "true", weight: 30 }
+      - { name: counterparty_capped,  type: boolean, target: "true", weight: 30 }
+    sponsor: alice
+    cosponsors: [frank]
+    solvers: [heidi, bob]
+    voters: [carol, eve, grace]
+    intended_winner_profile: heidi
+    expected_outcome: success
+
+  - id: q11_gov_dispute
+    domain: governance
+    title: "Dispute resolution mechanism for off-chain agent decisions."
+    success_criteria:
+      - { name: appeals_bounded,        type: boolean, target: "true", weight: 35 }
+      - { name: arbiter_incentive_safe, type: boolean, target: "true", weight: 35 }
+      - { name: under_72h_resolution,   type: boolean, target: "true", weight: 30 }
+    sponsor: alice
+    solvers: [bob]
+    voters: [carol, grace]
+    intended_winner_profile: bob
+    expected_outcome: success
+
+  - id: q12_gov_delegation
+    domain: governance
+    title: "Liquid democracy delegation tree depth limit."
+    success_criteria:
+      - { name: cycles_prevented,    type: boolean, target: "true", weight: 40 }
+      - { name: revocation_instant,  type: boolean, target: "true", weight: 30 }
+      - { name: depth_capped,        type: boolean, target: "true", weight: 30 }
+    sponsor: frank
+    solvers: [heidi]
+    voters: [carol, eve]
+    intended_winner_profile: heidi
+    expected_outcome: success
+
+  - id: q13_gov_quorum
+    domain: governance
+    title: "Quorum thresholds for a permissionless validator set."
+    success_criteria:
+      - { name: liveness_preserved,   type: boolean, target: "true", weight: 40 }
+      - { name: safety_preserved,     type: boolean, target: "true", weight: 35 }
+      - { name: bootstrap_workable,   type: boolean, target: "true", weight: 25 }
+    sponsor: alice
+    solvers: [dave, bob]
+    voters: [carol, grace]
+    intended_winner_profile: dave
+    expected_outcome: success
+
+  # ── policy (4) ──────────────────────────────────────────────
+  - id: q14_policy_kyc
+    domain: policy
+    title: "Tiered KYC policy for an agent-first protocol."
+    success_criteria:
+      - { name: privacy_minimised,   type: boolean, target: "true", weight: 40 }
+      - { name: sanctions_compliant, type: boolean, target: "true", weight: 35 }
+      - { name: agent_friendly,      type: boolean, target: "true", weight: 25 }
+    sponsor: alice
+    solvers: [heidi, bob]
+    voters: [carol, grace, eve]
+    intended_winner_profile: heidi
+    expected_outcome: success
+
+  - id: q15_policy_data
+    domain: policy
+    title: "Cross-border data residency policy for an analytics SaaS."
+    success_criteria:
+      - { name: gdpr_compliant,    type: boolean, target: "true", weight: 40 }
+      - { name: vendor_lockin_low, type: boolean, target: "true", weight: 30 }
+      - { name: latency_acceptable, type: boolean, target: "true", weight: 30 }
+    sponsor: alice
+    solvers: [bob]
+    voters: [carol, grace]
+    intended_winner_profile: bob
+    expected_outcome: success
+
+  - id: q16_policy_ai_safety
+    domain: policy
+    title: "Acceptable-use policy for autonomous trading agents."
+    success_criteria:
+      - { name: kill_switch_present, type: boolean, target: "true", weight: 40 }
+      - { name: audit_log_immutable, type: boolean, target: "true", weight: 30 }
+      - { name: bounded_loss,        type: boolean, target: "true", weight: 30 }
+    sponsor: alice
+    cosponsors: [frank]
+    solvers: [heidi, dave]
+    voters: [carol, grace, eve]
+    intended_winner_profile: heidi
+    expected_outcome: success
+
+  - id: q17_policy_open_source
+    domain: policy
+    title: "OSS license selection for a multi-tenant infra product."
+    success_criteria:
+      - { name: prevents_strip_mining, type: boolean, target: "true", weight: 40 }
+      - { name: contributor_friendly,  type: boolean, target: "true", weight: 35 }
+      - { name: copyleft_consistent,   type: boolean, target: "true", weight: 25 }
+    sponsor: frank
+    solvers: [bob]
+    voters: [carol]
+    intended_winner_profile: bob
+    expected_outcome: success
+
+  # ── design (4) ──────────────────────────────────────────────
+  - id: q18_design_dashboard
+    domain: design
+    title: "Information architecture for a 7-tab agent dashboard."
+    success_criteria:
+      - { name: scannable_in_3s,     type: boolean, target: "true", weight: 40 }
+      - { name: progressive_disclosure, type: boolean, target: "true", weight: 30 }
+      - { name: keyboard_first,      type: boolean, target: "true", weight: 30 }
+    sponsor: alice
+    solvers: [heidi]
+    voters: [carol, grace]
+    intended_winner_profile: heidi
+    expected_outcome: success
+
+  - id: q19_design_onboarding
+    domain: design
+    title: "Onboarding flow for a wallet-first product (no email)."
+    success_criteria:
+      - { name: under_60s_to_first_action, type: boolean, target: "true", weight: 40 }
+      - { name: recoverable,               type: boolean, target: "true", weight: 30 }
+      - { name: explains_costs,            type: boolean, target: "true", weight: 30 }
+    sponsor: alice
+    solvers: [bob, heidi]
+    voters: [carol, grace, eve]
+    intended_winner_profile: heidi
+    expected_outcome: success
+
+  - id: q20_design_errors
+    domain: design
+    title: "Error-message design system for an agent-facing API."
+    success_criteria:
+      - { name: machine_parseable,    type: boolean, target: "true", weight: 40 }
+      - { name: prescriptive_action,  type: boolean, target: "true", weight: 35 }
+      - { name: stable_codes,         type: boolean, target: "true", weight: 25 }
+    sponsor: alice
+    solvers: [dave]
+    voters: [carol, grace]
+    intended_winner_profile: dave
+    expected_outcome: success
+
+  - id: q21_design_pricing
+    domain: design
+    title: "Pricing-page IA for a usage-billed dev tool."
+    success_criteria:
+      - { name: cost_predictable,    type: boolean, target: "true", weight: 40 }
+      - { name: free_tier_useful,    type: boolean, target: "true", weight: 30 }
+      - { name: enterprise_pathway,  type: boolean, target: "true", weight: 30 }
+    sponsor: frank
+    solvers: [bob]
+    voters: [carol]
+    intended_winner_profile: bob
+    expected_outcome: success
+
+  # ── economic (3) ────────────────────────────────────────────
+  - id: q22_econ_tokenomics
+    domain: economic
+    title: "Vesting schedule for a 4-year team allocation."
+    success_criteria:
+      - { name: alignment_preserved,    type: boolean, target: "true", weight: 40 }
+      - { name: cliff_handles_attrition, type: boolean, target: "true", weight: 30 }
+      - { name: tax_efficient,          type: boolean, target: "true", weight: 30 }
+    sponsor: alice
+    solvers: [heidi, bob]
+    voters: [carol, grace, eve]
+    intended_winner_profile: heidi
+    expected_outcome: success
+
+  - id: q23_econ_fees
+    domain: economic
+    title: "Fee model for a protocol with both takers and makers."
+    success_criteria:
+      - { name: maker_subsidy_bounded, type: boolean, target: "true", weight: 40 }
+      - { name: revenue_predictable,   type: boolean, target: "true", weight: 30 }
+      - { name: anti_wash_trade,       type: boolean, target: "true", weight: 30 }
+    sponsor: alice
+    cosponsors: [frank]
+    solvers: [bob, dave]
+    voters: [carol, grace]
+    intended_winner_profile: bob
+    expected_outcome: success
+
+  - id: q24_econ_incentives
+    domain: economic
+    title: "Incentive design for honest oracle reporting."
+    success_criteria:
+      - { name: collusion_resistant,    type: boolean, target: "true", weight: 40 }
+      - { name: under_reporting_costly, type: boolean, target: "true", weight: 35 }
+      - { name: deterministic_payout,   type: boolean, target: "true", weight: 25 }
+    sponsor: alice
+    solvers: [heidi]
+    voters: [carol, grace, eve]
+    intended_winner_profile: heidi
+    expected_outcome: success
+
+# ───────────────────────────────────────────────────────────────
+# SYBIL SCENARIOS (5)
+# Each isolates one sybil pattern. The runner asserts:
+#   • All wallets behave individually (chain accepts their txs)
+#   • Backend produces no anomaly that breaks settlement
+#   • The audit report flags the linkage in `sybil_findings`
+#   • For "self-vote" / "self-fund-self-vote", the outcome should
+#     NOT differ from a no-attack baseline given remaining honest
+#     voters' conviction.
+# ───────────────────────────────────────────────────────────────
+
+sybil_scenarios:
+  - id: sybil01_sponsor_voter
+    title: "Sybil sponsor + sybil voter — same operator funds and votes."
+    description: |
+      Operator (mnemonic seed shared) sponsors a question via ivan,
+      then votes for their preferred solver via ivan2. Honest voters
+      grace + carol balance the influence.
+    sybil_links: [[ivan, ivan2]]
+    sponsor: ivan
+    solvers: [bob, heidi]
+    voters: [ivan2, grace, carol]
+    intended_winner_profile: heidi  # honest voters dominate
+    expected_outcome: defense_holds
+    expected_sybil_findings: ["sponsor_voter_link:ivan-ivan2"]
+
+  - id: sybil02_solver_collusion
+    title: "Sybil solver collusion — two wallets submit near-identical solutions."
+    description: |
+      ivan and ivan2 both submit solutions with similar reasoning
+      tree shape. Honest voters carol + grace + eve must pick the
+      better-grounded one. Audit flags content similarity.
+    sybil_links: [[ivan, ivan2]]
+    sponsor: alice
+    solvers: [ivan, ivan2, heidi]
+    voters: [carol, grace, eve]
+    intended_winner_profile: heidi
+    expected_outcome: defense_holds
+    expected_sybil_findings: ["solver_collusion:ivan-ivan2"]
+
+  - id: sybil03_self_vote
+    title: "Self-vote — solver votes for own solution from a second wallet."
+    description: |
+      Mallory submits a solution from mallory and votes for it from
+      mallory2 (same operator). With only 1 sybil voter and 2 honest
+      voters (carol, grace), conviction-weighted aggregation should
+      not flip the outcome.
+    sybil_links: [[mallory, mallory2]]
+    sponsor: alice
+    solvers: [mallory, bob]
+    voters: [mallory2, carol, grace]
+    intended_winner_profile: bob
+    expected_outcome: defense_holds
+    expected_sybil_findings: ["self_vote:mallory-mallory2"]
+
+  - id: sybil04_round_robin_trade
+    title: "Round-robin vote trading between linked sybils."
+    description: |
+      ivan votes for ivan2's solution and ivan2 votes for ivan3's
+      solution; ivan3 votes for ivan's solution. Honest voters
+      (carol, grace, eve) and an honest solver (heidi) prove the
+      trade does not capture a 3-criterion-weighted majority.
+    sybil_links: [[ivan, ivan2, ivan3]]
+    sponsor: alice
+    solvers: [ivan, ivan2, ivan3, heidi]
+    voters: [ivan, ivan2, ivan3, carol, grace, eve]
+    intended_winner_profile: heidi
+    expected_outcome: defense_holds
+    expected_sybil_findings: ["vote_trade_ring:ivan-ivan2-ivan3"]
+
+  - id: sybil05_cosponsor_sybil
+    title: "Sybil cosponsor — second wallet matches sponsor to inflate pool."
+    description: |
+      ivan sponsors with the floor amount; ivan2 cosponsors to
+      match. The audit should detect both contributions from the
+      same operator and surface fee_share routing risks.
+    sybil_links: [[ivan, ivan2]]
+    sponsor: ivan
+    cosponsors: [ivan2]
+    solvers: [bob, heidi]
+    voters: [carol, grace, eve]
+    intended_winner_profile: heidi
+    expected_outcome: success  # not an attack on outcome — economic linkage only
+    expected_sybil_findings: ["cosponsor_link:ivan-ivan2"]
+
+# ───────────────────────────────────────────────────────────────
+# ATTACK VECTORS (6)
+# Runner asserts each attack is REJECTED (4xx HTTP or chain
+# revert) at the layer named in `expected_defense_layer`.
+# ───────────────────────────────────────────────────────────────
+
+attack_scenarios:
+  - id: atk01_expired_intent
+    title: "Already-expired SponsorIntent at intake."
+    description: |
+      Build a SponsorIntent with expiresAt = now − 1, sign it, and
+      POST to /v1/problems/:id/fund. Backend's intent-expiry guard
+      (added loop 0136) MUST reject with 400 BAD_REQUEST and an
+      action that names `expires_at`.
+    attack: expired_intent
+    expected_defense_layer: backend_intake
+    expected_http_status: 400
+    expected_error_code: VALIDATION_ERROR
+    expected_outcome: expected_failure
+
+  - id: atk02_feeshare_cap_violation
+    title: "feeShareBps over the platform cap."
+    description: |
+      Build a SponsorIntent with feeShareBps = 9999 (above the
+      platform's allowed cap, e.g., 2000bp = 20%). Backend cap
+      guard (loop 0127) rejects at /v1/problems/:id/fund with
+      VALIDATION_ERROR.
+    attack: feeshare_cap_violation
+    expected_defense_layer: backend_intake
+    expected_http_status: 400
+    expected_error_code: VALIDATION_ERROR
+    expected_outcome: expected_failure
+
+  - id: atk03_nonce_reuse
+    title: "Nonce reuse after a successful fund."
+    description: |
+      Mallory funds successfully, then re-broadcasts the same intent
+      with the same nonce (flips signature replay → typed-data nonce
+      already used). The chain's per-funder nonce check MUST revert.
+    attack: nonce_reuse
+    expected_defense_layer: chain_revert
+    expected_outcome: expected_failure
+
+  - id: atk04_subfloor_bond_commit
+    title: "Sub-floor bondAmount on commit."
+    description: |
+      Build a CommitIntent with bondAmount = preflight.recommended_bond
+      − 1 wei (below the per-Q minimum). Chain reverts with
+      RouterBondBelowFloor (or backend rejects at intake if it sees
+      the violation first; assertion accepts EITHER layer).
+    attack: subfloor_bond
+    expected_defense_layer: backend_or_chain
+    expected_outcome: expected_failure
+
+  - id: atk05_late_vote
+    title: "Vote after voting deadline."
+    description: |
+      Sponsor a question, advance time / wait until vote_deadline
+      passes, then attempt to cast a vote. Backend returns 400
+      with an error code referring to the deadline; if it slips
+      through to chain, the chain reverts.
+    attack: late_vote
+    expected_defense_layer: backend_or_chain
+    expected_outcome: expected_failure
+
+  - id: atk06_frontrun_claim
+    title: "Frontrunning sponsor → claim race."
+    description: |
+      A non-winner attempts to claim the pool with a fabricated
+      Merkle proof before the real settlement is published. Chain
+      MUST revert (no settlement → claim fails); also tests the
+      case where a real settlement is published with a different
+      root than the attacker assumes.
+    attack: frontrun_claim
+    expected_defense_layer: chain_revert
+    expected_outcome: expected_failure

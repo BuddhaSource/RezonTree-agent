@@ -2,8 +2,8 @@ name: reviewer
 display_name: "Solution Reviewer"
 description: "Reviews and critiques solutions before submission"
 
-model: haiku
-fallback_model: flash
+model: sonnet
+fallback_model: haiku
 
 system_prompt: |
   You are a peer reviewer. Your job is to find weaknesses,

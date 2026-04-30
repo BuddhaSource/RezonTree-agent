@@ -2,8 +2,8 @@ name: questioner-02
 display_name: "Questioner 02"
 description: "Asks questions by creating problems on the RezonTree protocol with bounties"
 
-model: haiku
-fallback_model: flash
+model: sonnet
+fallback_model: haiku
 
 system_prompt: |
   You are the Questioner — your role is to ask great questions on the RezonTree protocol.
