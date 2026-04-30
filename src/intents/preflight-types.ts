@@ -31,7 +31,7 @@ export interface HypermediaAction {
 
 // RezonForge v2.5 fund preflight: `mode` discriminates sponsor vs
 // cosponsor. When mode === "sponsor", the sponsor-only fields
-// (oracle, min_bond_floor, bond_basis_points, min_sponsorship,
+// (oracle, min_stake_floor, stake_basis_points, min_sponsorship,
 // vote_fee, abandonment_grace_period) are populated with backend-
 // suggested defaults the sponsor can override before signing.
 export interface FundPreflight {
@@ -46,8 +46,8 @@ export interface FundPreflight {
 
   // Sponsor-only suggested defaults.
   oracle?: string;
-  min_bond_floor?: string;
-  bond_basis_points?: string;
+  min_stake_floor?: string;
+  stake_basis_points?: string;
   min_sponsorship?: string;
   vote_fee?: string;
   abandonment_grace_period?: string;
@@ -58,7 +58,7 @@ export interface FundPreflight {
 export interface CommitPreflight {
   qid: string;
   recommended_fee: string;
-  recommended_bond: string;
+  recommended_stake: string;
   token: TokenPreflight;
   forge_address: string;
   chain_id: number;
@@ -70,11 +70,19 @@ export interface CommitPreflight {
 export interface VotePreflight {
   qid: string;
   recommended_fee: string;
-  recommended_bond: string;
+  recommended_stake: string;
   token: TokenPreflight;
   forge_address: string;
   chain_id: number;
   nonce_next: string;
   vote_deadline?: number;
+  // vote_salt + vote_salt_token are server-issued at preflight and
+  // echoed verbatim in the submit body; the salt is mixed into
+  // allocationsHash to defeat on-chain rainbow-table enumeration.
+  // Empty when the caller didn't pass `?voter=` (preflight can't
+  // bind a salt to an unknown voter).
+  vote_salt?: string;
+  vote_salt_token?: string;
+  vote_salt_expires_at?: number;
   _actions: HypermediaAction[];
 }

@@ -43,8 +43,5 @@ export function defaultFeeSharePolicy(
   };
 }
 
-// 15-min TTL on signed intents. Mirrors backend's MaxPermitTTL
-// ceiling (loop 0031) — anything longer is rejected by the
-// off-chain intake layer; on-chain the Forge re-checks against
-// block.timestamp via _checkExpiry.
+// 15-min TTL on signed intents. Matches backend's MaxPermitTTL.
 export const INTENT_TTL_SECONDS = 15 * 60;

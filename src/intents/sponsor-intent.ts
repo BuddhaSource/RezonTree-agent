@@ -13,7 +13,7 @@
 //
 // Pinned typehash (sponsor):
 //   SponsorIntent(bytes32 questionId,address oracle,address token,
-//     uint256 minBondFloor,uint256 bondBasisPoints,uint256 minSponsorship,
+//     uint256 minStakeFloor,uint256 stakeBasisPoints,uint256 minSponsorship,
 //     uint256 voteFee,uint256 abandonmentGracePeriod,address sponsor,
 //     uint256 amount,uint256 feeShareBps,FeeShare[] feeShares,
 //     uint256 nonce,uint256 chainId,uint256 expiresAt)
@@ -41,8 +41,8 @@ export const SPONSOR_INTENT_TYPES = {
     { name: "questionId", type: "bytes32" },
     { name: "oracle", type: "address" },
     { name: "token", type: "address" },
-    { name: "minBondFloor", type: "uint256" },
-    { name: "bondBasisPoints", type: "uint256" },
+    { name: "minStakeFloor", type: "uint256" },
+    { name: "stakeBasisPoints", type: "uint256" },
     { name: "minSponsorship", type: "uint256" },
     { name: "voteFee", type: "uint256" },
     { name: "abandonmentGracePeriod", type: "uint256" },
@@ -60,8 +60,8 @@ export interface SponsorIntentMessage {
   questionId: `0x${string}`;
   oracle: `0x${string}`;
   token: `0x${string}`;
-  minBondFloor: bigint;
-  bondBasisPoints: bigint;
+  minStakeFloor: bigint;
+  stakeBasisPoints: bigint;
   minSponsorship: bigint;
   voteFee: bigint;
   abandonmentGracePeriod: bigint;
@@ -87,10 +87,10 @@ export interface SponsorIntentTypedData {
 // latency, well under the backend's MaxPermitTTL of 15 min.
 export const DEFAULT_SPONSOR_TTL_SECONDS = 10 * 60;
 
-// MAX_BOND_BASIS_POINTS mirrors RezonForge.MAX_BOND_BASIS_POINTS
+// MAX_STAKE_BASIS_POINTS mirrors RezonForge.MAX_STAKE_BASIS_POINTS
 // (5000 bps = 50%). Exceeding it reverts on-chain; mirror as a hard
 // cap in the off-chain validator.
-export const MAX_BOND_BASIS_POINTS = 5000n;
+export const MAX_STAKE_BASIS_POINTS = 5000n;
 
 // ── Builder ──────────────────────────────────────────────────────
 
@@ -102,8 +102,8 @@ export function buildSponsorIntentTypedData(params: {
   feeShares: FeeShare[];
   oracle?: `0x${string}`;
   token?: `0x${string}`;
-  minBondFloor?: bigint;
-  bondBasisPoints?: bigint;
+  minStakeFloor?: bigint;
+  stakeBasisPoints?: bigint;
   minSponsorship?: bigint;
   voteFee?: bigint;
   abandonmentGracePeriod?: bigint;
@@ -125,12 +125,12 @@ export function buildSponsorIntentTypedData(params: {
   const token =
     params.token ??
     (params.preflight.token.contract_address as `0x${string}`);
-  const minBondFloor =
-    params.minBondFloor ??
-    BigInt(params.preflight.min_bond_floor ?? "0");
-  const bondBasisPoints =
-    params.bondBasisPoints ??
-    BigInt(params.preflight.bond_basis_points ?? "0");
+  const minStakeFloor =
+    params.minStakeFloor ??
+    BigInt(params.preflight.min_stake_floor ?? "0");
+  const stakeBasisPoints =
+    params.stakeBasisPoints ??
+    BigInt(params.preflight.stake_basis_points ?? "0");
   const minSponsorship =
     params.minSponsorship ??
     BigInt(params.preflight.min_sponsorship ?? "0");
@@ -141,7 +141,7 @@ export function buildSponsorIntentTypedData(params: {
     BigInt(params.preflight.abandonment_grace_period ?? "0");
 
   // ─── Contract-mirroring fence (mega-audit T2) ────────────────
-  // R2-EB-1 / F15 / bondBasisPoints cap match RezonForge.sol guards
+  // R2-EB-1 / F15 / stakeBasisPoints cap match RezonForge.sol guards
   // exactly. Rejecting here costs zero gas; signing-then-reverting
   // costs one wasted broadcast. Keep parity with Go signer
   // (internal/signer/sponsor_intent.go Validate) and Solidity guards.
@@ -150,14 +150,14 @@ export function buildSponsorIntentTypedData(params: {
       "sponsor intent: minSponsorship must be > 0 (chain reverts ForgeZeroMinSponsorship per R2-EB-1)",
     );
   }
-  if (voteFee === 0n && minBondFloor === 0n) {
+  if (voteFee === 0n && minStakeFloor === 0n) {
     throw new Error(
-      "sponsor intent: voteFee > 0 OR minBondFloor > 0 required (chain reverts ForgeZeroEconomicFloor per F15)",
+      "sponsor intent: voteFee > 0 OR minStakeFloor > 0 required (chain reverts ForgeZeroEconomicFloor per F15)",
     );
   }
-  if (bondBasisPoints > MAX_BOND_BASIS_POINTS) {
+  if (stakeBasisPoints > MAX_STAKE_BASIS_POINTS) {
     throw new Error(
-      `sponsor intent: bondBasisPoints ${bondBasisPoints} exceeds max ${MAX_BOND_BASIS_POINTS} (chain reverts on >5000)`,
+      `sponsor intent: stakeBasisPoints ${stakeBasisPoints} exceeds max ${MAX_STAKE_BASIS_POINTS} (chain reverts on >5000)`,
     );
   }
 
@@ -172,8 +172,8 @@ export function buildSponsorIntentTypedData(params: {
       questionId: params.preflight.qid as `0x${string}`,
       oracle,
       token,
-      minBondFloor,
-      bondBasisPoints,
+      minStakeFloor,
+      stakeBasisPoints,
       minSponsorship,
       voteFee,
       abandonmentGracePeriod,
@@ -205,8 +205,8 @@ export interface SponsorFundRequestBody {
   fee_shares: { recipient: string; basis_points: string }[];
   oracle: string;
   token: string;
-  min_bond_floor: string;
-  bond_basis_points: string;
+  min_stake_floor: string;
+  stake_basis_points: string;
   min_sponsorship: string;
   vote_fee: string;
   abandonment_grace_period: string;
@@ -233,8 +233,8 @@ export function buildSponsorFundRequestBody(params: {
     })),
     oracle: m.oracle,
     token: m.token,
-    min_bond_floor: m.minBondFloor.toString(),
-    bond_basis_points: m.bondBasisPoints.toString(),
+    min_stake_floor: m.minStakeFloor.toString(),
+    stake_basis_points: m.stakeBasisPoints.toString(),
     min_sponsorship: m.minSponsorship.toString(),
     vote_fee: m.voteFee.toString(),
     abandonment_grace_period: m.abandonmentGracePeriod.toString(),

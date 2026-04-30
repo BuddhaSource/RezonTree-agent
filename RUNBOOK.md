@@ -58,6 +58,60 @@ chain total:  conserved             (USDC never leaves the system)
 - **Withdraw from fee_wallet** whenever the business wants to take
   fees off-chain (it's a regular EOA, `cast send <usdc> transfer(...)`).
 
+### Wallet economics — sponsor drain + rebalance loop
+
+Every successful scenario routes USDC from the **sponsor wallet**
+(alice) to the **solver-winner wallet** (bob) and a small fee slice
+to the **fee_wallet** (operator). This is by design — protocol
+economics demand that sponsors pay solvers via the pool — so over a
+long battle:
+
+| Wallet  | Direction      | Why                                  |
+|---------|----------------|--------------------------------------|
+| alice   | always loses   | sponsor — bounty source              |
+| bob     | always gains   | solver-winner — prize recipient      |
+| fee_wallet (operator) | small gains | platform fee (PLATFORM_FEE_BPS) |
+
+**Funding floor.** Each role wallet should hold at least
+`min_sponsorship × 1.2` to clear edge-case reverts (gas overhead +
+permit + receipt confirmation slack). For the default Phase D config
+(`min_sponsorship = 1 USDC`) that means ~1.2 USDC per role at all
+times — but practical operating buffer is ≥10 USDC for the sponsor
+so a string of scenarios never wedges the harness mid-run.
+
+**Operational pattern.** The harness now rebalances automatically
+every N=10 scenarios (`RT_REBALANCE_EVERY=10` by default). The
+rebalance helper at `scripts/rebalance.ts` checks alice's balance;
+if she is below `MIN_SPONSOR_BUFFER_USDC` (default 10) it transfers
+`SPONSOR_REFILL_USDC` (default 20) from bob (preferred — keeps total
+in-system-USDC unchanged) or operator (failsafe).
+
+```bash
+# Manual one-shot rebalance (auto-detect source):
+pnpm tsx scripts/rebalance.ts
+
+# Dry-run — print the decision without sending tx:
+pnpm tsx scripts/rebalance.ts --dry
+
+# Targeted top-ups (legacy scripts still work):
+pnpm tsx scripts/topup-from-bob.ts 30        # bob → alice 30 USDC
+pnpm tsx scripts/topup-from-operator.ts 10   # operator → alice 10 USDC
+```
+
+Each script bails out cleanly (exit 0) if alice is already above the
+buffer, and refuses (exit 2) to drain the source below
+`SOURCE_MIN_USDC`.
+
+Tunable env knobs:
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `MIN_SPONSOR_BUFFER_USDC` | 10 | Top-up trigger floor for alice |
+| `SPONSOR_REFILL_USDC`     | 20 | Refill amount per top-up |
+| `SOURCE_MIN_USDC`         | 30 | Min retained on bob/operator |
+| `RT_REBALANCE_EVERY`      | 10 | Scenarios between auto-checks (0 to disable) |
+| `RT_REBALANCE_DRY`        | unset | Set to `1` to dry-run rebalance inside the harness |
+
 ### If you want Claude-driven agents (generates LLM content)
 
 Continue with Step 1 below — the existing task YAMLs wire Claude

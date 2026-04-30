@@ -155,13 +155,13 @@ describe("Reporter routing", () => {
     await reporter.report(new Error("any"), {
       agentName: "solver-02",
       agentIndex: 2,
-      problemId: "prb_abc",
+      questionId: "qst_abc",
       toolName: "submit_solution",
     });
     expect(fileSink.reports[0].agentName).toBe("solver-02");
     expect(fileSink.reports[0].agentIndex).toBe(2);
     expect(fileSink.reports[0].context).toEqual({
-      problemId: "prb_abc",
+      questionId: "qst_abc",
       toolName: "submit_solution",
     });
   });

@@ -2,7 +2,7 @@
 // contracts/src/RezonForge.sol.
 //
 // Includes the entry points agents call (sponsor, cosponsor,
-// commitSolution, castVote, claim, claim{Solution,Vote}Bond),
+// commitSolution, castVote, claim, claim{Solution,Vote}Stake),
 // oracle-only publishSettlement + sweepResiduals, and view getters
 // used by health checks and tests.
 //
@@ -30,8 +30,8 @@ export const REZON_FORGE_ABI = [
           { name: "questionId", type: "bytes32" },
           { name: "oracle", type: "address" },
           { name: "token", type: "address" },
-          { name: "minBondFloor", type: "uint256" },
-          { name: "bondBasisPoints", type: "uint256" },
+          { name: "minStakeFloor", type: "uint256" },
+          { name: "stakeBasisPoints", type: "uint256" },
           { name: "minSponsorship", type: "uint256" },
           { name: "voteFee", type: "uint256" },
           { name: "abandonmentGracePeriod", type: "uint256" },
@@ -111,7 +111,7 @@ export const REZON_FORGE_ABI = [
           { name: "submitter", type: "address" },
           { name: "contentHash", type: "bytes32" },
           { name: "feeAmount", type: "uint256" },
-          { name: "bondAmount", type: "uint256" },
+          { name: "stakeAmount", type: "uint256" },
           { name: "feeShareBps", type: "uint256" },
           {
             name: "feeShares",
@@ -149,7 +149,7 @@ export const REZON_FORGE_ABI = [
           { name: "voter", type: "address" },
           { name: "allocationsHash", type: "bytes32" },
           { name: "feeAmount", type: "uint256" },
-          { name: "bondAmount", type: "uint256" },
+          { name: "stakeAmount", type: "uint256" },
           { name: "feeShareBps", type: "uint256" },
           {
             name: "feeShares",
@@ -231,8 +231,8 @@ export const REZON_FORGE_ABI = [
       { name: "token", type: "address" },
       { name: "oracle", type: "address" },
       { name: "sponsor", type: "address" },
-      { name: "minBondFloor", type: "uint256" },
-      { name: "bondBasisPoints", type: "uint256" },
+      { name: "minStakeFloor", type: "uint256" },
+      { name: "stakeBasisPoints", type: "uint256" },
       { name: "minSponsorship", type: "uint256" },
       { name: "voteFee", type: "uint256" },
       { name: "abandonmentGracePeriod", type: "uint256" },
@@ -244,12 +244,12 @@ export const REZON_FORGE_ABI = [
     ],
   },
 
-  // ── claimSolutionBond(bytes32 qid, bytes32 intentHash) ────
-  // Release a commit bond to its original submitter once the
+  // ── claimSolutionStake(bytes32 qid, bytes32 intentHash) ────
+  // Release a commit stake to its original submitter once the
   // question is SETTLED.
   {
     type: "function",
-    name: "claimSolutionBond",
+    name: "claimSolutionStake",
     stateMutability: "nonpayable",
     inputs: [
       { name: "questionId", type: "bytes32" },
@@ -258,12 +258,12 @@ export const REZON_FORGE_ABI = [
     outputs: [],
   },
 
-  // ── claimVoteBond(bytes32 qid, bytes32 intentHash) ─────────
-  // Release a vote bond to its original voter once the question
+  // ── claimVoteStake(bytes32 qid, bytes32 intentHash) ─────────
+  // Release a vote stake to its original voter once the question
   // is SETTLED.
   {
     type: "function",
-    name: "claimVoteBond",
+    name: "claimVoteStake",
     stateMutability: "nonpayable",
     inputs: [
       { name: "questionId", type: "bytes32" },

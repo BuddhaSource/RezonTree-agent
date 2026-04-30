@@ -44,8 +44,8 @@ function sponsorPreflight(
     chain_id: 84532,
     nonce_next: "7",
     oracle: ORACLE,
-    min_bond_floor: "1000000",
-    bond_basis_points: "1000",
+    min_stake_floor: "1000000",
+    stake_basis_points: "1000",
     min_sponsorship: "1000000",
     vote_fee: "0",
     abandonment_grace_period: "86400",
@@ -81,8 +81,8 @@ describe("SPONSOR_INTENT_TYPES field order", () => {
       { name: "questionId", type: "bytes32" },
       { name: "oracle", type: "address" },
       { name: "token", type: "address" },
-      { name: "minBondFloor", type: "uint256" },
-      { name: "bondBasisPoints", type: "uint256" },
+      { name: "minStakeFloor", type: "uint256" },
+      { name: "stakeBasisPoints", type: "uint256" },
       { name: "minSponsorship", type: "uint256" },
       { name: "voteFee", type: "uint256" },
       { name: "abandonmentGracePeriod", type: "uint256" },
@@ -100,14 +100,14 @@ describe("SPONSOR_INTENT_TYPES field order", () => {
     ]);
   });
 
-  // Pinned typehash (per goals.md): 0x8bd5...
+  // Pinned typehash (post-stake-rename): 0xa044... — matches Solidity
+  // SPONSOR_INTENT_TYPEHASH and Go SPONSOR_INTENT_TYPEHASH byte-for-byte.
   it("typehash text matches the pinned cross-stack invariant", () => {
     const text =
-      "SponsorIntent(bytes32 questionId,address oracle,address token,uint256 minBondFloor,uint256 bondBasisPoints,uint256 minSponsorship,uint256 voteFee,uint256 abandonmentGracePeriod,address sponsor,uint256 amount,uint256 feeShareBps,FeeShare[] feeShares,uint256 nonce,uint256 chainId,uint256 expiresAt)" +
+      "SponsorIntent(bytes32 questionId,address oracle,address token,uint256 minStakeFloor,uint256 stakeBasisPoints,uint256 minSponsorship,uint256 voteFee,uint256 abandonmentGracePeriod,address sponsor,uint256 amount,uint256 feeShareBps,FeeShare[] feeShares,uint256 nonce,uint256 chainId,uint256 expiresAt)" +
       "FeeShare(address recipient,uint256 basisPoints)";
     const hash = keccak256(stringToBytes(text));
-    // Lock the prefix that goals.md pins.
-    expect(hash.startsWith("0x8bd5")).toBe(true);
+    expect(hash.startsWith("0xa044")).toBe(true);
   });
 });
 
@@ -140,8 +140,8 @@ describe("buildSponsorIntentTypedData", () => {
     });
     expect(td.message.oracle).toBe(ORACLE);
     expect(td.message.token).toBe(TOKEN);
-    expect(td.message.minBondFloor).toBe(BigInt("1000000"));
-    expect(td.message.bondBasisPoints).toBe(BigInt("1000"));
+    expect(td.message.minStakeFloor).toBe(BigInt("1000000"));
+    expect(td.message.stakeBasisPoints).toBe(BigInt("1000"));
     expect(td.message.minSponsorship).toBe(BigInt("1000000"));
     expect(td.message.voteFee).toBe(BigInt("0"));
     expect(td.message.abandonmentGracePeriod).toBe(BigInt("86400"));
@@ -190,7 +190,7 @@ describe("buildSponsorIntentTypedData", () => {
   });
 
   // Mega-audit T2 fence parity — off-chain validator must reject the
-  // exact inputs the contract reverts on (R2-EB-1 / F15 / bondBps cap).
+  // exact inputs the contract reverts on (R2-EB-1 / F15 / stakeBps cap).
   it("rejects minSponsorship=0 (R2-EB-1 fence)", () => {
     expect(() =>
       buildSponsorIntentTypedData({
@@ -204,12 +204,12 @@ describe("buildSponsorIntentTypedData", () => {
     ).toThrow(/ForgeZeroMinSponsorship/);
   });
 
-  it("rejects voteFee=0 AND minBondFloor=0 (F15 fence)", () => {
+  it("rejects voteFee=0 AND minStakeFloor=0 (F15 fence)", () => {
     expect(() =>
       buildSponsorIntentTypedData({
         preflight: sponsorPreflight({
           vote_fee: "0",
-          min_bond_floor: "0",
+          min_stake_floor: "0",
         }),
         sponsor: SPONSOR,
         amountWei: BigInt("1000000"),
@@ -220,10 +220,10 @@ describe("buildSponsorIntentTypedData", () => {
     ).toThrow(/ForgeZeroEconomicFloor/);
   });
 
-  it("rejects bondBasisPoints > 5000 (chain cap)", () => {
+  it("rejects stakeBasisPoints > 5000 (chain cap)", () => {
     expect(() =>
       buildSponsorIntentTypedData({
-        preflight: sponsorPreflight({ bond_basis_points: "5001" }),
+        preflight: sponsorPreflight({ stake_basis_points: "5001" }),
         sponsor: SPONSOR,
         amountWei: BigInt("1000000"),
         feeShareBps: policy.bps,
@@ -252,8 +252,8 @@ describe("buildSponsorFundRequestBody", () => {
     expect(body.mode).toBe("sponsor");
     expect(body.oracle).toBe(ORACLE);
     expect(body.token).toBe(TOKEN);
-    expect(body.min_bond_floor).toBe("1000000");
-    expect(body.bond_basis_points).toBe("1000");
+    expect(body.min_stake_floor).toBe("1000000");
+    expect(body.stake_basis_points).toBe("1000");
     expect(body.min_sponsorship).toBe("1000000");
     expect(body.abandonment_grace_period).toBe("86400");
     expect(body.fee_share_bps).toBe("1");

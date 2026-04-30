@@ -100,7 +100,7 @@ describe("buildCosponsorIntentTypedData", () => {
     expect(td.message.amount).toBe(BigInt("5000000"));
     expect(td.message.nonce).toBe(BigInt("11"));
     expect(td.message.chainId).toBe(BigInt("84532"));
-    // No oracle / token / minBondFloor / etc — those live on chain.
+    // No oracle / token / minStakeFloor / etc — those live on chain.
     expect("oracle" in td.message).toBe(false);
     expect("token" in td.message).toBe(false);
   });
@@ -137,7 +137,7 @@ describe("buildCosponsorFundRequestBody", () => {
     });
     expect(body.mode).toBe("cosponsor");
     expect("oracle" in body).toBe(false);
-    expect("min_bond_floor" in body).toBe(false);
+    expect("min_stake_floor" in body).toBe(false);
     expect("min_sponsorship" in body).toBe(false);
     expect("abandonment_grace_period" in body).toBe(false);
     expect(body.fee_share_bps).toBe("1");

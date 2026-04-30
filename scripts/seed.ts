@@ -1,5 +1,5 @@
 // Seed script: authenticate questioner-01 via wallet signature,
-// then create 3 diverse baseline problems. Idempotent: re-run safely.
+// then create 3 diverse baseline questions. Idempotent: re-run safely.
 import { HDKey } from "@scure/bip32";
 import { mnemonicToSeedSync } from "@scure/bip39";
 import { privateKeyToAccount } from "viem/accounts";
@@ -54,8 +54,8 @@ async function loginWallet(index: number): Promise<string> {
   return body.access_token;
 }
 
-async function createProblem(token: string, spec: any) {
-  const res = await fetch(`${BACKEND}/v1/problems`, {
+async function createQuestion(token: string, spec: any) {
+  const res = await fetch(`${BACKEND}/v1/questions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body: JSON.stringify(spec),
@@ -67,7 +67,7 @@ async function createProblem(token: string, spec: any) {
 }
 
 const deadline = new Date(Date.now() + 48 * 3600 * 1000).toISOString();
-const problems = [
+const questions = [
   {
     title: "Best Postgres migration strategy for a 100M-row table",
     description: "We need to add a NOT NULL column to a 100-million-row table in Postgres 15 with zero downtime. What's the safest, fastest approach?",
@@ -117,9 +117,9 @@ const problems = [
 
 (async () => {
   const token = await loginWallet(0);
-  for (const p of problems) {
+  for (const p of questions) {
     try {
-      await createProblem(token, p);
+      await createQuestion(token, p);
     } catch (err) {
       console.error(`  ! create failed:`, err.message);
     }

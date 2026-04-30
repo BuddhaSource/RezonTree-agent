@@ -96,7 +96,7 @@ const USDC_ADDRESS =
 function requireRouterEnv(): { router: Address; rpc: string; chainId: number } {
   if (!ROUTER_ADDRESS) {
     throw new Error(
-      "RT_FORGE_ADDRESS is not set. Chain-broadcast tools (fund_problem, submit_solution, cast_vote, claim_payout) need the deployed Router address. Set it in your MCP server env; see RUNBOOK.md.",
+      "RT_FORGE_ADDRESS is not set. Chain-broadcast tools (fund_question, submit_solution, cast_vote, claim_payout) need the deployed Router address. Set it in your MCP server env; see RUNBOOK.md.",
     );
   }
   return { router: ROUTER_ADDRESS, rpc: RPC_URL, chainId: CHAIN_ID };
@@ -114,7 +114,7 @@ function getAgentWallet() {
 
 // ─── Idempotency cache ─────────────────────────────────────
 //
-// Multi-step tool flows (submit_solution, cast_vote, fund_problem,
+// Multi-step tool flows (submit_solution, cast_vote, fund_question,
 // claim_payout) are not atomic. A network hiccup between steps
 // causes the agent to retry from scratch and produce a duplicate
 // intent. The cache keys (tool_name, sha256(params)) → final result
@@ -333,11 +333,11 @@ server.tool(
   },
 );
 
-// ── Problems ─────────────────────────────────────────────────────────
+// ── Questions ─────────────────────────────────────────────────────────
 
 server.tool(
-  "list_problems",
-  "List open problems with optional search, status filter, and sorting",
+  "list_questions",
+  "List open questions with optional search, status filter, and sorting",
   {
     status: z.string().optional().describe("Filter: open, closed, cancelled"),
     q: z.string().optional().describe("Full-text search query"),
@@ -351,29 +351,29 @@ server.tool(
     if (params.sort) query.set("sort", params.sort);
     if (params.limit) query.set("limit", String(params.limit));
     const qs = query.toString();
-    const result = await apiCall("GET", `/v1/problems${qs ? `?${qs}` : ""}`);
+    const result = await apiCall("GET", `/v1/questions${qs ? `?${qs}` : ""}`);
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   },
 );
 
 server.tool(
-  "get_problem",
-  "Get full details of a specific problem including success criteria and rules",
+  "get_question",
+  "Get full details of a specific question including success criteria and rules",
   {
-    problem_id: z.string().describe("The problem ID"),
+    question_id: z.string().describe("The question ID"),
   },
   async (params) => {
-    const result = await apiCall("GET", `/v1/problems/${params.problem_id}`);
+    const result = await apiCall("GET", `/v1/questions/${params.question_id}`);
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   },
 );
 
 server.tool(
-  "create_problem",
-  "Create a new problem with bounty escrow. Requires title, description, bounty, voting deadline, and success criteria.",
+  "create_question",
+  "Create a new question with bounty escrow. Requires title, description, bounty, voting deadline, and success criteria.",
   {
-    title: z.string().describe("Problem title"),
-    description: z.string().describe("Detailed problem description"),
+    title: z.string().describe("Question title"),
+    description: z.string().describe("Detailed question description"),
     bounty_amount: z.string().describe("Bounty amount (e.g. '50.00')"),
     bounty_currency: z.string().optional().describe("Currency (default: USD)"),
     voting_deadline: z.string().describe("ISO 8601 deadline for voting"),
@@ -395,7 +395,7 @@ server.tool(
       .describe("Success criteria (max 3, weights sum to 100)"),
     context: z.string().optional().describe("Additional context"),
     example: z.string().optional().describe("Example of a good answer"),
-    scope: z.string().optional().describe("Problem scope"),
+    scope: z.string().optional().describe("Question scope"),
     assumptions: z
       .array(
         z.object({
@@ -405,10 +405,10 @@ server.tool(
         }),
       )
       .optional()
-      .describe("Assumptions that constrain the problem"),
+      .describe("Assumptions that constrain the question"),
   },
   async (params) => {
-    const result = await apiCall("POST", "/v1/problems", {
+    const result = await apiCall("POST", "/v1/questions", {
       title: params.title,
       description: params.description,
       bounty_amount: params.bounty_amount,
@@ -428,14 +428,14 @@ server.tool(
 
 server.tool(
   "list_solutions",
-  "List solutions for a problem",
+  "List solutions for a question",
   {
-    problem_id: z.string().describe("The problem ID"),
+    question_id: z.string().describe("The question ID"),
   },
   async (params) => {
     const result = await apiCall(
       "GET",
-      `/v1/problems/${params.problem_id}/solutions`,
+      `/v1/questions/${params.question_id}/solutions`,
     );
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   },
@@ -445,8 +445,10 @@ server.tool(
   "submit_solution",
   "Submit a solution via the Router signed-intent flow: preflight → sign CommitIntent → POST /commit → POST /solutions body → USDC permit → Router.commitSolution() on-chain. Returns solution_id, intent_hash, and the chain tx hash. The backend row flips pending→confirmed when the HTTP poller ingests the SolutionCommitted event (~3s).",
   {
-    problem_id: z.string().describe("The problem ID to solve"),
-    summary: z.string().describe("Brief solution summary"),
+    question_id: z.string().describe("The question ID to solve"),
+    body: z
+      .string()
+      .describe("Solution body — markdown allowed, 1000–15000 chars"),
     reasoning_tree: z
       .array(
         z.object({
@@ -478,21 +480,21 @@ server.tool(
       "submit_solution",
       {
         addr: address,
-        pid: params.problem_id,
-        summary: params.summary,
+        pid: params.question_id,
+        body: params.body,
         reasoning: params.reasoning_tree,
         claims: params.claims,
       },
       async () => {
         const pre = (await apiCall(
           "GET",
-          `/v1/problems/${params.problem_id}/commit/preflight?submitter=${address}`,
+          `/v1/questions/${params.question_id}/commit/preflight?submitter=${address}`,
         )) as CommitPreflight;
 
-        // Backend hashes the summary into intent.contentHash; the
-        // /solutions POST below must carry the same body so the
+        // Backend hashes the body into intent.contentHash; the
+        // /solutions POST below must carry the same bytes so the
         // hashes align.
-        const contentHash = computeContentHash(params.summary);
+        const contentHash = computeContentHash(params.body);
         const td = buildCommitIntentTypedData({
           preflight: pre,
           submitter: address,
@@ -504,23 +506,23 @@ server.tool(
 
         const commitResp = (await apiCall(
           "POST",
-          `/v1/problems/${params.problem_id}/commit`,
+          `/v1/questions/${params.question_id}/commit`,
           buildSubmitCommitRequestBody({ typedData: td, signature: intentSig }),
         )) as { intent_hash: string };
 
         const solResp = (await apiCall(
           "POST",
-          `/v1/problems/${params.problem_id}/solutions`,
+          `/v1/questions/${params.question_id}/solutions`,
           {
             intent_hash: commitResp.intent_hash,
-            summary: params.summary,
+            body: params.body,
             reasoning_tree: params.reasoning_tree,
             claims: params.claims,
           },
         )) as { id: string };
 
         const permitValue =
-          BigInt(td.message.feeAmount) + BigInt(td.message.bondAmount);
+          BigInt(td.message.feeAmount) + BigInt(td.message.stakeAmount);
         const permit = await signUSDCPermit(walletClient, publicClient, {
           usdc: USDC_ADDRESS,
           spender: env.router,
@@ -541,7 +543,7 @@ server.tool(
           intent_hash: commitResp.intent_hash,
           commit_tx_hash: txHash,
           fee_paid: td.message.feeAmount.toString(),
-          bond_paid: td.message.bondAmount.toString(),
+          stake_paid: td.message.stakeAmount.toString(),
           note: "Backend row flips pending→confirmed within one HTTPPoller tick (~2s).",
         };
       },
@@ -553,8 +555,8 @@ server.tool(
   "validate_solution",
   "Pre-flight check: validate a solution before submitting",
   {
-    problem_id: z.string().describe("The problem ID"),
-    summary: z.string(),
+    question_id: z.string().describe("The question ID"),
+    body: z.string(),
     reasoning_tree: z.array(
       z.object({
         because: z.string(),
@@ -573,9 +575,9 @@ server.tool(
   async (params) => {
     const result = await apiCall(
       "POST",
-      `/v1/problems/${params.problem_id}/solutions/validate`,
+      `/v1/questions/${params.question_id}/solutions/validate`,
       {
-        summary: params.summary,
+        body: params.body,
         reasoning_tree: params.reasoning_tree,
         claims: params.claims,
       },
@@ -588,14 +590,14 @@ server.tool(
 
 server.tool(
   "list_votes",
-  "List all votes for a problem",
+  "List all votes for a question",
   {
-    problem_id: z.string().describe("The problem ID"),
+    question_id: z.string().describe("The question ID"),
   },
   async (params) => {
     const result = await apiCall(
       "GET",
-      `/v1/problems/${params.problem_id}/votes`,
+      `/v1/questions/${params.question_id}/votes`,
     );
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   },
@@ -603,9 +605,9 @@ server.tool(
 
 server.tool(
   "cast_vote",
-  "Cast a vote via the Router signed-intent flow: preflight → canonical allocations hash → sign VoteIntent → POST /vote-intent (backend writes votes row) → USDC permit → Router.castVote() on-chain. Bond (1 USDC default) is locked by Router and refunded at settlement; wrong-voter bonds are slashed into the pool.",
+  "Cast a vote via the Router signed-intent flow: preflight → canonical allocations hash → sign VoteIntent → POST /vote-intent (backend writes votes row) → USDC permit → Router.castVote() on-chain. Stake (1 USDC default) is locked by Router and refunded at settlement; wrong-voter stakes are slashed into the pool.",
   {
-    problem_id: z.string().describe("The problem ID"),
+    question_id: z.string().describe("The question ID"),
     allocations: z
       .array(
         z.object({
@@ -634,14 +636,21 @@ server.tool(
 
     return withIdempotency(
       "cast_vote",
-      { addr: address, pid: params.problem_id, allocs: params.allocations },
+      { addr: address, pid: params.question_id, allocs: params.allocations },
       async () => {
         const pre = (await apiCall(
           "GET",
-          `/v1/problems/${params.problem_id}/vote/preflight?voter=${address}`,
+          `/v1/questions/${params.question_id}/vote/preflight?voter=${address}`,
         )) as VotePreflight;
 
-        const allocationsHash = computeAllocationsHash(canonicalAllocs);
+        if (!pre.vote_salt || !pre.vote_salt_token) {
+          throw new Error(
+            "vote preflight missing vote_salt; backend requires it for privacy",
+          );
+        }
+        const voteSalt = pre.vote_salt as `0x${string}`;
+        const voteSaltToken = pre.vote_salt_token as `0x${string}`;
+        const allocationsHash = computeAllocationsHash(canonicalAllocs, voteSalt);
         const td = buildVoteIntentTypedData({
           preflight: pre,
           voter: address,
@@ -653,16 +662,18 @@ server.tool(
 
         const voteResp = (await apiCall(
           "POST",
-          `/v1/problems/${params.problem_id}/vote-intent`,
+          `/v1/questions/${params.question_id}/vote-intent`,
           buildSubmitVoteIntentRequestBody({
             typedData: td,
             allocations: canonicalAllocs,
             signature: intentSig,
+            voteSalt,
+            voteSaltToken,
           }),
         )) as { intent_hash: string };
 
         const permitValue =
-          BigInt(td.message.feeAmount) + BigInt(td.message.bondAmount);
+          BigInt(td.message.feeAmount) + BigInt(td.message.stakeAmount);
         const permit = await signUSDCPermit(walletClient, publicClient, {
           usdc: USDC_ADDRESS,
           spender: env.router,
@@ -681,7 +692,7 @@ server.tool(
         return {
           intent_hash: voteResp.intent_hash,
           vote_tx_hash: txHash,
-          bond_paid: td.message.bondAmount.toString(),
+          stake_paid: td.message.stakeAmount.toString(),
         };
       },
     );
@@ -691,10 +702,10 @@ server.tool(
 // ── Fund (Router v2 signed-intent + on-chain broadcast) ─────────────
 
 server.tool(
-  "fund_problem",
-  "Fund a problem via RezonForge v2.5 flow: preflight → sign Sponsor or Cosponsor intent (auto-detected from preflight.mode) → POST /fund → USDC permit → broadcast sponsor()/cosponsor(). The first contributor of an OPEN question signs SponsorIntent (binds per-Q params on-chain); subsequent contributors sign CosponsorIntent (params inherited from chain state). Amount is in human USDC (e.g. '1.5' = 1.5 USDC, 1500000 wei at 6dp).",
+  "fund_question",
+  "Fund a question via RezonForge v2.5 flow: preflight → sign Sponsor or Cosponsor intent (auto-detected from preflight.mode) → POST /fund → USDC permit → broadcast sponsor()/cosponsor(). The first contributor of an OPEN question signs SponsorIntent (binds per-Q params on-chain); subsequent contributors sign CosponsorIntent (params inherited from chain state). Amount is in human USDC (e.g. '1.5' = 1.5 USDC, 1500000 wei at 6dp).",
   {
-    problem_id: z.string().describe("The problem ID to fund"),
+    question_id: z.string().describe("The question ID to fund"),
     amount: z
       .string()
       .describe(
@@ -706,12 +717,12 @@ server.tool(
     const { walletClient, publicClient, privateKey, address } = getClients();
 
     return withIdempotency(
-      "fund_problem",
-      { addr: address, pid: params.problem_id, amount: params.amount },
+      "fund_question",
+      { addr: address, pid: params.question_id, amount: params.amount },
       async () => {
         const pre = (await apiCall(
           "GET",
-          `/v1/problems/${params.problem_id}/fund/preflight?funder=${address}`,
+          `/v1/questions/${params.question_id}/fund/preflight?funder=${address}`,
         )) as FundPreflight;
 
         const amountWei = parseAmountToWei(params.amount, pre.token.decimals);
@@ -720,7 +731,7 @@ server.tool(
         // Per-contribution feeShares default to none — the funder's
         // share of pool revenue is captured implicitly by the contract's
         // first-sponsor accounting. Power users wanting custom splits
-        // can call /v1/problems/:id/fund directly.
+        // can call /v1/questions/:id/fund directly.
         const fundResp = await (async () => {
           if (pre.mode === "sponsor") {
             const td = buildSponsorIntentTypedData({
@@ -734,7 +745,7 @@ server.tool(
 
             const resp = (await apiCall(
               "POST",
-              `/v1/problems/${params.problem_id}/fund`,
+              `/v1/questions/${params.question_id}/fund`,
               buildSponsorFundRequestBody({ typedData: td, signature: intentSig }),
             )) as { intent_hash: string; contribution_id: string };
 
@@ -767,7 +778,7 @@ server.tool(
 
           const resp = (await apiCall(
             "POST",
-            `/v1/problems/${params.problem_id}/fund`,
+            `/v1/questions/${params.question_id}/fund`,
             buildCosponsorFundRequestBody({ typedData: td, signature: intentSig }),
           )) as { intent_hash: string; contribution_id: string };
 
@@ -804,11 +815,11 @@ server.tool(
 
 server.tool(
   "claim_payout",
-  "Claim your share of a SETTLED problem's payout pool. Pass just problem_id — the tool fetches your role + amount + Merkle proof from GET /v1/problems/:id/claims/:address and broadcasts Router.claim. Optional question_id/amount_wei/proof overrides exist for power-user paths (manual settlement outside the standard pipeline). Router verifies the proof against the stored root and transfers USDC on success.",
+  "Claim your share of a SETTLED question's payout pool. Pass just question_id — the tool fetches your role + amount + Merkle proof from GET /v1/questions/:id/claims/:address and broadcasts Router.claim. Optional question_id/amount_wei/proof overrides exist for power-user paths (manual settlement outside the standard pipeline). Router verifies the proof against the stored root and transfers USDC on success.",
   {
-    problem_id: z
+    question_id: z
       .string()
-      .describe("The problem ID (prb_...) whose settled round you're claiming from"),
+      .describe("The question ID (qst_...) whose settled round you're claiming from"),
     question_id: z
       .string()
       .optional()
@@ -857,7 +868,7 @@ server.tool(
       // wei to match the on-chain leaf encoding.
       const claim = (await apiCall(
         "GET",
-        `/v1/problems/${params.problem_id}/claims/${address}`,
+        `/v1/questions/${params.question_id}/claims/${address}`,
       )) as {
         question_id: string | null;
         role: string;
@@ -868,17 +879,17 @@ server.tool(
 
       if (!claim.question_id) {
         throw new Error(
-          `Problem ${params.problem_id} has no chain_question_id yet — round may not be funded on-chain.`,
+          `Question ${params.question_id} has no chain_question_id yet — round may not be funded on-chain.`,
         );
       }
       if (claim.role === "none") {
         throw new Error(
-          `Address ${address} did not participate in problem ${params.problem_id}; nothing to claim.`,
+          `Address ${address} did not participate in question ${params.question_id}; nothing to claim.`,
         );
       }
       if (!claim.merkle_root) {
         throw new Error(
-          `Round for problem ${params.problem_id} is not yet settled on-chain — no merkle_root persisted. Wait for SettlementPublished, then retry.`,
+          `Round for question ${params.question_id} is not yet settled on-chain — no merkle_root persisted. Wait for SettlementPublished, then retry.`,
         );
       }
 
@@ -921,16 +932,16 @@ server.tool(
 // ── Resolution ───────────────────────────────────────────────────────
 
 server.tool(
-  "close_problem",
-  "Close a problem — resolve or cancel (owner only)",
+  "close_question",
+  "Close a question — resolve or cancel (owner only)",
   {
-    problem_id: z.string().describe("The problem ID"),
+    question_id: z.string().describe("The question ID"),
     action: z.enum(["resolve", "cancel"]).describe("resolve or cancel"),
   },
   async (params) => {
     const result = await apiCall(
       "POST",
-      `/v1/problems/${params.problem_id}/close`,
+      `/v1/questions/${params.question_id}/close`,
       { action: params.action },
     );
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
@@ -941,12 +952,12 @@ server.tool(
   "get_result",
   "View round result with rankings, payouts, and refunds",
   {
-    problem_id: z.string().describe("The problem ID"),
+    question_id: z.string().describe("The question ID"),
   },
   async (params) => {
     const result = await apiCall(
       "GET",
-      `/v1/problems/${params.problem_id}/result`,
+      `/v1/questions/${params.question_id}/result`,
     );
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   },

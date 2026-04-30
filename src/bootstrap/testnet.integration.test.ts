@@ -27,7 +27,10 @@ import type { Address } from "viem";
 import type { BalanceSnapshot } from "../wallet/types.js";
 
 const FUNDED_WEI = 10_000_000_000_000_000n; // 0.01 ETH
-const FUNDED_USDC = 50_000_000n; // $50
+// Test-token base units, not USDC-specific. 50_000_000 lands as
+// $50 at 6 dp, which is what the test expects when poking at the
+// faucet stub. If you swap to an 18-dp test token, scale this up.
+const FUNDED_AMOUNT_BASE = 50_000_000n;
 const UNFUNDED: bigint = 0n;
 
 interface FakeBackend {
@@ -82,7 +85,7 @@ function makeFakeBalanceClient(
     },
     async readContract({ args }) {
       const addr = (args[0] as string).toLowerCase();
-      return fundedAddresses.has(addr) ? FUNDED_USDC : UNFUNDED;
+      return fundedAddresses.has(addr) ? FUNDED_AMOUNT_BASE : UNFUNDED;
     },
   };
 }
@@ -175,7 +178,7 @@ describe("bootstrap — end-to-end smoke", () => {
       },
       async readContract({ args }) {
         return fundedSet.has((args[0] as string).toLowerCase())
-          ? FUNDED_USDC
+          ? FUNDED_AMOUNT_BASE
           : UNFUNDED;
       },
     });

@@ -8,7 +8,7 @@
  * const config = loadFrameworkConfig("./config");
  * const executor = new Executor({ config });
  *
- * const result = await executor.runAgent("researcher", "Analyze this problem...");
+ * const result = await executor.runAgent("researcher", "Analyze this question...");
  * console.log(result.output);
  * ```
  */

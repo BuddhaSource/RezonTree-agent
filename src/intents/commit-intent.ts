@@ -3,13 +3,13 @@
 // shape with feeShareBps + feeShares per migration 043).
 //
 // CommitIntent signs over a `contentHash`, NOT the content body.
-// The body is POSTed separately to /v1/problems/:id/solutions; the
+// The body is POSTed separately to /v1/questions/:id/solutions; the
 // backend asserts `keccak256(content) == intent.contentHash` to
 // bind body to signature.
 //
 // Pinned typehash:
 //   CommitIntent(bytes32 questionId,address submitter,bytes32 contentHash,
-//     uint256 feeAmount,uint256 bondAmount,uint256 feeShareBps,
+//     uint256 feeAmount,uint256 stakeAmount,uint256 feeShareBps,
 //     FeeShare[] feeShares,uint256 nonce,uint256 chainId,
 //     uint256 expiresAt)
 //   FeeShare(address recipient,uint256 basisPoints)
@@ -41,7 +41,7 @@ export const COMMIT_INTENT_TYPES = {
     { name: "submitter", type: "address" },
     { name: "contentHash", type: "bytes32" },
     { name: "feeAmount", type: "uint256" },
-    { name: "bondAmount", type: "uint256" },
+    { name: "stakeAmount", type: "uint256" },
     { name: "feeShareBps", type: "uint256" },
     { name: "feeShares", type: "FeeShare[]" },
     { name: "nonce", type: "uint256" },
@@ -55,7 +55,7 @@ export interface CommitIntentMessage {
   submitter: `0x${string}`;
   contentHash: `0x${string}`;
   feeAmount: bigint;
-  bondAmount: bigint;
+  stakeAmount: bigint;
   feeShareBps: bigint;
   feeShares: FeeShare[];
   nonce: bigint;
@@ -75,17 +75,88 @@ export const DEFAULT_COMMIT_TTL_SECONDS = 10 * 60;
 // ── contentHash ──────────────────────────────────────────────────
 
 /**
- * Computes the on-chain-canonical content hash for a solution body.
- * keccak256 over UTF-8 bytes — matches backend's expectation where
- * the content is stored as raw bytes and hashed identically.
- *
- * The hash is what gets signed; the body itself is posted separately
- * via the solutions endpoint. Keeping the hash + sign deterministic
- * on the client means a compromised server can't silently rewrite
- * what the user agreed to submit.
+ * Structured solution body. Matches RezonTree-UI's SolutionBody and
+ * the backend's `solutionBodyForHash` shape — same field names, same
+ * order. The whole thing is hashed via canonical JSON so the same
+ * input always yields the same digest across stacks (UI / SDK /
+ * backend) regardless of object key insertion order.
  */
-export function computeContentHash(body: string): `0x${string}` {
-  return keccak256(toBytes(body));
+export interface SolutionBody {
+  body: string;
+  reasoning_tree: Array<{ because: string; therefore: string }>;
+  claims: Array<{
+    criterion_id: string;
+    value: unknown;
+    argument: string;
+    falsifiable_by: string;
+  }>;
+}
+
+/**
+ * canonicalStringify produces a deterministic JSON encoding suitable
+ * for cross-engine hashing. Object keys are sorted; arrays preserve
+ * order; `undefined` properties are omitted; non-finite numbers /
+ * bigints are rejected (JSON.stringify silently emits NaN as `null`,
+ * which would corrupt the hash).
+ *
+ * J3 (audit 2026-04-30): plain JSON.stringify is insertion-order on
+ * the SDK side and struct-declaration order on the backend; if any
+ * caller shuffles keys, the two hashes drift. Sorted-key serialization
+ * eliminates that surface.
+ */
+export function canonicalStringify(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) {
+    throw new Error("canonicalStringify: undefined is not encodable");
+  }
+  switch (typeof value) {
+    case "boolean":
+      return value ? "true" : "false";
+    case "number":
+      if (!Number.isFinite(value)) {
+        throw new Error(
+          `canonicalStringify: non-finite number ${value} is not encodable`,
+        );
+      }
+      return JSON.stringify(value);
+    case "bigint":
+      throw new Error("canonicalStringify: bigint is not encodable");
+    case "string":
+      return JSON.stringify(value);
+    case "object":
+      break;
+    default:
+      throw new Error(
+        `canonicalStringify: unsupported type ${typeof value}`,
+      );
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => canonicalStringify(v)).join(",")}]`;
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj)
+    .filter((k) => obj[k] !== undefined)
+    .sort();
+  const parts = keys.map(
+    (k) => `${JSON.stringify(k)}:${canonicalStringify(obj[k])}`,
+  );
+  return `{${parts.join(",")}}`;
+}
+
+/**
+ * Computes the canonical content hash for a solution body. Accepts
+ * either a structured SolutionBody (preferred — matches the UI +
+ * backend wire shape) or a pre-stringified body string for legacy
+ * callers (battle harness solution-body.ts that fixtures plain
+ * markdown). String inputs are hashed as-is to preserve back-compat;
+ * object inputs go through canonicalStringify first.
+ */
+export function computeContentHash(
+  body: SolutionBody | string,
+): `0x${string}` {
+  const encoded =
+    typeof body === "string" ? body : canonicalStringify(body);
+  return keccak256(toBytes(encoded));
 }
 
 // ── Builder ──────────────────────────────────────────────────────
@@ -97,7 +168,7 @@ export function buildCommitIntentTypedData(params: {
   feeShareBps: bigint;
   feeShares: FeeShare[];
   feeWei?: bigint;
-  bondWei?: bigint;
+  stakeWei?: bigint;
   expiresAtSeconds?: number;
   nonce?: bigint;
   nowSeconds?: number;
@@ -106,8 +177,8 @@ export function buildCommitIntentTypedData(params: {
   const ttl = params.expiresAtSeconds ?? now + DEFAULT_COMMIT_TTL_SECONDS;
   const nonce = params.nonce ?? BigInt(params.preflight.nonce_next);
   const fee = params.feeWei ?? BigInt(params.preflight.recommended_fee || "0");
-  const bond =
-    params.bondWei ?? BigInt(params.preflight.recommended_bond || "0");
+  const stake =
+    params.stakeWei ?? BigInt(params.preflight.recommended_stake || "0");
 
   return {
     domain: buildForgeDomain({
@@ -121,7 +192,7 @@ export function buildCommitIntentTypedData(params: {
       submitter: params.submitter,
       contentHash: params.contentHash,
       feeAmount: fee,
-      bondAmount: bond,
+      stakeAmount: stake,
       feeShareBps: params.feeShareBps,
       feeShares: params.feeShares,
       nonce,
@@ -141,7 +212,7 @@ export interface SubmitCommitRequestBody {
   submitter: string;
   content_hash: string;
   fee_amount: string;
-  bond_amount: string;
+  stake_amount: string;
   fee_share_bps: string;
   fee_shares: { recipient: string; basis_points: string }[];
   nonce: string;
@@ -160,7 +231,7 @@ export function buildSubmitCommitRequestBody(params: {
     submitter: m.submitter,
     content_hash: m.contentHash,
     fee_amount: m.feeAmount.toString(),
-    bond_amount: m.bondAmount.toString(),
+    stake_amount: m.stakeAmount.toString(),
     fee_share_bps: m.feeShareBps.toString(),
     fee_shares: m.feeShares.map((s) => ({
       recipient: s.recipient,

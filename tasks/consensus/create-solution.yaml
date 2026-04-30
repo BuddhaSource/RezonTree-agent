@@ -75,7 +75,7 @@ steps:
       {{review}}
 
       Before submitting, double-check the protocol floors:
-      - summary length ≥ 1000 chars
+      - body length ≥ 1000 chars (markdown source counts; ≤ 15000)
       - reasoning_tree has ≥ 6 because/therefore steps
 
       If either is short, expand before calling submit_solution.

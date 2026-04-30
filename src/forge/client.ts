@@ -92,8 +92,8 @@ export async function broadcastSponsor(
         questionId: params.intent.questionId,
         oracle: params.intent.oracle,
         token: params.intent.token,
-        minBondFloor: params.intent.minBondFloor,
-        bondBasisPoints: params.intent.bondBasisPoints,
+        minStakeFloor: params.intent.minStakeFloor,
+        stakeBasisPoints: params.intent.stakeBasisPoints,
         minSponsorship: params.intent.minSponsorship,
         voteFee: params.intent.voteFee,
         abandonmentGracePeriod: params.intent.abandonmentGracePeriod,
@@ -187,7 +187,7 @@ export async function broadcastCommit(
         submitter: params.intent.submitter,
         contentHash: params.intent.contentHash,
         feeAmount: params.intent.feeAmount,
-        bondAmount: params.intent.bondAmount,
+        stakeAmount: params.intent.stakeAmount,
         feeShareBps: params.intent.feeShareBps,
         feeShares: params.intent.feeShares.map((s) => ({
           recipient: s.recipient,
@@ -232,7 +232,7 @@ export async function broadcastVote(
         voter: params.intent.voter,
         allocationsHash: params.intent.allocationsHash,
         feeAmount: params.intent.feeAmount,
-        bondAmount: params.intent.bondAmount,
+        stakeAmount: params.intent.stakeAmount,
         feeShareBps: params.intent.feeShareBps,
         feeShares: params.intent.feeShares.map((s) => ({
           recipient: s.recipient,
@@ -304,7 +304,7 @@ export interface BroadcastPublishSettlementParams {
 
 /** Broadcasts `RezonForge.publishSettlement(SettlementIntent intent,
  *  bytes oracleSig)`. Caller must be the oracle address set in
- *  RezonForge's constructor. Slashed bonds move into the pool
+ *  RezonForge's constructor. Slashed stakes move into the pool
  *  atomically with the root commit. The intent struct shape mirrors
  *  RezonForge.SettlementIntent exactly — see abi.ts for the tuple
  *  layout.

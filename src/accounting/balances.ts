@@ -1,8 +1,14 @@
 // accounting/balances.ts — fund-conservation audit.
 //
-// Every protocol action moves USDC between known actors: agent
-// wallets and the Router contract. Total USDC across all actors is
-// invariant over any action (gas is paid in ETH, not USDC).
+// Every protocol action moves the question's settlement token
+// between known actors: agent wallets and the Router contract.
+// Total token supply across all actors is invariant over any action
+// (gas is paid in native ETH, not the settlement token).
+//
+// The token isn't always USDC — RezonForge supports any ERC-20 the
+// sponsor binds at sponsor() time. The TokenInfo passed to snapshot()
+// + the print* helpers carries decimals + symbol so display works
+// for 6-dp USDC, 18-dp WETH, or anything else.
 //
 // Snapshots capture balances and per-qid Router state; verifyDelta
 // compares two snapshots against an ExpectedDelta and reports any
@@ -11,11 +17,14 @@
 import type { Address, Hex, PublicClient } from "viem";
 import { erc20Abi } from "viem";
 
-/** One USDC balance snapshot for a named actor. */
+import { fmtTokenAmount, type TokenInfo } from "../format/token.js";
+
+/** One token-balance snapshot for a named actor. */
 export interface ActorBalance {
   name: string;
   address: Address;
-  usdc: bigint;
+  /** Settlement-token balance in base units. */
+  tokenAmount: bigint;
 }
 
 /** Full balance snapshot across the system. */
@@ -24,29 +33,31 @@ export interface BalanceSnapshot {
   wallets: ActorBalance[];
   router: {
     address: Address;
-    totalUsdc: bigint;
+    /** Router's total holdings of the settlement token. */
+    totalToken: bigint;
     /** Per-qid pool amounts (known qids only — we track them as
-     *  agents create them). Sum ≤ totalUsdc; residual = totalUsdc
-     *  − sum(pools) − sum(bonds). */
+     *  agents create them). Sum ≤ totalToken; residual = totalToken
+     *  − sum(pools) − sum(stakes). */
     pools: Record<Hex, bigint>;
-    /** Known solution-bond amounts keyed by intent_hash. */
-    solutionBonds: Record<Hex, bigint>;
-    /** Known vote-bond amounts keyed by intent_hash. */
-    voteBonds: Record<Hex, bigint>;
+    /** Known solution-stake amounts keyed by intent_hash. */
+    solutionStakes: Record<Hex, bigint>;
+    /** Known vote-stake amounts keyed by intent_hash. */
+    voteStakes: Record<Hex, bigint>;
   };
   /** Sum across wallets + router. Invariant over any action. */
-  totalUsdc: bigint;
+  totalToken: bigint;
 }
 
 /** Inputs to take a snapshot. */
 export interface SnapshotInput {
   publicClient: PublicClient;
-  usdc: Address;
+  /** ERC-20 contract address whose balance we're tracking. */
+  token: Address;
   router: Address;
   wallets: { name: string; address: Address }[];
   /** Known qids to query pool amounts for. */
   qids: Hex[];
-  /** Known intent hashes to query bonds for. */
+  /** Known intent hashes to query stakes for. */
   solutionIntentHashes: Hex[];
   voteIntentHashes: Hex[];
 }
@@ -67,14 +78,14 @@ const routerReadAbi = [
   },
   {
     type: "function",
-    name: "solutionBond",
+    name: "solutionStake",
     stateMutability: "view",
     inputs: [{ name: "", type: "bytes32" }],
     outputs: [{ name: "", type: "uint256" }],
   },
   {
     type: "function",
-    name: "voteBond",
+    name: "voteStake",
     stateMutability: "view",
     inputs: [{ name: "", type: "bytes32" }],
     outputs: [{ name: "", type: "uint256" }],
@@ -86,8 +97,8 @@ export async function snapshot(input: SnapshotInput): Promise<BalanceSnapshot> {
     input.wallets.map(async (w): Promise<ActorBalance> => ({
       name: w.name,
       address: w.address,
-      usdc: (await input.publicClient.readContract({
-        address: input.usdc,
+      tokenAmount: (await input.publicClient.readContract({
+        address: input.token,
         abi: erc20Abi,
         functionName: "balanceOf",
         args: [w.address],
@@ -96,7 +107,7 @@ export async function snapshot(input: SnapshotInput): Promise<BalanceSnapshot> {
   );
 
   const routerTotal = (await input.publicClient.readContract({
-    address: input.usdc,
+    address: input.token,
     abi: erc20Abi,
     functionName: "balanceOf",
     args: [input.router],
@@ -113,40 +124,40 @@ export async function snapshot(input: SnapshotInput): Promise<BalanceSnapshot> {
     pools[qid] = q[3];
   }
 
-  const solutionBonds: Record<Hex, bigint> = {};
+  const solutionStakes: Record<Hex, bigint> = {};
   for (const h of input.solutionIntentHashes) {
-    solutionBonds[h] = (await input.publicClient.readContract({
+    solutionStakes[h] = (await input.publicClient.readContract({
       address: input.router,
       abi: routerReadAbi,
-      functionName: "solutionBond",
+      functionName: "solutionStake",
       args: [h],
     })) as bigint;
   }
 
-  const voteBonds: Record<Hex, bigint> = {};
+  const voteStakes: Record<Hex, bigint> = {};
   for (const h of input.voteIntentHashes) {
-    voteBonds[h] = (await input.publicClient.readContract({
+    voteStakes[h] = (await input.publicClient.readContract({
       address: input.router,
       abi: routerReadAbi,
-      functionName: "voteBond",
+      functionName: "voteStake",
       args: [h],
     })) as bigint;
   }
 
-  const totalUsdc =
-    walletBalances.reduce((acc, w) => acc + w.usdc, 0n) + routerTotal;
+  const totalToken =
+    walletBalances.reduce((acc, w) => acc + w.tokenAmount, 0n) + routerTotal;
 
   return {
     takenAtMs: Date.now(),
     wallets: walletBalances,
     router: {
       address: input.router,
-      totalUsdc: routerTotal,
+      totalToken: routerTotal,
       pools,
-      solutionBonds,
-      voteBonds,
+      solutionStakes,
+      voteStakes,
     },
-    totalUsdc,
+    totalToken,
   };
 }
 
@@ -156,14 +167,16 @@ export type ActionName =
   | "fund"
   | "commit"
   | "vote"
-  | "settle" // no USDC movement
+  | "settle" // no token movement
   | "claim"
-  | "claim_solution_bond"
-  | "claim_vote_bond"
+  | "claim_solution_stake"
+  | "claim_vote_stake"
   | "sweep_residuals";
 
 /** Per-action expected delta. Positive = inflow, negative = outflow.
- *  Units: USDC wei (6dp). Unspecified wallets default to 0 delta. */
+ *  Units: settlement-token base units (decimals come from TokenInfo
+ *  passed to print* helpers). Unspecified wallets default to 0
+ *  delta. */
 export interface ExpectedDelta {
   action: ActionName;
   byAddress: Partial<Record<Address, bigint>>;
@@ -171,9 +184,9 @@ export interface ExpectedDelta {
   qid?: Hex;
   poolDelta?: bigint;
   intentHash?: Hex;
-  solutionBondDelta?: bigint;
-  voteBondDelta?: bigint;
-  /** Overall chain total should be unchanged (no USDC leaves). */
+  solutionStakeDelta?: bigint;
+  voteStakeDelta?: bigint;
+  /** Overall chain total should be unchanged (no token leaves). */
   chainTotal: bigint; // always 0n
 }
 
@@ -196,7 +209,7 @@ export function verifyDelta(
   for (const w of after.wallets) {
     const b = before.wallets.find((x) => x.address === w.address);
     if (!b) continue;
-    actualByAddress[w.address] = w.usdc - b.usdc;
+    actualByAddress[w.address] = w.tokenAmount - b.tokenAmount;
   }
   for (const addr of Object.keys(expected.byAddress) as Address[]) {
     const exp = expected.byAddress[addr] ?? 0n;
@@ -218,7 +231,7 @@ export function verifyDelta(
   }
 
   // Router total.
-  const actualRouterTotal = after.router.totalUsdc - before.router.totalUsdc;
+  const actualRouterTotal = after.router.totalToken - before.router.totalToken;
   if (actualRouterTotal !== expected.routerTotal) {
     mismatches.push(
       `router total: expected ${expected.routerTotal}, actual ${actualRouterTotal}`,
@@ -238,35 +251,35 @@ export function verifyDelta(
     }
   }
 
-  // Bond deltas.
+  // Stake deltas.
   if (expected.intentHash !== undefined) {
-    if (expected.solutionBondDelta !== undefined) {
-      const b = before.router.solutionBonds[expected.intentHash] ?? 0n;
-      const a = after.router.solutionBonds[expected.intentHash] ?? 0n;
+    if (expected.solutionStakeDelta !== undefined) {
+      const b = before.router.solutionStakes[expected.intentHash] ?? 0n;
+      const a = after.router.solutionStakes[expected.intentHash] ?? 0n;
       const actual = a - b;
-      if (actual !== expected.solutionBondDelta) {
+      if (actual !== expected.solutionStakeDelta) {
         mismatches.push(
-          `solutionBond[${expected.intentHash}]: expected ${expected.solutionBondDelta}, actual ${actual}`,
+          `solutionStake[${expected.intentHash}]: expected ${expected.solutionStakeDelta}, actual ${actual}`,
         );
       }
     }
-    if (expected.voteBondDelta !== undefined) {
-      const b = before.router.voteBonds[expected.intentHash] ?? 0n;
-      const a = after.router.voteBonds[expected.intentHash] ?? 0n;
+    if (expected.voteStakeDelta !== undefined) {
+      const b = before.router.voteStakes[expected.intentHash] ?? 0n;
+      const a = after.router.voteStakes[expected.intentHash] ?? 0n;
       const actual = a - b;
-      if (actual !== expected.voteBondDelta) {
+      if (actual !== expected.voteStakeDelta) {
         mismatches.push(
-          `voteBond[${expected.intentHash}]: expected ${expected.voteBondDelta}, actual ${actual}`,
+          `voteStake[${expected.intentHash}]: expected ${expected.voteStakeDelta}, actual ${actual}`,
         );
       }
     }
   }
 
-  // Chain total must be conserved (no USDC leaves).
-  const actualChainTotal = after.totalUsdc - before.totalUsdc;
+  // Chain total must be conserved (no settlement token leaves).
+  const actualChainTotal = after.totalToken - before.totalToken;
   if (actualChainTotal !== expected.chainTotal) {
     mismatches.push(
-      `CHAIN TOTAL DRIFTED: expected ${expected.chainTotal}, actual ${actualChainTotal} — USDC leaked out of or into the system`,
+      `CHAIN TOTAL DRIFTED: expected ${expected.chainTotal}, actual ${actualChainTotal} — settlement token leaked out of or into the system`,
     );
   }
 
@@ -280,52 +293,63 @@ export function verifyDelta(
 }
 
 // ─── Pretty printing ───────────────────────────────────────────
+//
+// All print* helpers take a TokenInfo so display matches whatever
+// settlement token the question is denominated in (USDC, WETH,
+// any ERC-20). Decimals + symbol come from preflight or a per-
+// network registry — never hardcoded.
 
-/** Format USDC wei as a human "1.23 USDC" string (6dp). */
-export function fmtUsdc(wei: bigint): string {
-  const neg = wei < 0n;
-  const abs = neg ? -wei : wei;
-  const whole = abs / 1_000_000n;
-  const frac = abs % 1_000_000n;
-  const fracStr = frac.toString().padStart(6, "0").replace(/0+$/, "");
-  const s = fracStr ? `${whole}.${fracStr}` : `${whole}`;
-  return (neg ? "-" : "") + s + " USDC";
-}
+/** Re-export so accounting callers can import in one place. */
+export { fmtTokenAmount } from "../format/token.js";
+export type { TokenInfo } from "../format/token.js";
 
-export function printSnapshot(snap: BalanceSnapshot, title = "Balance sheet"): void {
+const PAD = 16;
+
+export function printSnapshot(
+  snap: BalanceSnapshot,
+  token: TokenInfo,
+  title = "Balance sheet",
+): void {
+  const fmt = (v: bigint): string => fmtTokenAmount(v, token).padStart(PAD);
   console.log("");
   console.log(`── ${title} @ ${new Date(snap.takenAtMs).toISOString()} ──`);
   for (const w of snap.wallets) {
-    console.log(`  ${w.name.padEnd(14)} ${w.address}  ${fmtUsdc(w.usdc).padStart(14)}`);
+    console.log(`  ${w.name.padEnd(14)} ${w.address}  ${fmt(w.tokenAmount)}`);
   }
-  console.log(`  ${"router".padEnd(14)} ${snap.router.address}  ${fmtUsdc(snap.router.totalUsdc).padStart(14)}`);
+  console.log(
+    `  ${"router".padEnd(14)} ${snap.router.address}  ${fmt(snap.router.totalToken)}`,
+  );
   const poolsSum = Object.values(snap.router.pools).reduce((a, b) => a + b, 0n);
-  const solBondsSum = Object.values(snap.router.solutionBonds).reduce(
+  const solStakesSum = Object.values(snap.router.solutionStakes).reduce(
     (a, b) => a + b,
     0n,
   );
-  const voteBondsSum = Object.values(snap.router.voteBonds).reduce(
+  const voteStakesSum = Object.values(snap.router.voteStakes).reduce(
     (a, b) => a + b,
     0n,
   );
-  const residuals = snap.router.totalUsdc - poolsSum - solBondsSum - voteBondsSum;
+  const residuals =
+    snap.router.totalToken - poolsSum - solStakesSum - voteStakesSum;
   console.log(
-    `    ├─ pools       ${fmtUsdc(poolsSum).padStart(14)}  (${Object.keys(snap.router.pools).length} qid${Object.keys(snap.router.pools).length === 1 ? "" : "s"})`,
+    `    ├─ pools       ${fmt(poolsSum)}  (${Object.keys(snap.router.pools).length} qid${Object.keys(snap.router.pools).length === 1 ? "" : "s"})`,
   );
   console.log(
-    `    ├─ sol bonds   ${fmtUsdc(solBondsSum).padStart(14)}  (${Object.keys(snap.router.solutionBonds).length} intent${Object.keys(snap.router.solutionBonds).length === 1 ? "" : "s"})`,
+    `    ├─ sol stakes   ${fmt(solStakesSum)}  (${Object.keys(snap.router.solutionStakes).length} intent${Object.keys(snap.router.solutionStakes).length === 1 ? "" : "s"})`,
   );
   console.log(
-    `    ├─ vote bonds  ${fmtUsdc(voteBondsSum).padStart(14)}  (${Object.keys(snap.router.voteBonds).length} intent${Object.keys(snap.router.voteBonds).length === 1 ? "" : "s"})`,
+    `    ├─ vote stakes  ${fmt(voteStakesSum)}  (${Object.keys(snap.router.voteStakes).length} intent${Object.keys(snap.router.voteStakes).length === 1 ? "" : "s"})`,
   );
-  console.log(`    └─ residuals   ${fmtUsdc(residuals).padStart(14)}`);
+  console.log(`    └─ residuals   ${fmt(residuals)}`);
   console.log(`  ${"─".repeat(58)}`);
-  console.log(`  ${"chain total".padEnd(14)} ${" ".repeat(42)} ${fmtUsdc(snap.totalUsdc).padStart(14)}`);
+  console.log(
+    `  ${"chain total".padEnd(14)} ${" ".repeat(42)} ${fmt(snap.totalToken)}`,
+  );
 }
 
 export function printDelta(
   before: BalanceSnapshot,
   after: BalanceSnapshot,
+  token: TokenInfo,
   label: string,
 ): void {
   console.log("");
@@ -333,17 +357,25 @@ export function printDelta(
   for (const w of after.wallets) {
     const b = before.wallets.find((x) => x.address === w.address);
     if (!b) continue;
-    const d = w.usdc - b.usdc;
+    const d = w.tokenAmount - b.tokenAmount;
     if (d !== 0n) {
       const sign = d > 0n ? "+" : "";
-      console.log(`  ${w.name.padEnd(14)} ${sign}${fmtUsdc(d)}`);
+      console.log(`  ${w.name.padEnd(14)} ${sign}${fmtTokenAmount(d, token)}`);
     }
   }
-  const routerDelta = after.router.totalUsdc - before.router.totalUsdc;
+  const routerDelta = after.router.totalToken - before.router.totalToken;
   if (routerDelta !== 0n) {
     const sign = routerDelta > 0n ? "+" : "";
-    console.log(`  ${"router".padEnd(14)} ${sign}${fmtUsdc(routerDelta)}`);
+    console.log(
+      `  ${"router".padEnd(14)} ${sign}${fmtTokenAmount(routerDelta, token)}`,
+    );
   }
-  const chainDelta = after.totalUsdc - before.totalUsdc;
-  console.log(`  ${"chain total".padEnd(14)} ${chainDelta === 0n ? "≡ (conserved)" : `DRIFT ${fmtUsdc(chainDelta)}`}`);
+  const chainDelta = after.totalToken - before.totalToken;
+  console.log(
+    `  ${"chain total".padEnd(14)} ${
+      chainDelta === 0n
+        ? "≡ (conserved)"
+        : `DRIFT ${fmtTokenAmount(chainDelta, token)}`
+    }`,
+  );
 }

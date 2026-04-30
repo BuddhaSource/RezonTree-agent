@@ -4,7 +4,7 @@
 //
 // Pinned typehash:
 //   VoteIntent(bytes32 questionId,address voter,bytes32 allocationsHash,
-//     uint256 feeAmount,uint256 bondAmount,uint256 feeShareBps,
+//     uint256 feeAmount,uint256 stakeAmount,uint256 feeShareBps,
 //     FeeShare[] feeShares,uint256 nonce,uint256 chainId,
 //     uint256 expiresAt)
 //   FeeShare(address recipient,uint256 basisPoints)
@@ -57,7 +57,7 @@ export const VOTE_INTENT_TYPES = {
     { name: "voter", type: "address" },
     { name: "allocationsHash", type: "bytes32" },
     { name: "feeAmount", type: "uint256" },
-    { name: "bondAmount", type: "uint256" },
+    { name: "stakeAmount", type: "uint256" },
     { name: "feeShareBps", type: "uint256" },
     { name: "feeShares", type: "FeeShare[]" },
     { name: "nonce", type: "uint256" },
@@ -71,7 +71,7 @@ export interface VoteIntentMessage {
   voter: `0x${string}`;
   allocationsHash: `0x${string}`;
   feeAmount: bigint;
-  bondAmount: bigint;
+  stakeAmount: bigint;
   feeShareBps: bigint;
   feeShares: FeeShare[];
   nonce: bigint;
@@ -126,14 +126,55 @@ export function canonicalizeAllocations(allocations: readonly Allocation[]): {
 
 /**
  * Computes the allocationsHash: keccak256 of the canonical
- * allocations-encoding bytes. Pinned against a vector in the
- * test suite to lock the cross-language invariant.
+ * allocations-encoding bytes followed by the 32-byte server-issued
+ * salt. Without the salt the hash would be enumerable from public
+ * protocol parameters (number of solutions × point grid) — an
+ * attacker watching VoteCast events on chain could rainbow-table
+ * the voter's specific allocation. The salt is fetched from the
+ * vote-preflight response and echoed back in the POST body; the
+ * backend HMAC-verifies it before recomputing this hash.
+ *
+ * Salt MUST be 32 bytes (64 hex chars + 0x prefix). Mismatching
+ * length would silently produce a different hash than backend
+ * recomputation.
  */
 export function computeAllocationsHash(
   allocations: readonly Allocation[],
+  salt: `0x${string}`,
 ): `0x${string}` {
-  const { bytes } = canonicalizeAllocations(allocations);
-  return keccak256(bytes);
+  const { bytes: canon } = canonicalizeAllocations(allocations);
+  const saltBytes = hexToBytes(salt);
+  if (saltBytes.length !== 32) {
+    throw new Error(
+      `vote salt must be 32 bytes; got ${saltBytes.length} (hex=${salt})`,
+    );
+  }
+  const buf = new Uint8Array(canon.length + saltBytes.length);
+  buf.set(canon, 0);
+  buf.set(saltBytes, canon.length);
+  return keccak256(buf);
+}
+
+/** 0x-prefixed hex string → byte array. Errors on odd-length or
+ *  non-hex input so a typo can't silently produce a different salt
+ *  than the backend will use. */
+function hexToBytes(hex: string): Uint8Array {
+  if (!hex.startsWith("0x")) {
+    throw new Error(`expected 0x-prefixed hex, got ${hex}`);
+  }
+  const body = hex.slice(2);
+  if (body.length % 2 !== 0) {
+    throw new Error(`hex must have even length, got ${body}`);
+  }
+  const out = new Uint8Array(body.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    const byte = Number.parseInt(body.slice(i * 2, i * 2 + 2), 16);
+    if (Number.isNaN(byte)) {
+      throw new Error(`invalid hex character in ${hex}`);
+    }
+    out[i] = byte;
+  }
+  return out;
 }
 
 // Validates that every allocation is a non-negative integer with
@@ -168,7 +209,7 @@ export function buildVoteIntentTypedData(params: {
   feeShareBps: bigint;
   feeShares: FeeShare[];
   feeWei?: bigint;
-  bondWei?: bigint;
+  stakeWei?: bigint;
   expiresAtSeconds?: number;
   nonce?: bigint;
   nowSeconds?: number;
@@ -177,8 +218,8 @@ export function buildVoteIntentTypedData(params: {
   const ttl = params.expiresAtSeconds ?? now + DEFAULT_VOTE_TTL_SECONDS;
   const nonce = params.nonce ?? BigInt(params.preflight.nonce_next);
   const fee = params.feeWei ?? BigInt(params.preflight.recommended_fee || "0");
-  const bond =
-    params.bondWei ?? BigInt(params.preflight.recommended_bond || "0");
+  const stake =
+    params.stakeWei ?? BigInt(params.preflight.recommended_stake || "0");
 
   return {
     domain: buildForgeDomain({
@@ -192,7 +233,7 @@ export function buildVoteIntentTypedData(params: {
       voter: params.voter,
       allocationsHash: params.allocationsHash,
       feeAmount: fee,
-      bondAmount: bond,
+      stakeAmount: stake,
       feeShareBps: params.feeShareBps,
       feeShares: params.feeShares,
       nonce,
@@ -217,19 +258,26 @@ export interface SubmitVoteIntentRequestBody {
   allocations_hash: string;
   allocations: Allocation[];
   fee_amount: string;
-  bond_amount: string;
+  stake_amount: string;
   fee_share_bps: string;
   fee_shares: { recipient: string; basis_points: string }[];
   nonce: string;
   chain_id: string;
   expires_at: string;
   signature: string;
+  // Salt + saltToken come from the vote-preflight response. The
+  // backend HMAC-verifies the token at submit time and rejects any
+  // substitute or expired pair, defeating downgrade-the-salt attacks.
+  vote_salt: string;
+  vote_salt_token: string;
 }
 
 export function buildSubmitVoteIntentRequestBody(params: {
   typedData: VoteIntentTypedData;
   allocations: readonly Allocation[];
   signature: `0x${string}`;
+  voteSalt: `0x${string}`;
+  voteSaltToken: `0x${string}`;
 }): SubmitVoteIntentRequestBody {
   const m = params.typedData.message;
   return {
@@ -238,7 +286,7 @@ export function buildSubmitVoteIntentRequestBody(params: {
     allocations_hash: m.allocationsHash,
     allocations: [...params.allocations],
     fee_amount: m.feeAmount.toString(),
-    bond_amount: m.bondAmount.toString(),
+    stake_amount: m.stakeAmount.toString(),
     fee_share_bps: m.feeShareBps.toString(),
     fee_shares: m.feeShares.map((s) => ({
       recipient: s.recipient,
@@ -248,5 +296,7 @@ export function buildSubmitVoteIntentRequestBody(params: {
     chain_id: m.chainId.toString(),
     expires_at: m.expiresAt.toString(),
     signature: params.signature,
+    vote_salt: params.voteSalt,
+    vote_salt_token: params.voteSaltToken,
   };
 }

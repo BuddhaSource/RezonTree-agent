@@ -5,7 +5,7 @@
 // the full RezonForge v2.5 lifecycle:
 //
 //   sponsor  →  cosponsor*  →  commit*  →  vote*
-//             →  settle  →  claim*  →  bond-refund*
+//             →  settle  →  claim*  →  stake-refund*
 //
 // Then asserts:
 //   • happy-path scenarios settle to the intended winner
@@ -35,9 +35,6 @@ import {
   type Address,
   type Hex,
   createPublicClient,
-  http,
-  keccak256,
-  toBytes,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
@@ -45,6 +42,12 @@ import { deriveAgentWallet } from "../src/wallet/derive.js";
 import { loadLoginDomain } from "../src/wallet/domain.js";
 import { signWalletLoginIntent } from "../src/wallet/signer.js";
 import type { AgentWallet } from "../src/wallet/types.js";
+import {
+  fetchWithRetry,
+  makeFallbackTransport,
+  resolveRpcUrls,
+} from "../src/testnet/rpc-fallback.js";
+import { makeSolutionBody } from "../src/testnet/solution-body.js";
 
 import {
   buildSponsorIntentTypedData,
@@ -100,11 +103,11 @@ import {
   type BattleAudit,
   type FinanceSnapshot,
   type NamedActor,
-  type PerProblemAudit,
-  type ProblemTrace,
+  type PerQuestionAudit,
+  type QuestionTrace,
   ROUTER_READ_ABI,
   fmtUsdc6,
-  reconcileProblem,
+  reconcileQuestion,
   renderActorDeltaCsv,
   snapshotFinance,
 } from "./finance-audit.js";
@@ -112,7 +115,13 @@ import {
 // ── Env ──────────────────────────────────────────────────────────
 
 const BACKEND = process.env.RT_BACKEND_URL ?? "http://localhost:8080";
-const RPC = process.env.RT_RPC_URL ?? "https://sepolia.base.org";
+// RPC failover. Prefer RT_AGENT_RPC_URLS (comma-list) but accept legacy
+// RT_RPC_URL or fall back to the curated public Base Sepolia trio.
+// Loop 0136 50-question battle had a single endpoint return 502 mid-tx;
+// the fallback transport rotates through the list with retry+backoff.
+const RPC_URLS = resolveRpcUrls(process.env);
+const RPC = RPC_URLS[0]; // primary — used by makeAgentWalletClient where
+//                                viem's writeContract is called directly.
 const CHAIN_ID = Number.parseInt(process.env.RT_CHAIN_ID ?? "84532", 10);
 const USDC =
   (process.env.RT_USDC_ADDRESS as Address) ??
@@ -187,7 +196,19 @@ interface BattleConfig {
 
 interface AuthedWallet { wallet: AgentWallet; token: string; address: Address }
 
+// JWT cache. Reuses logins across scenarios so back-to-back calls
+// don't collide on WalletLoginIntent intent_hash (F-NEW-2). The
+// access token issued by /auth/wallet is good for 15 min; we refresh
+// at 13 min to leave headroom for slow lifecycles (F-NEW-3).
+const JWT_LIFETIME_MS = 13 * 60 * 1000;
+type CachedAuth = AuthedWallet & { issuedAt: number };
+const _authCache = new Map<Address, CachedAuth>();
+
 async function loginWallet(wallet: AgentWallet): Promise<AuthedWallet> {
+  const cached = _authCache.get(wallet.address);
+  if (cached && Date.now() - cached.issuedAt < JWT_LIFETIME_MS) {
+    return cached;
+  }
   const body = await signWalletLoginIntent({
     wallet,
     expiresAt: Math.floor(Date.now() / 1000) + 300,
@@ -198,7 +219,14 @@ async function loginWallet(wallet: AgentWallet): Promise<AuthedWallet> {
     "/auth/wallet",
     body,
   );
-  return { wallet, token: r.access_token, address: r.address };
+  const authed: CachedAuth = {
+    wallet,
+    token: r.access_token,
+    address: r.address,
+    issuedAt: Date.now(),
+  };
+  _authCache.set(wallet.address, authed);
+  return authed;
 }
 
 // ── HTTP ─────────────────────────────────────────────────────────
@@ -227,14 +255,25 @@ async function call<T = unknown>(
   body?: unknown,
   token?: string,
 ): Promise<T> {
-  const res = await fetch(`${BACKEND}${pathStr}`, {
-    method,
-    headers: {
-      "content-type": "application/json",
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
+  // fetchWithRetry retries 502/503/504 + network errors with backoff
+  // (300/800/2000ms). 4xx falls through immediately so validation
+  // failures don't loop. Mirrors the RPC fallback strategy above.
+  const res = await fetchWithRetry(
+    `${BACKEND}${pathStr}`,
+    {
+      method,
+      headers: {
+        "content-type": "application/json",
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
     },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+    {
+      onRetry: (attempt, info) => {
+        warn(`retry #${attempt} ${method} ${pathStr} — ${info.reason} (sleep ${info.delayMs}ms)`);
+      },
+    },
+  );
   const raw = await res.text();
   let parsed: unknown;
   try { parsed = raw ? JSON.parse(raw) : {}; } catch { parsed = raw; }
@@ -242,54 +281,29 @@ async function call<T = unknown>(
   return parsed as T;
 }
 
-// makeSolutionBody returns a >=1000-char synthetic solution body.
-// Backend's MinSolutionSummaryChars (Phase C) guards against drive-
-// by submissions; smoke runs need a body that satisfies the floor
-// without reading like noise. This template hits ~1100 chars.
-function makeSolutionBody(solver: string, scenarioId: string): string {
-  return [
-    `Solution by ${solver} for scenario ${scenarioId}.`,
-    "Approach: dual-write the new column behind an application flag while shadow-",
-    "filling rows in chunks of 10k via a background job. Reads tolerate NULL during",
-    "the fill window; writes go to both columns. Once shadow-fill completes the",
-    "constraint is added with NOT VALID and validated separately so the validation",
-    "scan does not block writers (Postgres > 12 pattern, see ALTER TABLE ... VALIDATE",
-    "CONSTRAINT semantics).",
-    "",
-    "Evidence: this is the canonical Strangler approach — Stripe's CHECK-then-VALIDATE",
-    "post on Skycfg, GitHub's gh-ost playbooks, and pgsql-hackers archives all",
-    "converge on shadow-fill + validate-without-lock. Skipping NOT VALID forces a",
-    "full table scan under AccessExclusiveLock; the wedge here is hours of write",
-    "downtime on a 50M-row table.",
-    "",
-    "Edge cases: backfill must respect FOR UPDATE SKIP LOCKED so concurrent app",
-    "writes do not deadlock with the chunker; an idempotent UPSERT pattern lets",
-    "the chunker re-run without producing duplicates if interrupted; readers must",
-    "treat NULL as 'not yet migrated' and not silently coerce. Replication slot",
-    "headroom must be monitored — long backfill batches inflate WAL retention and",
-    "can fill the slot's reserved disk.",
-    "",
-    "Why-not alternatives: pg_repack rewrites the whole table (acceptable but slow",
-    "and leaves replicas behind); ALTER TABLE ... SET DEFAULT in PG11+ rewrites",
-    "the column metadata only — but that does not satisfy NOT NULL when historical",
-    "rows are present.",
-  ].join("\n");
-}
+// Synthetic solution body lives in src/testnet/solution-body.ts so
+// it's typechecked + unit-tested. SA-009 floor (1100 chars) is
+// asserted there.
 
 // ── Finance helpers ──────────────────────────────────────────────
 
-const publicClient = createPublicClient({ transport: http(RPC) });
+// publicClient uses viem's fallback transport so reads (eth_call,
+// getReceipt, etc) survive a single-endpoint outage. See
+// src/testnet/rpc-fallback.ts.
+const publicClient = createPublicClient({
+  transport: makeFallbackTransport(RPC_URLS),
+});
 
 interface RoundContext {
   scenarioId: string;
   qid: Hex;
-  trace: ProblemTrace;
+  trace: QuestionTrace;
   commitIntentHashes: Hex[];
   voteIntentHashes: Hex[];
   solversByLetter: Record<string, AuthedWallet>;
   votersByLetter: Record<string, AuthedWallet>;
-  solutionsByLetter: Record<string, { id: string; intentHash: Hex; bond: bigint }>;
-  votesByLetter: Record<string, { intentHash: Hex; bond: bigint; allocations: Allocation[] }>;
+  solutionsByLetter: Record<string, { id: string; intentHash: Hex; stake: bigint }>;
+  votesByLetter: Record<string, { intentHash: Hex; stake: bigint; allocations: Allocation[] }>;
   feeWallet: AgentWallet;
   oracle: AgentWallet;
 }
@@ -299,7 +313,7 @@ interface RoundContext {
 class BattleRunner {
   private wallets: Record<string, AgentWallet> = {};
   private actors: NamedActor[] = [];
-  private auditedScenarios: PerProblemAudit[] = [];
+  private auditedScenarios: PerQuestionAudit[] = [];
   private attackResults: AttackResult[] = [];
   private sybilFindings: string[] = [];
   private startSnapshot: FinanceSnapshot | null = null;
@@ -349,7 +363,23 @@ class BattleRunner {
       ...this.cfg.scenarios,
       ...this.cfg.sybil_scenarios,
     ].filter(filterFn);
-    for (const s of lifecycleScenarios) {
+    // F-NEW-6: rebalance alice from bob/operator every N scenarios so
+    // a long battle doesn't drain mid-run. Default N=10; opt out with
+    // RT_REBALANCE_EVERY=0.
+    const rebalanceEvery = Number.parseInt(
+      process.env.RT_REBALANCE_EVERY ?? "10",
+      10,
+    );
+    for (let i = 0; i < lifecycleScenarios.length; i++) {
+      const s = lifecycleScenarios[i];
+      if (rebalanceEvery > 0 && i > 0 && i % rebalanceEvery === 0) {
+        try {
+          const { rebalance } = await import("./rebalance.js");
+          await rebalance({ dryRun: process.env.RT_REBALANCE_DRY === "1" });
+        } catch (err) {
+          warn(`rebalance failed: ${err instanceof Error ? err.message : err}`);
+        }
+      }
       try {
         await this.walkScenario(s);
       } catch (err) {
@@ -401,7 +431,7 @@ class BattleRunner {
       scenariosRun: lifecycleScenarios.length,
       conservedOverall: drift === 0n,
       chainTotalDriftWei: drift,
-      perProblem: this.auditedScenarios,
+      perQuestion: this.auditedScenarios,
       byActor,
       sybilFindings: this.sybilFindings,
       attackVectors: this.attackResults,
@@ -417,11 +447,11 @@ class BattleRunner {
     const sponsorWallet = this.wallets[s.sponsor];
     if (!sponsorWallet) throw new Error(`sponsor wallet '${s.sponsor}' not in pool`);
 
-    // 1) Authed sponsor + create problem (free L1 first; sponsor amount comes via /fund).
+    // 1) Authed sponsor + create question (free L1 first; sponsor amount comes via /fund).
     const sponsor = await loginWallet(sponsorWallet);
-    const problem = await call<{ id: string; success_criteria: { id: string; name: string }[] }>(
+    const question = await call<{ id: string; success_criteria: { id: string; name: string }[] }>(
       "POST",
-      "/v1/problems",
+      "/v1/questions",
       {
         title: s.title,
         description: s.description ?? s.title,
@@ -435,12 +465,12 @@ class BattleRunner {
       },
       sponsor.token,
     );
-    ok(`problem ${problem.id}`);
+    ok(`question ${question.id}`);
 
     // 2) Sponsor fund.
     const sponsorPre = await call<FundPreflight>(
       "GET",
-      `/v1/problems/${problem.id}/fund/preflight?funder=${sponsor.address}`,
+      `/v1/questions/${question.id}/fund/preflight?funder=${sponsor.address}`,
     );
     if (sponsorPre.mode !== "sponsor") {
       throw new Error(`expected mode=sponsor, got ${sponsorPre.mode}`);
@@ -456,7 +486,7 @@ class BattleRunner {
     const sponsorSig = (await privateKeyToAccount(sponsorWallet.privateKey).signTypedData(sponsorTd)) as Hex;
     const sponsorResp = await call<{ contribution_id: string }>(
       "POST",
-      `/v1/problems/${problem.id}/fund`,
+      `/v1/questions/${question.id}/fund`,
       buildSponsorFundRequestBody({ typedData: sponsorTd, signature: sponsorSig }),
       sponsor.token,
     );
@@ -493,7 +523,7 @@ class BattleRunner {
       const ca = await loginWallet(wallet);
       const cosponsorPre = await call<FundPreflight>(
         "GET",
-        `/v1/problems/${problem.id}/fund/preflight?funder=${ca.address}`,
+        `/v1/questions/${question.id}/fund/preflight?funder=${ca.address}`,
       );
       if (cosponsorPre.mode !== "cosponsor") {
         throw new Error(`expected mode=cosponsor, got ${cosponsorPre.mode}`);
@@ -509,7 +539,7 @@ class BattleRunner {
       const sig = (await privateKeyToAccount(wallet.privateKey).signTypedData(td)) as Hex;
       await call(
         "POST",
-        `/v1/problems/${problem.id}/fund`,
+        `/v1/questions/${question.id}/fund`,
         buildCosponsorFundRequestBody({ typedData: td, signature: sig }),
         ca.token,
       );
@@ -530,14 +560,14 @@ class BattleRunner {
     }
 
     // 4) Solvers commit.
-    const solutionsByLetter: Record<string, { id: string; intentHash: Hex; bond: bigint; submitter: AuthedWallet }> = {};
-    let bondsCommitted = 0n;
+    const solutionsByLetter: Record<string, { id: string; intentHash: Hex; stake: bigint; submitter: AuthedWallet }> = {};
+    let stakesCommitted = 0n;
     for (const solverLetter of s.solvers) {
       const wallet = this.wallets[solverLetter];
       const sa = await loginWallet(wallet);
       const commitPre = await call<CommitPreflight>(
         "GET",
-        `/v1/problems/${problem.id}/commit/preflight?submitter=${sa.address}`,
+        `/v1/questions/${question.id}/commit/preflight?submitter=${sa.address}`,
       );
       const body = makeSolutionBody(solverLetter, s.id);
       const contentHash = computeContentHash(body);
@@ -551,16 +581,16 @@ class BattleRunner {
       const sig = (await privateKeyToAccount(wallet.privateKey).signTypedData(td)) as Hex;
       const intentResp = await call<{ intent_hash: string }>(
         "POST",
-        `/v1/problems/${problem.id}/commit`,
+        `/v1/questions/${question.id}/commit`,
         buildSubmitCommitRequestBody({ typedData: td, signature: sig }),
         sa.token,
       );
       const solResp = await call<{ id: string }>(
         "POST",
-        `/v1/problems/${problem.id}/solutions`,
+        `/v1/questions/${question.id}/solutions`,
         {
           intent_hash: intentResp.intent_hash,
-          summary: body,
+          body: body,
           reasoning_tree: [
             { because: `${solverLetter} examined the live workload first`, therefore: "ALTER TABLE without NOT VALID would lock writers for the validation scan" },
             { because: "Validation scan walks every row at AccessExclusiveLock", therefore: "use ADD CONSTRAINT … NOT VALID then VALIDATE CONSTRAINT separately" },
@@ -570,7 +600,7 @@ class BattleRunner {
             { because: "Replication slots inflate WAL during long backfills", therefore: "monitor pg_replication_slots and pause if the slot retention nears disk" },
           ],
           claims: s.success_criteria.map((sc, i) => ({
-            criterion_id: problem.success_criteria[i].id,
+            criterion_id: question.success_criteria[i].id,
             value: true,
             argument: `claim against ${sc.name}`,
             falsifiable_by: "audit failure",
@@ -581,11 +611,11 @@ class BattleRunner {
       const intentHash = intentResp.intent_hash as Hex;
       this.knownCommits.push(intentHash);
       const fee = BigInt(td.message.feeAmount);
-      const bond = BigInt(td.message.bondAmount);
+      const stake = BigInt(td.message.stakeAmount);
       const permit = await signUSDCPermit(
         this.makeWalletClient(wallet),
         publicClient,
-        { usdc: USDC, spender: FORGE!, value: fee + bond, deadline: td.message.expiresAt },
+        { usdc: USDC, spender: FORGE!, value: fee + stake, deadline: td.message.expiresAt },
       );
       const tx = await broadcastCommit(this.makeWalletClient(wallet), {
         forgeAddress: FORGE!,
@@ -594,10 +624,10 @@ class BattleRunner {
         permit,
       });
       await awaitReceipt(publicClient, tx);
-      ok(`commit ${solverLetter} sol=${solResp.id} bond=${fmtUsdc6(bond)}`);
-      solutionsByLetter[solverLetter] = { id: solResp.id, intentHash, bond, submitter: sa };
+      ok(`commit ${solverLetter} sol=${solResp.id} stake=${fmtUsdc6(stake)}`);
+      solutionsByLetter[solverLetter] = { id: solResp.id, intentHash, stake, submitter: sa };
       poolInflows += fee; // commit fee is added to the pool
-      bondsCommitted += bond;
+      stakesCommitted += stake;
     }
 
     // 5) Voters cast — intended_winner gets full points; runner-up gets 0.
@@ -605,14 +635,14 @@ class BattleRunner {
     if (!winnerSolution) {
       throw new Error(`intended_winner '${s.intended_winner_profile}' has no solution`);
     }
-    const votesByLetter: Record<string, { intentHash: Hex; bond: bigint }> = {};
-    let voteBondsCommitted = 0n;
+    const votesByLetter: Record<string, { intentHash: Hex; stake: bigint }> = {};
+    let voteStakesCommitted = 0n;
     for (const voterLetter of s.voters) {
       const wallet = this.wallets[voterLetter];
       const va = await loginWallet(wallet);
       const votePre = await call<VotePreflight>(
         "GET",
-        `/v1/problems/${problem.id}/vote/preflight?voter=${va.address}`,
+        `/v1/questions/${question.id}/vote/preflight?voter=${va.address}`,
       );
       // Sybils who are also solvers self-vote; self-vote attack
       // explicitly tagged in scenario. Other voters split: 80%
@@ -638,33 +668,51 @@ class BattleRunner {
           }
         }
       }
-      const allocationsHash = computeAllocationsHash(allocs);
+      // Vote salt + token come from the preflight response
+      // (server-issued, HMAC-bound to this voter+qid+expiry). Without
+      // them the backend rejects the submission.
+      if (!votePre.vote_salt || !votePre.vote_salt_token) {
+        throw new Error(
+          `vote preflight missing vote_salt; backend requires it for privacy`,
+        );
+      }
+      const voteSalt = votePre.vote_salt as `0x${string}`;
+      const voteSaltToken = votePre.vote_salt_token as `0x${string}`;
+      const allocationsHash = computeAllocationsHash(allocs, voteSalt);
+      // intent.expiresAt MUST equal vote_salt_expires_at — the backend
+      // recomputes the salt-token HMAC using intent.ExpiresAt as its
+      // expiry input (handler/vote_intent.go:168). Diverging expiries
+      // produce a guaranteed `vote salt token mismatch` (F-NEW-1, fixed
+      // 2026-04-29).
       const td = buildVoteIntentTypedData({
         preflight: votePre,
         voter: va.address,
         allocationsHash,
         feeShareBps: 0n,
         feeShares: this.defaultFeeShares(),
+        expiresAtSeconds: votePre.vote_salt_expires_at,
       });
       const sig = (await privateKeyToAccount(wallet.privateKey).signTypedData(td)) as Hex;
       const voteResp = await call<{ intent_hash: string }>(
         "POST",
-        `/v1/problems/${problem.id}/vote-intent`,
+        `/v1/questions/${question.id}/vote-intent`,
         buildSubmitVoteIntentRequestBody({
           typedData: td,
           allocations: allocs,
           signature: sig,
+          voteSalt,
+          voteSaltToken,
         }),
         va.token,
       );
       const intentHash = voteResp.intent_hash as Hex;
       this.knownVotes.push(intentHash);
       const fee = BigInt(td.message.feeAmount);
-      const bond = BigInt(td.message.bondAmount);
+      const stake = BigInt(td.message.stakeAmount);
       const permit = await signUSDCPermit(
         this.makeWalletClient(wallet),
         publicClient,
-        { usdc: USDC, spender: FORGE!, value: fee + bond, deadline: td.message.expiresAt },
+        { usdc: USDC, spender: FORGE!, value: fee + stake, deadline: td.message.expiresAt },
       );
       const tx = await broadcastVote(this.makeWalletClient(wallet), {
         forgeAddress: FORGE!,
@@ -673,10 +721,10 @@ class BattleRunner {
         permit,
       });
       await awaitReceipt(publicClient, tx);
-      ok(`vote ${voterLetter} bond=${fmtUsdc6(bond)}`);
-      votesByLetter[voterLetter] = { intentHash, bond };
+      ok(`vote ${voterLetter} stake=${fmtUsdc6(stake)}`);
+      votesByLetter[voterLetter] = { intentHash, stake };
       poolInflows += fee;
-      voteBondsCommitted += bond;
+      voteStakesCommitted += stake;
     }
 
     // 6) Settle (oracle = operator wallet).
@@ -762,23 +810,23 @@ class BattleRunner {
     await awaitReceipt(publicClient, fTx);
     ok(`claim fee ${fmtUsdc6(feeAmount)} USDC`);
 
-    // 8) Bond refunds (only the winner's commit bond + every vote
-    //    bond — losers' commit bonds remain held in this happy-
+    // 8) Stake refunds (only the winner's commit stake + every vote
+    //    stake — losers' commit stakes remain held in this happy-
     //    path setup; full slash logic is exercised in the attack
     //    lane).
     const winnerInfo = solutionsByLetter[s.intended_winner_profile];
-    let bondsRefunded = 0n;
+    let stakesRefunded = 0n;
     {
       const tx = await winnerClient.writeContract({
         address: FORGE!,
         abi: REZON_FORGE_ABI,
-        functionName: "claimSolutionBond",
+        functionName: "claimSolutionStake",
         args: [qid, winnerInfo.intentHash],
         account: winnerClient.account!,
         chain: winnerClient.chain,
       });
       await awaitReceipt(publicClient, tx);
-      bondsRefunded += winnerInfo.bond;
+      stakesRefunded += winnerInfo.stake;
     }
     for (const voterLetter of s.voters) {
       const v = votesByLetter[voterLetter];
@@ -786,15 +834,15 @@ class BattleRunner {
       const tx = await wc.writeContract({
         address: FORGE!,
         abi: REZON_FORGE_ABI,
-        functionName: "claimVoteBond",
+        functionName: "claimVoteStake",
         args: [qid, v.intentHash],
         account: wc.account!,
         chain: wc.chain,
       });
       await awaitReceipt(publicClient, tx);
-      bondsRefunded += v.bond;
+      stakesRefunded += v.stake;
     }
-    ok(`bonds refunded total ${fmtUsdc6(bondsRefunded)}`);
+    ok(`stakes refunded total ${fmtUsdc6(stakesRefunded)}`);
 
     // Sybil flag.
     const sybilLinks = (s as SybilScenario).sybil_links;
@@ -804,9 +852,9 @@ class BattleRunner {
       }
     }
 
-    // Reconcile per-problem. We re-use the same minimal read ABI
+    // Reconcile per-question. We re-use the same minimal read ABI
     // pattern used by finance-audit so the type checker doesn't
-    // see "solutionBond"/"voteBond" as outside REZON_FORGE_ABI.
+    // see "solutionStake"/"voteStake" as outside REZON_FORGE_ABI.
     const finalQ = (await publicClient.readContract({
       address: FORGE!,
       abi: ROUTER_READ_ABI,
@@ -818,40 +866,40 @@ class BattleRunner {
       number,
       bigint, bigint, bigint, bigint,
     ];
-    let finalSBonds = 0n;
+    let finalSStakes = 0n;
     for (const v of Object.values(solutionsByLetter)) {
       const b = (await publicClient.readContract({
         address: FORGE!,
         abi: ROUTER_READ_ABI,
-        functionName: "solutionBond",
+        functionName: "solutionStake",
         args: [v.intentHash],
       })) as bigint;
-      finalSBonds += b;
+      finalSStakes += b;
     }
-    let finalVBonds = 0n;
+    let finalVStakes = 0n;
     for (const v of Object.values(votesByLetter)) {
       const b = (await publicClient.readContract({
         address: FORGE!,
         abi: ROUTER_READ_ABI,
-        functionName: "voteBond",
+        functionName: "voteStake",
         args: [v.intentHash],
       })) as bigint;
-      finalVBonds += b;
+      finalVStakes += b;
     }
 
-    const trace: ProblemTrace = {
+    const trace: QuestionTrace = {
       scenarioId: s.id,
       qid,
       poolInflowsWei: poolInflows,
-      bondsCommittedWei: bondsCommitted + voteBondsCommitted,
-      bondsRefundedWei: bondsRefunded,
-      bondsSlashedWei: 0n,
+      stakesCommittedWei: stakesCommitted + voteStakesCommitted,
+      stakesRefundedWei: stakesRefunded,
+      stakesSlashedWei: 0n,
       poolDistributedWei: winnerAmount,
       feeShareDistributedWei: 0n,
       protocolFeeWei: feeAmount,
     };
     // poolAmount is QuestionState's 12th field (0-indexed 11).
-    const audit = reconcileProblem(trace, finalQ[11], finalSBonds, finalVBonds);
+    const audit = reconcileQuestion(trace, finalQ[11], finalSStakes, finalVStakes);
     this.auditedScenarios.push(audit);
     if (audit.conserves) ok(`conserves ✓ (drift 0)`);
     else fail(`drift ${audit.drift.toString()} wei`);
@@ -874,10 +922,10 @@ class BattleRunner {
     // declared in `expected_defense_layer`.
 
     if (a.attack === "expired_intent") {
-      const problem = await this.makeProblem(sponsor, "Expired-intent test");
+      const question = await this.makeQuestion(sponsor, "Expired-intent test");
       const pre = await call<FundPreflight>(
         "GET",
-        `/v1/problems/${problem.id}/fund/preflight?funder=${sponsor.address}`,
+        `/v1/questions/${question.id}/fund/preflight?funder=${sponsor.address}`,
       );
       const td = buildSponsorIntentTypedData({
         preflight: pre,
@@ -891,7 +939,7 @@ class BattleRunner {
       try {
         await call(
           "POST",
-          `/v1/problems/${problem.id}/fund`,
+          `/v1/questions/${question.id}/fund`,
           buildSponsorFundRequestBody({ typedData: td, signature: sig }),
           sponsor.token,
         );
@@ -909,10 +957,10 @@ class BattleRunner {
     }
 
     if (a.attack === "feeshare_cap_violation") {
-      const problem = await this.makeProblem(sponsor, "feeshare-cap test");
+      const question = await this.makeQuestion(sponsor, "feeshare-cap test");
       const pre = await call<FundPreflight>(
         "GET",
-        `/v1/problems/${problem.id}/fund/preflight?funder=${sponsor.address}`,
+        `/v1/questions/${question.id}/fund/preflight?funder=${sponsor.address}`,
       );
       const td = buildSponsorIntentTypedData({
         preflight: pre,
@@ -925,7 +973,7 @@ class BattleRunner {
       try {
         await call(
           "POST",
-          `/v1/problems/${problem.id}/fund`,
+          `/v1/questions/${question.id}/fund`,
           buildSponsorFundRequestBody({ typedData: td, signature: sig }),
           sponsor.token,
         );
@@ -938,34 +986,34 @@ class BattleRunner {
       }
     }
 
-    if (a.attack === "subfloor_bond") {
-      // Need a real funded problem first.
+    if (a.attack === "subfloor_stake") {
+      // Need a real funded question first.
       const honestSponsor = await loginWallet(this.wallets["alice"]);
-      const problem = await this.makeProblem(honestSponsor, "subfloor-bond test");
-      await this.sponsorFund(honestSponsor, problem.id, "1");
+      const question = await this.makeQuestion(honestSponsor, "subfloor-stake test");
+      await this.sponsorFund(honestSponsor, question.id, "1");
       const solver = await loginWallet(this.wallets["mallory"]);
       const pre = await call<CommitPreflight>(
         "GET",
-        `/v1/problems/${problem.id}/commit/preflight?submitter=${solver.address}`,
+        `/v1/questions/${question.id}/commit/preflight?submitter=${solver.address}`,
       );
-      const recommendedBond = BigInt(pre.recommended_bond || "0");
-      if (recommendedBond === 0n) {
-        return this.attackFailed(a, "preflight returned 0 bond — cannot test sub-floor");
+      const recommendedStake = BigInt(pre.recommended_stake || "0");
+      if (recommendedStake === 0n) {
+        return this.attackFailed(a, "preflight returned 0 stake — cannot test sub-floor");
       }
-      const subFloor = recommendedBond - 1n;
+      const subFloor = recommendedStake - 1n;
       const td = buildCommitIntentTypedData({
         preflight: pre,
         submitter: solver.address,
         contentHash: computeContentHash(`subfloor-${a.id}`),
         feeShareBps: 0n,
         feeShares: [],
-        bondWei: subFloor,
+        stakeWei: subFloor,
       });
       const sig = (await privateKeyToAccount(this.wallets["mallory"].privateKey).signTypedData(td)) as Hex;
       try {
         await call(
           "POST",
-          `/v1/problems/${problem.id}/commit`,
+          `/v1/questions/${question.id}/commit`,
           buildSubmitCommitRequestBody({ typedData: td, signature: sig }),
           solver.token,
         );
@@ -987,7 +1035,7 @@ class BattleRunner {
             intentSig: sig,
             permit,
           });
-          return this.attackFailed(a, "chain accepted sub-floor bond");
+          return this.attackFailed(a, "chain accepted sub-floor stake");
         } catch (chainErr) {
           return this.attackHeld(a, `chain reverted: ${chainErr instanceof Error ? chainErr.message.slice(0, 120) : "?"}`);
         }
@@ -1001,10 +1049,10 @@ class BattleRunner {
 
     if (a.attack === "nonce_reuse") {
       const honest = await loginWallet(this.wallets["alice"]);
-      const problem = await this.makeProblem(honest, "nonce-reuse test");
+      const question = await this.makeQuestion(honest, "nonce-reuse test");
       const pre = await call<FundPreflight>(
         "GET",
-        `/v1/problems/${problem.id}/fund/preflight?funder=${honest.address}`,
+        `/v1/questions/${question.id}/fund/preflight?funder=${honest.address}`,
       );
       const td = buildSponsorIntentTypedData({
         preflight: pre,
@@ -1016,7 +1064,7 @@ class BattleRunner {
       const sig = (await privateKeyToAccount(this.wallets["alice"].privateKey).signTypedData(td)) as Hex;
       await call(
         "POST",
-        `/v1/problems/${problem.id}/fund`,
+        `/v1/questions/${question.id}/fund`,
         buildSponsorFundRequestBody({ typedData: td, signature: sig }),
         honest.token,
       );
@@ -1068,8 +1116,8 @@ class BattleRunner {
     if (a.attack === "frontrun_claim") {
       // Mallory tries to claim a non-existent settlement.
       const honest = await loginWallet(this.wallets["alice"]);
-      const problem = await this.makeProblem(honest, "frontrun-claim test");
-      await this.sponsorFund(honest, problem.id, "1");
+      const question = await this.makeQuestion(honest, "frontrun-claim test");
+      await this.sponsorFund(honest, question.id, "1");
       const fakeQid = ("0x" + "ab".repeat(32)) as Hex;
       const fakeProof: Hex[] = [];
       try {
@@ -1107,10 +1155,10 @@ class BattleRunner {
     });
   }
 
-  private async makeProblem(authed: AuthedWallet, title: string): Promise<{ id: string; success_criteria: { id: string }[] }> {
+  private async makeQuestion(authed: AuthedWallet, title: string): Promise<{ id: string; success_criteria: { id: string }[] }> {
     return await call<{ id: string; success_criteria: { id: string }[] }>(
       "POST",
-      "/v1/problems",
+      "/v1/questions",
       {
         title,
         description: title,
@@ -1123,10 +1171,10 @@ class BattleRunner {
     );
   }
 
-  private async sponsorFund(authed: AuthedWallet, problemId: string, humanAmount: string): Promise<void> {
+  private async sponsorFund(authed: AuthedWallet, questionId: string, humanAmount: string): Promise<void> {
     const pre = await call<FundPreflight>(
       "GET",
-      `/v1/problems/${problemId}/fund/preflight?funder=${authed.address}`,
+      `/v1/questions/${questionId}/fund/preflight?funder=${authed.address}`,
     );
     const amountWei = parseAmountToWei(humanAmount, pre.token.decimals);
     const td = buildSponsorIntentTypedData({
@@ -1139,7 +1187,7 @@ class BattleRunner {
     const sig = (await privateKeyToAccount(authed.wallet.privateKey).signTypedData(td)) as Hex;
     await call(
       "POST",
-      `/v1/problems/${problemId}/fund`,
+      `/v1/questions/${questionId}/fund`,
       buildSponsorFundRequestBody({ typedData: td, signature: sig }),
       authed.token,
     );
@@ -1209,7 +1257,7 @@ async function main(): Promise<number> {
   console.log("");
   console.log(c.bold("── Battle summary ──"));
   console.log(`  scenarios run: ${audit.scenariosRun}`);
-  console.log(`  per-problem conservation: ${audit.perProblem.filter((p) => p.conserves).length}/${audit.perProblem.length}`);
+  console.log(`  per-question conservation: ${audit.perQuestion.filter((p) => p.conserves).length}/${audit.perQuestion.length}`);
   console.log(`  chain total drift: ${fmtUsdc6(audit.chainTotalDriftWei)} USDC`);
   console.log(`  sybil findings: ${audit.sybilFindings.length}`);
   console.log(`  attack defenses: ${audit.attackVectors.filter((a) => a.defenseHeld).length}/${audit.attackVectors.length} held`);

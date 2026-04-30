@@ -69,10 +69,10 @@ export interface BuildSettlementIntentInput {
   sampleRecipient: Address;
   sampleAmount: bigint;
   sampleProof: readonly Hex[];
-  /** Intent hashes of losing commits — bonds slashed into pool at
+  /** Intent hashes of losing commits — stakes slashed into pool at
    *  settlement time. Empty for rounds with no losers. */
   slashedCommitHashes?: readonly Hex[];
-  /** Intent hashes of wrong-voter intents — bonds slashed. */
+  /** Intent hashes of wrong-voter intents — stakes slashed. */
   slashedVoteHashes?: readonly Hex[];
   /** Unix seconds. Defaults to now + 30min. */
   expiresAtSeconds?: number;

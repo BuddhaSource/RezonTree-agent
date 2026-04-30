@@ -9,7 +9,7 @@
 //
 // Positional args are optional. First, a qid to read poolAmount
 // for. Subsequent args are intent_hashes (solution + vote) to
-// read bonds for. With no args you get just wallet balances +
+// read stakes for. With no args you get just wallet balances +
 // total router USDC (no internal decomposition).
 
 import type { Address, Hex } from "viem";

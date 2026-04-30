@@ -1,6 +1,6 @@
 // finance-audit.ts — fund-conservation audit for the battle harness.
 //
-// Computes per-problem and per-wallet USDC accounting from on-chain
+// Computes per-question and per-wallet USDC accounting from on-chain
 // reads only (Router state + ERC-20 balances). The DB/indexer is
 // a secondary source we cross-check against; chain is canonical.
 //
@@ -11,10 +11,10 @@
 //      Σ inflow(actor)   ==  pool_distributed
 //                          + fee_share_distributed
 //                          + protocol_fee_distributed
-//                          + bond_refunded
-//                          - bond_slashed
+//                          + stake_refunded
+//                          - stake_slashed
 //
-//   per problem; and across the whole battle:
+//   per question; and across the whole battle:
 //
 //      chain_total_USDC_before == chain_total_USDC_after
 //
@@ -28,7 +28,7 @@ import {
 } from "viem";
 
 // Local read ABI — REZON_FORGE_ABI in src/forge/abi.ts only declares
-// the writable surface plus `questions` view; we add the bond view
+// the writable surface plus `questions` view; we add the stake view
 // fns here without polluting that file. Mirrors src/accounting/
 // balances.ts's local-abi pattern.
 export const ROUTER_READ_ABI = [
@@ -42,8 +42,8 @@ export const ROUTER_READ_ABI = [
       { name: "token", type: "address" },
       { name: "oracle", type: "address" },
       { name: "sponsor", type: "address" },
-      { name: "minBondFloor", type: "uint256" },
-      { name: "bondBasisPoints", type: "uint256" },
+      { name: "minStakeFloor", type: "uint256" },
+      { name: "stakeBasisPoints", type: "uint256" },
       { name: "minSponsorship", type: "uint256" },
       { name: "voteFee", type: "uint256" },
       { name: "abandonmentGracePeriod", type: "uint256" },
@@ -56,14 +56,14 @@ export const ROUTER_READ_ABI = [
   },
   {
     type: "function",
-    name: "solutionBond",
+    name: "solutionStake",
     stateMutability: "view",
     inputs: [{ name: "", type: "bytes32" }],
     outputs: [{ name: "", type: "uint256" }],
   },
   {
     type: "function",
-    name: "voteBond",
+    name: "voteStake",
     stateMutability: "view",
     inputs: [{ name: "", type: "bytes32" }],
     outputs: [{ name: "", type: "uint256" }],
@@ -82,7 +82,7 @@ export interface NamedActor {
   operator_group_id?: string;
 }
 
-export interface ProblemRecord {
+export interface QuestionRecord {
   scenarioId: string;
   qid: Hex;
   intentHashes: {
@@ -97,20 +97,20 @@ export interface FinanceSnapshot {
   walletBalances: Record<Address, bigint>;
   forgeTotalUsdc: bigint;
   pools: Record<Hex, bigint>;
-  solutionBonds: Record<Hex, bigint>;
-  voteBonds: Record<Hex, bigint>;
+  solutionStakes: Record<Hex, bigint>;
+  voteStakes: Record<Hex, bigint>;
   totalUsdc: bigint;
 }
 
-export interface PerProblemAudit {
+export interface PerQuestionAudit {
   scenarioId: string;
   qid: Hex;
   poolFundedTotal: bigint;
   poolDistributed: bigint;
   poolResidual: bigint;
-  bondsCommittedTotal: bigint;
-  bondsRefundedTotal: bigint;
-  bondsSlashedTotal: bigint;
+  stakesCommittedTotal: bigint;
+  stakesRefundedTotal: bigint;
+  stakesSlashedTotal: bigint;
   conserves: boolean;
   drift: bigint;
   notes: string[];
@@ -122,7 +122,7 @@ export interface BattleAudit {
   scenariosRun: number;
   conservedOverall: boolean;
   chainTotalDriftWei: bigint;
-  perProblem: PerProblemAudit[];
+  perQuestion: PerQuestionAudit[];
   byActor: { address: Address; name: string; deltaWei: bigint }[];
   sybilFindings: string[];
   attackVectors: AttackResult[];
@@ -170,29 +170,29 @@ export async function snapshotFinance(params: {
       args: [qid],
     }) as Promise<readonly [number, Address, number, bigint, bigint]>,
   );
-  const sBondCalls = params.commitIntents.map((h) =>
+  const sStakeCalls = params.commitIntents.map((h) =>
     params.publicClient.readContract({
       address: params.forge,
       abi: ROUTER_READ_ABI,
-      functionName: "solutionBond",
+      functionName: "solutionStake",
       args: [h],
     }) as Promise<bigint>,
   );
-  const vBondCalls = params.voteIntents.map((h) =>
+  const vStakeCalls = params.voteIntents.map((h) =>
     params.publicClient.readContract({
       address: params.forge,
       abi: ROUTER_READ_ABI,
-      functionName: "voteBond",
+      functionName: "voteStake",
       args: [h],
     }) as Promise<bigint>,
   );
 
-  const [balances, forgeTotal, poolStates, sBonds, vBonds] = await Promise.all([
+  const [balances, forgeTotal, poolStates, sStakes, vStakes] = await Promise.all([
     Promise.all(balanceCalls),
     forgeTotalP,
     Promise.all(poolCalls),
-    Promise.all(sBondCalls),
-    Promise.all(vBondCalls),
+    Promise.all(sStakeCalls),
+    Promise.all(vStakeCalls),
   ]);
 
   const walletBalances: Record<Address, bigint> = {};
@@ -208,13 +208,13 @@ export async function snapshotFinance(params: {
     // the loop 0137 "uint256 in safe-int range" crash.
     pools[params.qids[i]] = poolStates[i][11];
   }
-  const solutionBonds: Record<Hex, bigint> = {};
+  const solutionStakes: Record<Hex, bigint> = {};
   for (let i = 0; i < params.commitIntents.length; i++) {
-    solutionBonds[params.commitIntents[i]] = sBonds[i];
+    solutionStakes[params.commitIntents[i]] = sStakes[i];
   }
-  const voteBonds: Record<Hex, bigint> = {};
+  const voteStakes: Record<Hex, bigint> = {};
   for (let i = 0; i < params.voteIntents.length; i++) {
-    voteBonds[params.voteIntents[i]] = vBonds[i];
+    voteStakes[params.voteIntents[i]] = vStakes[i];
   }
 
   return {
@@ -222,46 +222,46 @@ export async function snapshotFinance(params: {
     walletBalances,
     forgeTotalUsdc: forgeTotal,
     pools,
-    solutionBonds,
-    voteBonds,
+    solutionStakes,
+    voteStakes,
     totalUsdc: totalWallets + forgeTotal,
   };
 }
 
-// ── Per-problem reconciliation ──────────────────────────────────
+// ── Per-question reconciliation ──────────────────────────────────
 
-export interface ProblemTrace {
+export interface QuestionTrace {
   scenarioId: string;
   qid: Hex;
   poolInflowsWei: bigint;          // sum of sponsor + cosponsor amounts
-  bondsCommittedWei: bigint;       // sum of every commit/vote bond locked
-  bondsRefundedWei: bigint;        // sum of every claimed bond
-  bondsSlashedWei: bigint;         // sum of slashed bonds (added to pool)
+  stakesCommittedWei: bigint;       // sum of every commit/vote stake locked
+  stakesRefundedWei: bigint;        // sum of every claimed stake
+  stakesSlashedWei: bigint;         // sum of slashed stakes (added to pool)
   poolDistributedWei: bigint;      // sum of claim() amounts that came out of pool
   feeShareDistributedWei: bigint;  // routed to feeShares recipients
   protocolFeeWei: bigint;          // routed to fee_wallet
 }
 
-export function reconcileProblem(t: ProblemTrace, finalPool: bigint, finalSolBonds: bigint, finalVoteBonds: bigint): PerProblemAudit {
+export function reconcileQuestion(t: QuestionTrace, finalPool: bigint, finalSolStakes: bigint, finalVoteStakes: bigint): PerQuestionAudit {
   const distributed =
     t.poolDistributedWei +
     t.feeShareDistributedWei +
     t.protocolFeeWei;
 
   const expectedPoolResidual =
-    t.poolInflowsWei + t.bondsSlashedWei - distributed;
+    t.poolInflowsWei + t.stakesSlashedWei - distributed;
   const poolResidual = finalPool;
   const poolDrift = poolResidual - expectedPoolResidual;
 
-  const expectedBondsHeld =
-    t.bondsCommittedWei - t.bondsRefundedWei - t.bondsSlashedWei;
-  const observedBondsHeld = finalSolBonds + finalVoteBonds;
-  const bondDrift = observedBondsHeld - expectedBondsHeld;
+  const expectedStakesHeld =
+    t.stakesCommittedWei - t.stakesRefundedWei - t.stakesSlashedWei;
+  const observedStakesHeld = finalSolStakes + finalVoteStakes;
+  const stakeDrift = observedStakesHeld - expectedStakesHeld;
 
-  const drift = poolDrift + bondDrift;
+  const drift = poolDrift + stakeDrift;
   const notes: string[] = [];
   if (poolDrift !== 0n) notes.push(`pool drift ${poolDrift.toString()} wei`);
-  if (bondDrift !== 0n) notes.push(`bond drift ${bondDrift.toString()} wei`);
+  if (stakeDrift !== 0n) notes.push(`stake drift ${stakeDrift.toString()} wei`);
   if (notes.length === 0) notes.push("conserves");
 
   return {
@@ -270,9 +270,9 @@ export function reconcileProblem(t: ProblemTrace, finalPool: bigint, finalSolBon
     poolFundedTotal: t.poolInflowsWei,
     poolDistributed: distributed,
     poolResidual,
-    bondsCommittedTotal: t.bondsCommittedWei,
-    bondsRefundedTotal: t.bondsRefundedWei,
-    bondsSlashedTotal: t.bondsSlashedWei,
+    stakesCommittedTotal: t.stakesCommittedWei,
+    stakesRefundedTotal: t.stakesRefundedWei,
+    stakesSlashedTotal: t.stakesSlashedWei,
     conserves: drift === 0n,
     drift,
     notes,

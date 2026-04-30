@@ -33,7 +33,7 @@ function preflight(overrides: Partial<CommitPreflight> = {}): CommitPreflight {
   return {
     qid: QID,
     recommended_fee: "500000",
-    recommended_bond: "5000000",
+    recommended_stake: "5000000",
     token: {
       contract_address: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
       decimals: 6,
@@ -55,7 +55,7 @@ describe("COMMIT_INTENT_TYPES field order", () => {
       { name: "submitter", type: "address" },
       { name: "contentHash", type: "bytes32" },
       { name: "feeAmount", type: "uint256" },
-      { name: "bondAmount", type: "uint256" },
+      { name: "stakeAmount", type: "uint256" },
       { name: "feeShareBps", type: "uint256" },
       { name: "feeShares", type: "FeeShare[]" },
       { name: "nonce", type: "uint256" },
@@ -66,9 +66,9 @@ describe("COMMIT_INTENT_TYPES field order", () => {
 
   it("typehash text matches the pinned cross-stack invariant", () => {
     const text =
-      "CommitIntent(bytes32 questionId,address submitter,bytes32 contentHash,uint256 feeAmount,uint256 bondAmount,uint256 feeShareBps,FeeShare[] feeShares,uint256 nonce,uint256 chainId,uint256 expiresAt)" +
+      "CommitIntent(bytes32 questionId,address submitter,bytes32 contentHash,uint256 feeAmount,uint256 stakeAmount,uint256 feeShareBps,FeeShare[] feeShares,uint256 nonce,uint256 chainId,uint256 expiresAt)" +
       "FeeShare(address recipient,uint256 basisPoints)";
-    expect(keccak256(stringToBytes(text)).startsWith("0x777d")).toBe(true);
+    expect(keccak256(stringToBytes(text)).startsWith("0x653d")).toBe(true);
   });
 });
 
@@ -97,6 +97,31 @@ describe("computeContentHash", () => {
     const b = computeContentHash("hello worlD");
     expect(a).not.toBe(b);
   });
+
+  // J3: canonical-JSON path — same body, different key insertion
+  // order. Plain JSON.stringify is insertion-order, so without
+  // canonicalization these would produce divergent hashes.
+  it("hashes structured bodies in key-order-independent fashion", () => {
+    const a = {
+      body: "hi",
+      reasoning_tree: [{ because: "x", therefore: "y" }],
+      claims: [],
+    };
+    const b: typeof a = {} as typeof a;
+    // Insert in reverse / scrambled order.
+    (b as Record<string, unknown>).claims = [];
+    (b as Record<string, unknown>).reasoning_tree = [
+      { therefore: "y", because: "x" },
+    ];
+    (b as Record<string, unknown>).body = "hi";
+    expect(computeContentHash(a)).toBe(computeContentHash(b));
+  });
+
+  it("differs when structured-body content differs", () => {
+    const a = { body: "hi", reasoning_tree: [], claims: [] };
+    const b = { body: "hI", reasoning_tree: [], claims: [] };
+    expect(computeContentHash(a)).not.toBe(computeContentHash(b));
+  });
 });
 
 describe("buildCommitIntentTypedData", () => {
@@ -119,7 +144,7 @@ describe("buildCommitIntentTypedData", () => {
     expect(td.primaryType).toBe("CommitIntent");
   });
 
-  it("pulls fee + bond from preflight recommendations by default", () => {
+  it("pulls fee + stake from preflight recommendations by default", () => {
     const td = buildCommitIntentTypedData({
       preflight: preflight(),
       submitter: SUBMITTER,
@@ -129,10 +154,10 @@ describe("buildCommitIntentTypedData", () => {
       nowSeconds: NOW,
     });
     expect(td.message.feeAmount).toBe(BigInt("500000"));
-    expect(td.message.bondAmount).toBe(BigInt("5000000"));
+    expect(td.message.stakeAmount).toBe(BigInt("5000000"));
   });
 
-  it("allows explicit fee + bond overrides", () => {
+  it("allows explicit fee + stake overrides", () => {
     const td = buildCommitIntentTypedData({
       preflight: preflight(),
       submitter: SUBMITTER,
@@ -140,11 +165,11 @@ describe("buildCommitIntentTypedData", () => {
       feeShareBps: policy.bps,
       feeShares: policy.shares,
       feeWei: BigInt("1000"),
-      bondWei: BigInt("2000"),
+      stakeWei: BigInt("2000"),
       nowSeconds: NOW,
     });
     expect(td.message.feeAmount).toBe(BigInt("1000"));
-    expect(td.message.bondAmount).toBe(BigInt("2000"));
+    expect(td.message.stakeAmount).toBe(BigInt("2000"));
   });
 
   it("carries fee-share policy verbatim", () => {
@@ -194,7 +219,7 @@ describe("buildSubmitCommitRequestBody", () => {
     expect(body.submitter).toBe(SUBMITTER);
     expect(body.content_hash).toBe(CONTENT_HASH);
     expect(body.fee_amount).toBe("500000");
-    expect(body.bond_amount).toBe("5000000");
+    expect(body.stake_amount).toBe("5000000");
     expect(body.fee_share_bps).toBe("1");
     expect(body.fee_shares).toEqual([
       { recipient: SUBMITTER, basis_points: "10000" },
