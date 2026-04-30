@@ -1,41 +1,25 @@
 {
-  "startedAt": "2026-04-28T23:55:37.252Z",
-  "finishedAt": "2026-04-28T23:56:11.793Z",
+  "startedAt": "2026-04-30T15:35:25.666Z",
+  "finishedAt": "2026-04-30T15:36:28.509Z",
   "scenariosRun": 1,
   "conservedOverall": true,
   "chainTotalDriftWei": "0",
-  "perQuestion": [
-    {
-      "scenarioId": "q00_smoke_min_wallets",
-      "qid": "0xaee0ed1d42af09713650bd067e1c989d248e1d79915fb3e2762ff3e6efbf26da",
-      "poolFundedTotal": "1000000",
-      "poolDistributed": "1000000",
-      "poolResidual": "0",
-      "bondsCommittedTotal": "2000000",
-      "bondsRefundedTotal": "2000000",
-      "bondsSlashedTotal": "0",
-      "conserves": true,
-      "drift": "0",
-      "notes": [
-        "conserves"
-      ]
-    }
-  ],
+  "perQuestion": [],
   "byActor": [
     {
       "address": "0x55Bd1aAE425116048590db9dC978f47b4F3702b5",
       "name": "operator",
-      "deltaWei": "100000"
+      "deltaWei": "0"
     },
     {
       "address": "0x483c51061e6106fe4e08E138428336A519fC0533",
       "name": "alice",
-      "deltaWei": "-1000000"
+      "deltaWei": "0"
     },
     {
       "address": "0x8A589E3210Db52658505E1681DCd36fA973bA7C3",
       "name": "bob",
-      "deltaWei": "900000"
+      "deltaWei": "0"
     },
     {
       "address": "0x9860ef4F15643b4AA135087cF49096302894eDd1",
