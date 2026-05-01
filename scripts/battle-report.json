@@ -1,56 +1,10 @@
 {
-  "startedAt": "2026-05-01T00:07:42.800Z",
-  "finishedAt": "2026-05-01T00:10:21.518Z",
-  "scenariosRun": 4,
-  "conservedOverall": false,
-  "chainTotalDriftWei": "-3000000",
-  "perQuestion": [
-    {
-      "scenarioId": "sybil01_sponsor_voter",
-      "qid": "0x7492d4523e9b213ceab93908d60d5e8063635ef8382dec1762a870044769ed01",
-      "poolFundedTotal": "1000000",
-      "poolDistributed": "1000000",
-      "poolResidual": "100000",
-      "stakesCommittedTotal": "5000000",
-      "stakesRefundedTotal": "0",
-      "stakesSlashedTotal": "0",
-      "conserves": false,
-      "drift": "100000",
-      "notes": [
-        "pool drift 100000 wei"
-      ]
-    },
-    {
-      "scenarioId": "sybil02_solver_voter_self",
-      "qid": "0x48af9f52b992dccb2022bfa7836c347f3cc7d5069bb9861bb7ccca00c7885854",
-      "poolFundedTotal": "1000000",
-      "poolDistributed": "1000000",
-      "poolResidual": "1000000",
-      "stakesCommittedTotal": "4000000",
-      "stakesRefundedTotal": "0",
-      "stakesSlashedTotal": "0",
-      "conserves": false,
-      "drift": "1000000",
-      "notes": [
-        "pool drift 1000000 wei"
-      ]
-    },
-    {
-      "scenarioId": "sybil03_voter_swarm",
-      "qid": "0xd4df025ada68ca2858e1d808b189bd905458a46a4f9fa850fe20ad85065eded8",
-      "poolFundedTotal": "1000000",
-      "poolDistributed": "1000000",
-      "poolResidual": "1000000",
-      "stakesCommittedTotal": "7000000",
-      "stakesRefundedTotal": "0",
-      "stakesSlashedTotal": "0",
-      "conserves": false,
-      "drift": "1000000",
-      "notes": [
-        "pool drift 1000000 wei"
-      ]
-    }
-  ],
+  "startedAt": "2026-05-01T01:04:57.099Z",
+  "finishedAt": "2026-05-01T01:05:28.688Z",
+  "scenariosRun": 1,
+  "conservedOverall": true,
+  "chainTotalDriftWei": "0",
+  "perQuestion": [],
   "byActor": [
     {
       "address": "0x55Bd1aAE425116048590db9dC978f47b4F3702b5",
@@ -60,17 +14,17 @@
     {
       "address": "0x483c51061e6106fe4e08E138428336A519fC0533",
       "name": "alice",
-      "deltaWei": "-3000000"
+      "deltaWei": "0"
     },
     {
       "address": "0x8A589E3210Db52658505E1681DCd36fA973bA7C3",
       "name": "bob",
-      "deltaWei": "-2100000"
+      "deltaWei": "0"
     },
     {
       "address": "0x9860ef4F15643b4AA135087cF49096302894eDd1",
       "name": "carol",
-      "deltaWei": "-3000000"
+      "deltaWei": "0"
     },
     {
       "address": "0x7498bEc7B27896C4FA7Df254C5ec8A11dd004601",
@@ -90,27 +44,27 @@
     {
       "address": "0xF0c36CAC44cA127aae7e31c1913AfBA677E24501",
       "name": "grace",
-      "deltaWei": "-3000000"
+      "deltaWei": "0"
     },
     {
       "address": "0x4C539165A91878E4be9d90809bf70C6DC31120a3",
       "name": "heidi",
-      "deltaWei": "-2000000"
+      "deltaWei": "0"
     },
     {
       "address": "0x7201558146B3e52edd6b250b950e030b9440E25b",
       "name": "ivan",
-      "deltaWei": "-2000000"
+      "deltaWei": "0"
     },
     {
       "address": "0x8f9DC25ca68937D46344DC43BCD078F79789Da9a",
       "name": "ivan2",
-      "deltaWei": "-3000000"
+      "deltaWei": "0"
     },
     {
       "address": "0xF40Ef9ecEB7CcF45FdCe3728BB8f51F4f917D407",
       "name": "ivan3",
-      "deltaWei": "-1000000"
+      "deltaWei": "0"
     },
     {
       "address": "0x59288868805Abf4e229e2e30A526A02520130A08",
@@ -125,13 +79,9 @@
     {
       "address": "0x9860ef4F15643b4AA135087cF49096302894eDd1",
       "name": "fee_wallet",
-      "deltaWei": "-3000000"
+      "deltaWei": "0"
     }
   ],
-  "sybilFindings": [
-    "sybil01_sponsor_voter:linked:ivan-ivan2-ivan3",
-    "sybil02_solver_voter_self:linked:bob-ivan2",
-    "sybil03_voter_swarm:linked:ivan-ivan2-ivan3"
-  ],
+  "sybilFindings": [],
   "attackVectors": []
 }

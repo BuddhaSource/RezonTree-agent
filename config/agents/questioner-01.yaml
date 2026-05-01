@@ -30,6 +30,11 @@ system_prompt: |
 
   Your bounty gets escrowed when you create the problem. Winners earn from the bounty pool.
 
+skills:
+  - protocol-basics
+  - wallet-and-signing
+  - workflow-sponsor
+
 tools:
   builtin:
     - Read

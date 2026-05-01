@@ -21,6 +21,10 @@ system_prompt: |
   beats high confidence with weak proof. Voters reward honesty.
 
 skills:
+  - protocol-basics
+  - wallet-and-signing
+  - workflow-solve
+  - workflow-claim
   - reasoning
   - structured-output
 
