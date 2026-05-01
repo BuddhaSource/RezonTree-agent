@@ -43,8 +43,37 @@ import {
   buildSponsorFundRequestBody,
   parseAmountToWei,
 } from "../src/intents/sponsor-intent.js";
-import { broadcastSponsor } from "../src/forge/client.js";
+import {
+  buildCommitIntentTypedData,
+  buildSubmitCommitRequestBody,
+  computeContentHash,
+} from "../src/intents/commit-intent.js";
+import {
+  buildVoteIntentTypedData,
+  buildSubmitVoteIntentRequestBody,
+  computeAllocationsHash,
+  validateAllocations,
+  type Allocation,
+} from "../src/intents/vote-intent.js";
+import {
+  buildSettlementIntentTypedData,
+  DEFAULT_SETTLEMENT_TTL_SECONDS,
+} from "../src/intents/settlement-intent.js";
+import {
+  type MerkleLeaf,
+  hashLeaf,
+  merkleRoot,
+  merkleProof,
+} from "../src/intents/merkle.js";
+import {
+  broadcastSponsor,
+  broadcastCommit,
+  broadcastVote,
+  broadcastClaim,
+  broadcastPublishSettlement,
+} from "../src/forge/client.js";
 import { signUSDCPermit } from "../src/forge/permit.js";
+import { REZON_FORGE_ABI } from "../src/forge/abi.js";
 
 // ── env + clients ────────────────────────────────────────────────
 const RPC = process.env.RT_RPC_URL ?? "https://sepolia.base.org";
@@ -184,6 +213,7 @@ program
   .requiredOption("--idx <n>", "HD index of the sponsor wallet", (s) => Number.parseInt(s, 10))
   .requiredOption("--question-file <path>", "Path to JSON with title/description/success_criteria")
   .option("--amount <usdc>", "Sponsor amount in USDC (default 1)", "1")
+  .option("--expiry-seconds <s>", "Intent TTL in seconds (caps fundingDeadline; chain max ~900s)", "900")
   .action(async (opts) => {
     const idx = opts.idx as number;
     const file = path.resolve(opts.questionFile as string);
@@ -244,6 +274,7 @@ program
     const chainNonce = await chainNextUnusedNonce(me.address);
     console.log(`  chain says next unused nonce = ${chainNonce}`);
 
+    const ttlSec = Number.parseInt(opts.expirySeconds as string, 10);
     const td = buildSponsorIntentTypedData({
       preflight: pre as never,
       sponsor: me.address,
@@ -251,7 +282,9 @@ program
       feeShareBps: 0n,
       feeShares: [{ recipient: feeWallet, basisPoints: 10000n }],
       nonce: chainNonce,
+      expiresAtSeconds: Math.floor(Date.now() / 1000) + ttlSec,
     });
+    console.log(`  intent TTL = ${ttlSec}s (fundingDeadline = sponsor's expiresAt)`);
     const wallet = makeWalletClient(idx);
     const intentSig = (await wallet.account.signTypedData(td)) as Hex;
 
@@ -290,6 +323,365 @@ program
       qid: pre.qid,
       contribution_id: fundResp.contribution_id,
       amount_usdc: opts.amount,
+      tx,
+    }, null, 2));
+  });
+
+program
+  .command("commit")
+  .description("Author + commit a solution. Reads payload from --solution-file.")
+  .requiredOption("--idx <n>", "HD index of the solver wallet", (s) => Number.parseInt(s, 10))
+  .requiredOption("--qid <id>", "question_id (qst_...)")
+  .requiredOption("--solution-file <path>", "JSON: { body, reasoning_tree, claims }")
+  .action(async (opts) => {
+    const idx = opts.idx as number;
+    const qid = opts.qid as string;
+    const file = path.resolve(opts.solutionFile as string);
+    const payload = JSON.parse(fs.readFileSync(file, "utf8")) as {
+      body: string;
+      reasoning_tree: Array<{ because: string; therefore: string }>;
+      claims: Array<{ criterion_id: string; value: unknown; argument: string; falsifiable_by: string }>;
+    };
+    console.log(`[agent ${idx}] login + commit on ${qid} ...`);
+    const me = await login(idx);
+    const pre = await callAPI<{
+      qid: string; recommended_fee: string; recommended_stake: string;
+      token: { contract_address: string; decimals: number; symbol: string; chain_id: number };
+      forge_address: string; chain_id: number; nonce_next: string;
+      [k: string]: unknown;
+    }>("GET", `/v1/questions/${qid}/commit/preflight?submitter=${me.address}`);
+    // commit preflight doesn't have a mode discriminator (unlike fund/preflight)
+
+    const contentHash = computeContentHash(payload);
+    const chainNonce = await chainNextUnusedNonce(me.address);
+    console.log(`  chain nonce=${chainNonce}, contentHash=${contentHash}`);
+
+    const feeWalletIdx = Number.parseInt(process.env.RT_FEE_WALLET_IDX ?? "3", 10);
+    const feeWallet = makeAgent(feeWalletIdx).address;
+
+    const td = buildCommitIntentTypedData({
+      preflight: pre as never,
+      submitter: me.address,
+      contentHash,
+      feeShareBps: 0n,
+      feeShares: [{ recipient: feeWallet, basisPoints: 10000n }],
+      nonce: chainNonce,
+    });
+    const wallet = makeWalletClient(idx);
+    const intentSig = (await wallet.account.signTypedData(td)) as Hex;
+
+    const intentResp = await callAPI<{ intent_hash: string }>(
+      "POST",
+      `/v1/questions/${qid}/commit`,
+      buildSubmitCommitRequestBody({ typedData: td, signature: intentSig }),
+      me.token,
+    );
+    console.log(`  intent_hash=${intentResp.intent_hash}`);
+
+    const solResp = await callAPI<{ id: string }>(
+      "POST",
+      `/v1/questions/${qid}/solutions`,
+      { intent_hash: intentResp.intent_hash, ...payload },
+      me.token,
+    );
+    console.log(`  solution_id=${solResp.id}`);
+
+    const fee = BigInt(td.message.feeAmount);
+    const stake = BigInt(td.message.stakeAmount);
+    const permit = await signUSDCPermit(wallet, publicClient, {
+      usdc: USDC, spender: FORGE, value: fee + stake, deadline: td.message.expiresAt,
+    });
+    const tx = await broadcastCommit(wallet, {
+      forgeAddress: FORGE, intent: td.message, intentSig, permit,
+    });
+    console.log(`  tx=${tx}`);
+    await awaitReceipt(tx);
+    console.log(`  receipt status=success`);
+
+    console.log("\n=== Commit action complete ===");
+    console.log(JSON.stringify({
+      agent: { idx, address: me.address }, qid, solution_id: solResp.id,
+      intent_hash: intentResp.intent_hash, stake_usdc: formatUnits(stake, 6),
+      fee_usdc: formatUnits(fee, 6), tx,
+    }, null, 2));
+  });
+
+program
+  .command("vote")
+  .description("Cast a vote with conviction allocations.")
+  .requiredOption("--idx <n>", "HD index of the voter wallet", (s) => Number.parseInt(s, 10))
+  .requiredOption("--qid <id>", "question_id (qst_...)")
+  .requiredOption("--vote-file <path>", "JSON: { allocations: [{solution_id, points}] }")
+  .action(async (opts) => {
+    const idx = opts.idx as number;
+    const qid = opts.qid as string;
+    const file = path.resolve(opts.voteFile as string);
+    const payload = JSON.parse(fs.readFileSync(file, "utf8")) as { allocations: Allocation[] };
+    validateAllocations(payload.allocations);
+
+    console.log(`[agent ${idx}] login + vote on ${qid} ...`);
+    const me = await login(idx);
+    const pre = await callAPI<{
+      mode: string; qid: string; voter: string; token: { decimals: number };
+      stake_amount: string; fee_amount: string; nonce_next: string;
+      vote_salt: string; vote_salt_token: string; vote_salt_expires_at: number;
+      [k: string]: unknown;
+    }>("GET", `/v1/questions/${qid}/vote/preflight?voter=${me.address}`);
+    if (pre.mode !== "vote") throw new Error(`preflight mode=${pre.mode}, expected vote`);
+
+    const allocationsHash = computeAllocationsHash(payload.allocations, pre.vote_salt as `0x${string}`);
+    const chainNonce = await chainNextUnusedNonce(me.address);
+    console.log(`  chain nonce=${chainNonce}, allocationsHash=${allocationsHash}`);
+
+    const feeWalletIdx = Number.parseInt(process.env.RT_FEE_WALLET_IDX ?? "3", 10);
+    const feeWallet = makeAgent(feeWalletIdx).address;
+
+    const td = buildVoteIntentTypedData({
+      preflight: pre as never,
+      voter: me.address,
+      allocationsHash,
+      feeShareBps: 0n,
+      feeShares: [{ recipient: feeWallet, basisPoints: 10000n }],
+      expiresAtSeconds: pre.vote_salt_expires_at,
+      nonce: chainNonce,
+    });
+    const wallet = makeWalletClient(idx);
+    const intentSig = (await wallet.account.signTypedData(td)) as Hex;
+
+    const voteResp = await callAPI<{ intent_hash: string }>(
+      "POST",
+      `/v1/questions/${qid}/vote-intent`,
+      buildSubmitVoteIntentRequestBody({
+        typedData: td, allocations: payload.allocations, signature: intentSig,
+        voteSalt: pre.vote_salt as `0x${string}`, voteSaltToken: pre.vote_salt_token,
+      }),
+      me.token,
+    );
+    console.log(`  intent_hash=${voteResp.intent_hash}`);
+
+    const fee = BigInt(td.message.feeAmount);
+    const stake = BigInt(td.message.stakeAmount);
+    const permit = await signUSDCPermit(wallet, publicClient, {
+      usdc: USDC, spender: FORGE, value: fee + stake, deadline: td.message.expiresAt,
+    });
+    const tx = await broadcastVote(wallet, {
+      forgeAddress: FORGE, intent: td.message, intentSig, permit,
+    });
+    console.log(`  tx=${tx}`);
+    await awaitReceipt(tx);
+    console.log(`  receipt status=success`);
+
+    console.log("\n=== Vote action complete ===");
+    console.log(JSON.stringify({
+      agent: { idx, address: me.address }, qid, intent_hash: voteResp.intent_hash,
+      allocations: payload.allocations, stake_usdc: formatUnits(stake, 6),
+      fee_usdc: formatUnits(fee, 6), tx,
+    }, null, 2));
+  });
+
+program
+  .command("settle")
+  .description(
+    "Publish the settlement Merkle root as the oracle (idx 0). The harness " +
+    "uses a simple winner-takes-all-with-platform-fee Merkle tree by default.",
+  )
+  .requiredOption("--qid <id>", "question_id (qst_...)")
+  .requiredOption("--winner-idx <n>", "HD index of the winning solver", (s) => Number.parseInt(s, 10))
+  .option("--platform-fee-bps <bps>", "Platform fee basis points (default 1000 = 10%)", "1000")
+  .action(async (opts) => {
+    const qid = opts.qid as string;
+    const winnerIdx = opts.winnerIdx as number;
+    const feeBps = BigInt(opts.platformFeeBps);
+
+    const oracle = makeAgent(0);
+    const winner = makeAgent(winnerIdx);
+    const feeWalletIdx = Number.parseInt(process.env.RT_FEE_WALLET_IDX ?? "3", 10);
+    const feeWallet = makeAgent(feeWalletIdx).address;
+
+    console.log(`[oracle 0] settle ${qid}, winner=idx${winnerIdx} (${winner.address}) ...`);
+
+    // Read on-chain qid + pool from DB (we mapped qid via DB insert).
+    const dbQid = await callAPI<{ id: string; chain?: { qid?: string } }>(
+      "GET",
+      `/v1/questions/${qid}`,
+    );
+    // Read pool amount from chain.
+    const QSTATE_ABI = [{
+      type: "function", name: "questions", stateMutability: "view",
+      inputs: [{ type: "bytes32" }],
+      outputs: [
+        { type: "uint8" }, { type: "address" }, { type: "address" }, { type: "address" },
+        { type: "uint256" }, { type: "uint256" }, { type: "uint256" }, { type: "uint256" },
+        { type: "uint256" }, { type: "uint8" }, { type: "uint256" }, { type: "uint256" },
+        { type: "uint256" }, { type: "uint256" },
+      ],
+    }] as const;
+    // Get qid bytes32 from API or DB.
+    // The chain qid is keccak(question_id_string). The intent stores it.
+    // We can simply read from the database table.
+    const qidHex = await new Promise<`0x${string}`>((resolve, reject) => {
+      const cp = require("node:child_process");
+      cp.execFile("psql", [
+        "-U", "rezontree", "-d", "rezontree", "-h", "localhost",
+        "-t", "-A", "-c",
+        `SELECT '0x' || encode(qid,'hex') FROM questions WHERE id='${qid}'`,
+      ], (err: Error | null, stdout: string) => {
+        if (err) return reject(err);
+        const v = stdout.trim();
+        if (!v.startsWith("0x")) return reject(new Error("no qid in DB"));
+        resolve(v as `0x${string}`);
+      });
+    });
+    void dbQid;
+
+    const qState = (await publicClient.readContract({
+      address: FORGE, abi: QSTATE_ABI, functionName: "questions", args: [qidHex],
+    })) as readonly [number, Address, Address, Address, bigint, bigint, bigint, bigint, bigint, number, bigint, bigint, bigint, bigint];
+    const poolAmount = qState[11];
+    console.log(`  poolAmount=${formatUnits(poolAmount, 6)} USDC`);
+    if (poolAmount === 0n) throw new Error("pool is empty — cannot settle");
+
+    const feeAmount = (poolAmount * feeBps) / 10000n;
+    const winnerAmount = poolAmount - feeAmount;
+    const leaves: MerkleLeaf[] = [
+      { questionId: qidHex, recipient: winner.address as `0x${string}`, amount: winnerAmount },
+      { questionId: qidHex, recipient: feeWallet, amount: feeAmount },
+    ];
+    const root = merkleRoot(leaves);
+    const winnerProof = merkleProof(leaves.map(hashLeaf), 0);
+
+    const td = buildSettlementIntentTypedData({
+      forgeAddress: FORGE,
+      chainId: BigInt(baseSepolia.id),
+      questionId: qidHex,
+      merkleRoot: root,
+      totalClaimable: poolAmount,
+      sampleRecipient: winner.address as `0x${string}`,
+      sampleAmount: winnerAmount,
+      sampleProof: winnerProof,
+      slashedCommitHashes: [],
+      slashedVoteHashes: [],
+      expiresAtSeconds: Math.floor(Date.now() / 1000) + DEFAULT_SETTLEMENT_TTL_SECONDS,
+    });
+    const oracleSig = (await privateKeyToAccount(oracle.privateKey).signTypedData(td)) as Hex;
+    const oracleWallet = makeWalletClient(0);
+    const tx = await broadcastPublishSettlement(oracleWallet, {
+      forgeAddress: FORGE,
+      questionId: qidHex,
+      merkleRoot: root,
+      totalClaimable: poolAmount,
+      sampleRecipient: winner.address as `0x${string}`,
+      sampleAmount: winnerAmount,
+      sampleProof: winnerProof,
+      expiresAt: td.message.expiresAt,
+      slashedCommitHashes: [],
+      slashedVoteHashes: [],
+      oracleSig,
+    });
+    console.log(`  tx=${tx}`);
+    await awaitReceipt(tx);
+    console.log(`  receipt status=success`);
+
+    console.log("\n=== Settle action complete ===");
+    console.log(JSON.stringify({
+      qid, qidHex, root, poolAmount: formatUnits(poolAmount, 6),
+      winner: { idx: winnerIdx, address: winner.address, amount: formatUnits(winnerAmount, 6) },
+      feeWallet: { address: feeWallet, amount: formatUnits(feeAmount, 6) },
+      tx,
+    }, null, 2));
+  });
+
+program
+  .command("claim")
+  .description("Claim winnings + stake refunds for a settled question.")
+  .requiredOption("--idx <n>", "HD index of the claimant", (s) => Number.parseInt(s, 10))
+  .requiredOption("--qid <id>", "question_id (qst_...)")
+  .action(async (opts) => {
+    const idx = opts.idx as number;
+    const qid = opts.qid as string;
+    const me = await login(idx);
+    console.log(`[agent ${idx}] claim on ${qid} as ${me.address} ...`);
+
+    // Pool manifest (may be empty if not a winner).
+    const manifest = await callAPI<{
+      amount: string; currency: string; merkle_root: string | null; proof: string[];
+      role: string;
+    } | { error: { code: string } }>(
+      "GET", `/v1/questions/${qid}/claims/${me.address}`,
+    ).catch(() => null);
+    let poolAmount = 0n;
+    let poolProof: `0x${string}`[] = [];
+    if (manifest && "amount" in manifest && manifest.amount && manifest.proof?.length) {
+      poolAmount = BigInt(manifest.amount);
+      poolProof = manifest.proof as `0x${string}`[];
+      console.log(`  pool: ${formatUnits(poolAmount, 6)} USDC, role=${manifest.role}`);
+    } else {
+      console.log(`  pool: nothing to claim (role=${(manifest as { role?: string })?.role ?? "none"})`);
+    }
+
+    // Stake intent_hash discovery.
+    const ZERO = ("0x" + "0".repeat(64)) as `0x${string}`;
+    let solHash = ZERO;
+    let voteHash = ZERO;
+    try {
+      const sols = await callAPI<{ data: Array<{ id: string; intent_hash?: string; author_address: string }> }>(
+        "GET", `/v1/questions/${qid}/solutions?author_address=${me.address}`,
+      );
+      const mySol = sols.data?.find((s) => s.author_address?.toLowerCase() === me.address);
+      if (mySol?.intent_hash) {
+        solHash = mySol.intent_hash as `0x${string}`;
+        console.log(`  solution intent_hash=${solHash}`);
+      }
+    } catch (e) {
+      console.log(`  solution lookup skipped: ${(e as Error).message}`);
+    }
+    try {
+      const v = await callAPI<{ intent_hash?: string; has_voted?: boolean }>(
+        "GET", `/v1/me/votes/${qid}`, undefined, me.token,
+      );
+      if (v.has_voted && v.intent_hash) {
+        voteHash = v.intent_hash as `0x${string}`;
+        console.log(`  vote intent_hash=${voteHash}`);
+      }
+    } catch (e) {
+      console.log(`  vote lookup skipped: ${(e as Error).message}`);
+    }
+
+    if (poolAmount === 0n && solHash === ZERO && voteHash === ZERO) {
+      console.log("  nothing to claim. exiting.");
+      return;
+    }
+
+    // Fetch chain qid bytes32.
+    const cp = await import("node:child_process");
+    const qidHex = (cp.execFileSync("psql", [
+      "-U", "rezontree", "-d", "rezontree", "-h", "localhost",
+      "-t", "-A", "-c",
+      `SELECT '0x' || encode(qid,'hex') FROM questions WHERE id='${qid}'`,
+    ], { encoding: "utf8" }).trim()) as `0x${string}`;
+
+    const wallet = makeWalletClient(idx);
+    console.log(`[agent ${idx}] broadcast claimAllForQuestion ...`);
+    const tx = await wallet.writeContract({
+      address: FORGE,
+      abi: REZON_FORGE_ABI,
+      functionName: "claimAllForQuestion",
+      args: [qidHex, poolAmount, poolProof, solHash, voteHash],
+      account: wallet.account!,
+      chain: wallet.chain,
+    });
+    console.log(`  tx=${tx}`);
+    await awaitReceipt(tx);
+    console.log(`  receipt status=success`);
+
+    console.log("\n=== Claim action complete ===");
+    console.log(JSON.stringify({
+      agent: { idx, address: me.address }, qid,
+      legs: {
+        pool: poolAmount > 0n ? formatUnits(poolAmount, 6) : "skipped",
+        solution_stake: solHash !== ZERO ? "claimed" : "skipped",
+        vote_stake: voteHash !== ZERO ? "claimed" : "skipped",
+      },
       tx,
     }, null, 2));
   });
