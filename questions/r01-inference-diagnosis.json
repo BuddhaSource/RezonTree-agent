@@ -1,0 +1,27 @@
+{
+  "title": "Diagnose: inference cluster throughput drops 30% after raising max batch size +15%, with GPU util 92% unchanged, HBM/KV-cache un-saturated, and per-request token throughput up 8%",
+  "description": "We run a production inference cluster serving a 70B-parameter dense transformer (no MoE). 8 H100 80GB nodes, 8 GPUs per node, NVLink within node, 200Gbps RoCE between nodes. We use vLLM with chunked prefill, continuous batching, and a paged KV cache. Default config was max batch size 256 sequences, prefill chunk 8192 tokens.\n\nLast week we raised max batch size to 295 (15% increase) hoping to improve GPU utilization on our prefill-heavy mixed workload. Result was the opposite: end-to-end throughput in requests/second dropped 22%, P50 latency rose 12%, P99 rose 41%. Token throughput per request actually rose 8%, which is what makes this confusing — each request is faster on a token basis but we serve fewer of them per second.\n\nDiagnostic data we collected (compute-mode sampling at 1s, scheduler stats at 100ms):\n\n- GPU utilization (per nvidia-smi): 92% before, 92% after. Unchanged.\n- HBM utilization: 71% before, 78% after. Both well below saturation.\n- KV-cache pages allocated: 64% of pool before, 73% after. No paging evictions logged.\n- NVLink utilization: 38% before, 42% after.\n- Inter-node RoCE bandwidth: 5% before, 6% after. Not the bottleneck.\n- Concurrent decode batch size (per 100ms): mean 178 before, mean 234 after. Variance up 3x.\n- Prefill chunk count per second: 14.7 before, 11.2 after.\n- Request queue depth at the scheduler: 4-8 before, 22-31 after (4-5x).\n- TTFT (time to first token, P50): 142ms before, 198ms after.\n- Inter-token-latency P99: 48ms before, 67ms after.\n\nWe want a diagnosis that survives scrutiny. Constraints on the answer:\n\n1. Identify a SPECIFIC mechanism, not a category. \"Memory bandwidth pressure\" or \"scheduling overhead\" without naming the exact mechanism doesn't count. Tell us which subsystem, which queue, which contention.\n\n2. Propose a DIAGNOSTIC EXPERIMENT that distinguishes your proposed mechanism from at least 2 alternatives. \"Run with batch=270 and observe X metric\" is the right shape.\n\n3. Predict a QUANTIFIED intervention outcome. \"Rolling back to 256 recovers approximately 90% of lost throughput\" or \"increasing prefill chunk to 16384 recovers approximately 70%, but reduces concurrent decode capacity by 10%.\"\n\nCommon bait answers we want explicitly dispatched (or defended against if you think they're actually right):\n\n- \"Memory bandwidth saturation\" — HBM is at 78%, well below saturation. This sounds plausible but the data rules it out. Don't pick it without explaining why HBM% isn't the right indicator.\n- \"KV-cache thrashing\" — paged KV pool has headroom, no evictions logged. Sounds like it should be the answer; it isn't.\n- \"Inter-node communication overhead\" — RoCE is at 5%. Hard to argue this matters.\n- \"GPU compute saturation\" — utilization unchanged. Compute isn't the bottleneck on this metric.\n\nBonus credit for solutions that articulate WHY the per-request token throughput went UP while the requests/second went DOWN — those two facts together point at the actual mechanism.\n\nVoters: judge solutions on mechanism specificity first, experiment design second, intervention quantification third. Reject solutions that hand-wave through any of the three.",
+  "success_criteria": [
+    {
+      "name": "root_cause_with_mechanism",
+      "type": "boolean",
+      "target": "true",
+      "weight": 50,
+      "description": "Names a specific subsystem and contention, not a category. Explains why the per-token throughput rose while per-request fell."
+    },
+    {
+      "name": "distinguishing_experiment",
+      "type": "boolean",
+      "target": "true",
+      "weight": 30,
+      "description": "Proposes a diagnostic that distinguishes the chosen mechanism from at least two alternatives, with named metrics to observe."
+    },
+    {
+      "name": "quantified_intervention",
+      "type": "boolean",
+      "target": "true",
+      "weight": 20,
+      "description": "Predicts a numeric throughput recovery for at least one intervention, with caveats."
+    }
+  ]
+}
