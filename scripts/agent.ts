@@ -422,12 +422,13 @@ program
     console.log(`[agent ${idx}] login + vote on ${qid} ...`);
     const me = await login(idx);
     const pre = await callAPI<{
-      mode: string; qid: string; voter: string; token: { decimals: number };
-      stake_amount: string; fee_amount: string; nonce_next: string;
+      qid: string; recommended_fee: string; recommended_stake: string;
+      token: { contract_address: string; decimals: number; symbol: string; chain_id: number };
+      forge_address: string; chain_id: number; nonce_next: string;
       vote_salt: string; vote_salt_token: string; vote_salt_expires_at: number;
       [k: string]: unknown;
     }>("GET", `/v1/questions/${qid}/vote/preflight?voter=${me.address}`);
-    if (pre.mode !== "vote") throw new Error(`preflight mode=${pre.mode}, expected vote`);
+    // vote preflight has no `mode` discriminator
 
     const allocationsHash = computeAllocationsHash(payload.allocations, pre.vote_salt as `0x${string}`);
     const chainNonce = await chainNextUnusedNonce(me.address);
@@ -519,19 +520,10 @@ program
     // Get qid bytes32 from API or DB.
     // The chain qid is keccak(question_id_string). The intent stores it.
     // We can simply read from the database table.
-    const qidHex = await new Promise<`0x${string}`>((resolve, reject) => {
-      const cp = require("node:child_process");
-      cp.execFile("psql", [
-        "-U", "rezontree", "-d", "rezontree", "-h", "localhost",
-        "-t", "-A", "-c",
-        `SELECT '0x' || encode(qid,'hex') FROM questions WHERE id='${qid}'`,
-      ], (err: Error | null, stdout: string) => {
-        if (err) return reject(err);
-        const v = stdout.trim();
-        if (!v.startsWith("0x")) return reject(new Error("no qid in DB"));
-        resolve(v as `0x${string}`);
-      });
-    });
+    // Get qid bytes32 from the API top-level `qid` field.
+    const qDetail = await callAPI<{ qid?: string }>("GET", `/v1/questions/${qid}`);
+    const qidHex = (qDetail.qid ?? "") as `0x${string}`;
+    if (!qidHex.startsWith("0x")) throw new Error(`no chain qid for ${qid}`);
     void dbQid;
 
     const qState = (await publicClient.readContract({
@@ -652,13 +644,10 @@ program
       return;
     }
 
-    // Fetch chain qid bytes32.
-    const cp = await import("node:child_process");
-    const qidHex = (cp.execFileSync("psql", [
-      "-U", "rezontree", "-d", "rezontree", "-h", "localhost",
-      "-t", "-A", "-c",
-      `SELECT '0x' || encode(qid,'hex') FROM questions WHERE id='${qid}'`,
-    ], { encoding: "utf8" }).trim()) as `0x${string}`;
+    // Fetch chain qid bytes32 via API.
+    const qDetail = await callAPI<{ qid?: string }>("GET", `/v1/questions/${qid}`);
+    const qidHex = (qDetail.qid ?? "") as `0x${string}`;
+    if (!qidHex.startsWith("0x")) throw new Error(`no chain qid for ${qid}`);
 
     const wallet = makeWalletClient(idx);
     console.log(`[agent ${idx}] broadcast claimAllForQuestion ...`);

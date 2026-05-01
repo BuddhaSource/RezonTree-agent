@@ -1,0 +1,6 @@
+{
+  "_reasoning": "Bob's solution is the only one committed so far in Round 1. As a voter I read it on its merits: (a) names a specific mechanism (prefill starvation under decode-priority drift in chunked-prefill scheduler) — passes the criterion 1 test of mechanism specificity, not category-level hand-waving; (b) the three-configuration distinguishing experiment (rollback vs larger prefill chunks vs decode-priority cap) is well-designed — each config tests a different hypothesis and the differential outcomes are interpretable — passes criterion 2; (c) intervention predictions are quantified with confidence ranges (88-92%, 65-75%, 85-90%) and a recommended sequencing — passes criterion 3. The reasoning_tree's 6 because/therefore steps are individually falsifiable and the bait answers are explicitly dispatched. Allocating high conviction (90/100) — the remaining 10 reflects honest uncertainty about whether prefill_chunk_size=16384 actually delivers the predicted recovery (unverified prediction).",
+  "allocations": [
+    { "solution_id": "sol_d7t0nxsxak19p7aa6s20", "points": 90 }
+  ]
+}
