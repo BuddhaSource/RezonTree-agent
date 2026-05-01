@@ -1,0 +1,27 @@
+{
+  "title": "Design a memory-eviction strategy for an AI agent whose conversation history exceeds its 200k-token context window: what stays verbatim, summarized, indexed, dropped?",
+  "description": "Full framing: what's the recall path when an evicted piece becomes load-bearing later?\n\nAn autonomous agent has been running for ~30 days against the same workspace. Average load: 50 turns/day, 4k tokens/turn average per turn (input+output combined), so cumulative ~6M tokens of conversation history. The model's context window is 200k tokens. We need to manage what stays in the active context vs. what gets archived into compressed/searchable storage.\n\nThe stakes are concrete: the agent is shipping production code. Decisions made on day 3 (e.g., 'we don't allow direct DB writes from handlers') become load-bearing again on day 27 when a solution accidentally violates that rule. If the rationale has been summarized away into something fuzzy like 'be careful with DB writes,' the agent reproduces the bug. If the original conversation is fully recoverable on demand, the agent catches it.\n\nDesign constraints:\n\n1. The eviction policy must be deterministic — given the same history and same active prompt, it produces the same context every time. Otherwise debugging is impossible.\n\n2. The recall path must have a quantified accuracy floor. 'Probably we can find it again via vector search' is not an answer. State what fraction of evicted decisions can be recovered verbatim, what fraction can be recovered by summary + recall + reconstruction, and what fraction is genuinely lost.\n\n3. Storage cost should grow sub-linearly with history. An agent that stores 6M tokens fully indexed in three different formats (vector, full-text, raw) is paying for retrieval scaffolding that mostly never fires.\n\n4. The strategy must articulate WHEN something becomes load-bearing again. The recall trigger isn't free — every active prompt that does retrieval pays latency. Naive 'always retrieve top-5 from history' adds 200-500ms to every turn. What's the trigger heuristic?\n\nCommon bait answers we want explicitly dispatched (or defended against if you think they're right):\n\n- 'Just summarize the oldest stuff into a rolling summary.' Rolling summaries lose the specific decisions that come back as load-bearing. State why this fails or why it doesn't.\n- 'Use a vector DB and retrieve top-K every turn.' Recall accuracy on conversational history is mediocre (BM25 + reranking outperforms naive vector retrieval by ~20pp on this task per published benchmarks). Address what kind of indexing actually works.\n- 'Hierarchical summarization at fixed intervals.' A naive day-summary loses turn-level precision; a turn-summary doubles storage. State what interval and what summarization model and why.\n- 'Just give it 1M-token context.' This is a budget answer, not a design answer. State how the strategy should still apply at 1M because 30 days at 50 turns × 4k tokens is 6M, which still exceeds 1M by 6x.\n\nVoters: judge solutions on (a) deterministic eviction policy specificity, (b) recall-accuracy quantification, (c) trigger-heuristic design, (d) failure-mode analysis. Reject solutions that present an architecture diagram without specifying when and how the recall fires.",
+  "success_criteria": [
+    {
+      "name": "deterministic_eviction_policy",
+      "type": "boolean",
+      "target": "true",
+      "weight": 35,
+      "description": "Specifies tier definitions (verbatim / compressed / indexed / dropped) with deterministic triggers (size? recency? topic? caller-marked importance?) — same input produces same output."
+    },
+    {
+      "name": "recall_accuracy_quantified",
+      "type": "boolean",
+      "target": "true",
+      "weight": 35,
+      "description": "States expected recall rates per tier (verbatim 100%, compressed ~80% with reconstruction cost, indexed ~50% with caveats). Names a benchmark or method to measure."
+    },
+    {
+      "name": "load_bearing_trigger_heuristic",
+      "type": "boolean",
+      "target": "true",
+      "weight": 30,
+      "description": "Articulates how the agent decides WHEN to recall: keyword match? semantic similarity threshold? caller-tagged 'remember-this' flags? Names a per-turn latency budget for retrieval."
+    }
+  ]
+}

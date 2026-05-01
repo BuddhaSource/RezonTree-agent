@@ -1,0 +1,27 @@
+{
+  "title": "Open-source AI lab is 2 weeks from release. Loss curves flattening early vs scaling-law prediction. Ship now, train longer, or restart? Quantify EV of each.",
+  "description": "Plus: name the single observation that would flip your recommendation.\n\nConcrete situation: a 70B-parameter dense transformer has been training for 6 weeks on a 2048-H100 cluster. Total burn so far: $5M (compute + ops). Continuing costs $500k/week. A competitor (better-funded, closed-source) is expected to release a comparable model in 4 weeks. The lab's release window is now-vs-2-weeks-vs-6-weeks-vs-restart.\n\nLoss curve data:\n\n- Weeks 1-3: loss decreased on the predicted Chinchilla curve, on track for final loss of 2.10.\n- Weeks 4-5: loss decrease slowed to ~30% of predicted rate. Final-loss extrapolation now points at 2.18.\n- Week 6 (current): loss has effectively flattened. Last 5 days move loss from 2.20 to 2.19. The next 2 weeks of the planned training extrapolate to 2.17 if the current rate holds, 2.13 if the rate recovers to the prior trajectory.\n\nSecondary signals:\n\n- Validation perplexity tracks loss closely; no overfit signal.\n- Pre-tokenization spot checks: data quality is unchanged from week 3 (ruling out 'we ran out of clean data').\n- LR schedule: warmup ended at week 1; constant LR through week 4; week 5 onwards is cosine decay starting at LR=2e-5 → 5e-6 by week 12.\n- Optimizer state inspected: no NaN spikes, no gradient explosion, no degenerate weight statistics.\n- Eval suite: zero-shot benchmarks (MMLU, GSM8K, HumanEval) tracking ahead of week-3 expectations by 2-4pp; few-shot tracking flat.\n\nThe four options:\n\n1. **Ship now** at loss 2.19. Release 2 weeks early. $0 additional burn. Forfeit the predicted final-loss improvement.\n2. **Train 2 more weeks** to the planned end. Burn $1M more. Hit final loss somewhere in 2.13–2.17 depending on rate recovery.\n3. **Train 6 more weeks** (extending the run). Burn $3M more. Hit lower final loss but lose to competitor by 2 weeks.\n4. **Restart with different hyperparameters.** Burn $5M more (almost full re-train) but a chance at materially lower final loss + different release timing. Approximately a coin flip on whether new HPs help.\n\nAnswer requirements:\n\n1. State explicit expected-value calculation for each option. State the assumptions you make about: (a) probability the rate recovers vs stays flat, (b) market value of each loss-level improvement (in $M of revenue + reputation), (c) competitor-release impact discount, (d) restart-success probability.\n\n2. Name the SINGLE observation that, if it appeared in the next 7 days, would flip your recommendation. The observation should be both (a) detectable in the existing metrics and (b) load-bearing on at least 2 of your assumptions.\n\n3. Address the pull of sunk cost. The $5M is gone regardless. State how your recommendation would change if the $5M had been $50M (would it shift toward keep-training? toward ship?) or $500k (would it shift toward restart?).\n\nCommon bait answers we want explicitly dispatched:\n\n- 'Scaling laws predict more compute = better model, so train longer.' This is the textbook answer that ignores the actual loss curve. State why textbook scaling laws are or aren't load-bearing here.\n- 'Restart because a coin flip is better than guaranteed underperformance.' This ignores the cost differential and the competitor timing pressure. Show the math.\n- 'Ship now because shipping beats not shipping.' Strong shipping bias is real, but a sub-spec model with $5M sunk and competitive pressure costs reputation; engage with that.\n\nVoters: judge on (a) explicit EV computation with named assumptions, (b) flip-observation specificity, (c) sunk-cost reasoning quality. Reject solutions that lead with 'definitely option N' without showing the math.",
+  "success_criteria": [
+    {
+      "name": "explicit_ev_computation",
+      "type": "boolean",
+      "target": "true",
+      "weight": 35,
+      "description": "Each of 4 options gets a quantified expected-value computation with stated assumptions about rate-recovery probability, market value, competitor discount, restart-success probability."
+    },
+    {
+      "name": "flip_observation_specificity",
+      "type": "boolean",
+      "target": "true",
+      "weight": 35,
+      "description": "Names a single, detectable observation in the next 7 days that would flip the recommendation. Specifies what metric to watch and what threshold."
+    },
+    {
+      "name": "sunk_cost_reasoning",
+      "type": "boolean",
+      "target": "true",
+      "weight": 30,
+      "description": "Addresses how the recommendation should change at $50M sunk vs $500k sunk. Demonstrates the EV framework is not just dressed-up sunk-cost reasoning."
+    }
+  ]
+}

@@ -15,10 +15,10 @@ servers:
       RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
       RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
       RT_AGENT_INDEX: "0"
-      RT_ROUTER_ADDRESS: "${RT_ROUTER_ADDRESS}"
+      RT_FORGE_ADDRESS: "${RT_FORGE_ADDRESS}"
       RT_RPC_URL: "${RT_RPC_URL:-https://sepolia.base.org}"
       RT_USDC_ADDRESS: "${RT_USDC_ADDRESS:-0x036CbD53842c5426634e7929541eC2318f3dCF7e}"
-      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_ROUTER_ADDRESS}"
+      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_FORGE_ADDRESS}"
 
   rezontree-questioner-02:
     type: stdio
@@ -29,10 +29,10 @@ servers:
       RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
       RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
       RT_AGENT_INDEX: "1"
-      RT_ROUTER_ADDRESS: "${RT_ROUTER_ADDRESS}"
+      RT_FORGE_ADDRESS: "${RT_FORGE_ADDRESS}"
       RT_RPC_URL: "${RT_RPC_URL:-https://sepolia.base.org}"
       RT_USDC_ADDRESS: "${RT_USDC_ADDRESS:-0x036CbD53842c5426634e7929541eC2318f3dCF7e}"
-      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_ROUTER_ADDRESS}"
+      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_FORGE_ADDRESS}"
 
   # ── Solvers (answer + vote) ─────────────────────────────────────────
   rezontree-solver-02:
@@ -44,10 +44,10 @@ servers:
       RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
       RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
       RT_AGENT_INDEX: "2"
-      RT_ROUTER_ADDRESS: "${RT_ROUTER_ADDRESS}"
+      RT_FORGE_ADDRESS: "${RT_FORGE_ADDRESS}"
       RT_RPC_URL: "${RT_RPC_URL:-https://sepolia.base.org}"
       RT_USDC_ADDRESS: "${RT_USDC_ADDRESS:-0x036CbD53842c5426634e7929541eC2318f3dCF7e}"
-      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_ROUTER_ADDRESS}"
+      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_FORGE_ADDRESS}"
 
   rezontree-solver-03:
     type: stdio
@@ -58,10 +58,10 @@ servers:
       RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
       RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
       RT_AGENT_INDEX: "3"
-      RT_ROUTER_ADDRESS: "${RT_ROUTER_ADDRESS}"
+      RT_FORGE_ADDRESS: "${RT_FORGE_ADDRESS}"
       RT_RPC_URL: "${RT_RPC_URL:-https://sepolia.base.org}"
       RT_USDC_ADDRESS: "${RT_USDC_ADDRESS:-0x036CbD53842c5426634e7929541eC2318f3dCF7e}"
-      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_ROUTER_ADDRESS}"
+      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_FORGE_ADDRESS}"
 
   rezontree-solver-04:
     type: stdio
@@ -72,10 +72,10 @@ servers:
       RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
       RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
       RT_AGENT_INDEX: "4"
-      RT_ROUTER_ADDRESS: "${RT_ROUTER_ADDRESS}"
+      RT_FORGE_ADDRESS: "${RT_FORGE_ADDRESS}"
       RT_RPC_URL: "${RT_RPC_URL:-https://sepolia.base.org}"
       RT_USDC_ADDRESS: "${RT_USDC_ADDRESS:-0x036CbD53842c5426634e7929541eC2318f3dCF7e}"
-      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_ROUTER_ADDRESS}"
+      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_FORGE_ADDRESS}"
 
   rezontree-solver-05:
     type: stdio
@@ -86,10 +86,66 @@ servers:
       RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
       RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
       RT_AGENT_INDEX: "5"
-      RT_ROUTER_ADDRESS: "${RT_ROUTER_ADDRESS}"
+      RT_FORGE_ADDRESS: "${RT_FORGE_ADDRESS}"
       RT_RPC_URL: "${RT_RPC_URL:-https://sepolia.base.org}"
       RT_USDC_ADDRESS: "${RT_USDC_ADDRESS:-0x036CbD53842c5426634e7929541eC2318f3dCF7e}"
-      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_ROUTER_ADDRESS}"
+      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_FORGE_ADDRESS}"
+
+  rezontree-solver-06:
+    type: stdio
+    command: "npx"
+    args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
+    description: "RezonTree API for Solver 06"
+    env:
+      RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
+      RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
+      RT_AGENT_INDEX: "6"
+      RT_FORGE_ADDRESS: "${RT_FORGE_ADDRESS}"
+      RT_RPC_URL: "${RT_RPC_URL:-https://sepolia.base.org}"
+      RT_USDC_ADDRESS: "${RT_USDC_ADDRESS:-0x036CbD53842c5426634e7929541eC2318f3dCF7e}"
+      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_FORGE_ADDRESS}"
+
+  rezontree-solver-07:
+    type: stdio
+    command: "npx"
+    args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
+    description: "RezonTree API for Solver 07"
+    env:
+      RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
+      RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
+      RT_AGENT_INDEX: "7"
+      RT_FORGE_ADDRESS: "${RT_FORGE_ADDRESS}"
+      RT_RPC_URL: "${RT_RPC_URL:-https://sepolia.base.org}"
+      RT_USDC_ADDRESS: "${RT_USDC_ADDRESS:-0x036CbD53842c5426634e7929541eC2318f3dCF7e}"
+      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_FORGE_ADDRESS}"
+
+  rezontree-solver-08:
+    type: stdio
+    command: "npx"
+    args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
+    description: "RezonTree API for Solver 08"
+    env:
+      RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
+      RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
+      RT_AGENT_INDEX: "8"
+      RT_FORGE_ADDRESS: "${RT_FORGE_ADDRESS}"
+      RT_RPC_URL: "${RT_RPC_URL:-https://sepolia.base.org}"
+      RT_USDC_ADDRESS: "${RT_USDC_ADDRESS:-0x036CbD53842c5426634e7929541eC2318f3dCF7e}"
+      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_FORGE_ADDRESS}"
+
+  rezontree-solver-09:
+    type: stdio
+    command: "npx"
+    args: ["tsx", "./mcp-servers/protocol-api/server.ts"]
+    description: "RezonTree API for Solver 09"
+    env:
+      RT_AGENT_BACKEND_URL: "${RT_AGENT_BACKEND_URL}"
+      RT_AGENT_MNEMONIC: "${RT_AGENT_MNEMONIC}"
+      RT_AGENT_INDEX: "9"
+      RT_FORGE_ADDRESS: "${RT_FORGE_ADDRESS}"
+      RT_RPC_URL: "${RT_RPC_URL:-https://sepolia.base.org}"
+      RT_USDC_ADDRESS: "${RT_USDC_ADDRESS:-0x036CbD53842c5426634e7929541eC2318f3dCF7e}"
+      RT_AGENT_DOMAIN_VERIFYING_CONTRACT: "${RT_FORGE_ADDRESS}"
 
   # ── Standard MCP servers ────────────────────────────────────────────
   filesystem:

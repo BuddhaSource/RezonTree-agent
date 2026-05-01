@@ -165,8 +165,8 @@ export function buildCommitIntentTypedData(params: {
   preflight: CommitPreflight;
   submitter: `0x${string}`;
   contentHash: `0x${string}`;
-  feeShareBps: bigint;
-  feeShares: FeeShare[];
+  feeShareBps?: bigint;
+  feeShares?: FeeShare[];
   feeWei?: bigint;
   stakeWei?: bigint;
   expiresAtSeconds?: number;
@@ -193,8 +193,13 @@ export function buildCommitIntentTypedData(params: {
       contentHash: params.contentHash,
       feeAmount: fee,
       stakeAmount: stake,
-      feeShareBps: params.feeShareBps,
-      feeShares: params.feeShares,
+      feeShareBps: params.feeShareBps ?? 0n,
+      // Chain rejects empty fee_shares regardless of feeShareBps. Default
+      // to a single entry pointing back at the submitter at 10000 bps so
+      // the typed-data is always well-formed; explicit splits override.
+      feeShares:
+        params.feeShares ??
+        [{ recipient: params.submitter, basisPoints: 10000n }],
       nonce,
       chainId: BigInt(params.preflight.chain_id),
       expiresAt: BigInt(ttl),

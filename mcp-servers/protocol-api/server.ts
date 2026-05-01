@@ -491,10 +491,16 @@ server.tool(
           `/v1/questions/${params.question_id}/commit/preflight?submitter=${address}`,
         )) as CommitPreflight;
 
-        // Backend hashes the body into intent.contentHash; the
-        // /solutions POST below must carry the same bytes so the
-        // hashes align.
-        const contentHash = computeContentHash(params.body);
+        // Backend hashes the FULL solution body ({body, reasoning_tree,
+        // claims}) into intent.contentHash via canonicalStringify; the
+        // /solutions POST below must carry the same bytes so the hashes
+        // align. Hashing just `params.body` (a string) is wrong — backend
+        // expects the structured object hash.
+        const contentHash = computeContentHash({
+          body: params.body,
+          reasoning_tree: params.reasoning_tree,
+          claims: params.claims,
+        });
         const td = buildCommitIntentTypedData({
           preflight: pre,
           submitter: address,
@@ -651,10 +657,16 @@ server.tool(
         const voteSalt = pre.vote_salt as `0x${string}`;
         const voteSaltToken = pre.vote_salt_token as `0x${string}`;
         const allocationsHash = computeAllocationsHash(canonicalAllocs, voteSalt);
+        // Bind the intent's expiresAt to the salt's expires_at —
+        // otherwise the HMAC over (voter, salt, expiresAt) embedded
+        // in vote_salt_token won't verify against the intent we sign,
+        // and the backend rejects with "vote_salt_token rejected".
         const td = buildVoteIntentTypedData({
           preflight: pre,
           voter: address,
           allocationsHash,
+          expiresAtSeconds: (pre as { vote_salt_expires_at?: number })
+            .vote_salt_expires_at,
         });
         const intentSig = (await privateKeyToAccount(privateKey).signTypedData(
           td,

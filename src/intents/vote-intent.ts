@@ -206,8 +206,8 @@ export function buildVoteIntentTypedData(params: {
   preflight: VotePreflight;
   voter: `0x${string}`;
   allocationsHash: `0x${string}`;
-  feeShareBps: bigint;
-  feeShares: FeeShare[];
+  feeShareBps?: bigint;
+  feeShares?: FeeShare[];
   feeWei?: bigint;
   stakeWei?: bigint;
   expiresAtSeconds?: number;
@@ -234,8 +234,13 @@ export function buildVoteIntentTypedData(params: {
       allocationsHash: params.allocationsHash,
       feeAmount: fee,
       stakeAmount: stake,
-      feeShareBps: params.feeShareBps,
-      feeShares: params.feeShares,
+      feeShareBps: params.feeShareBps ?? 0n,
+      // Chain rejects empty fee_shares regardless of feeShareBps. Default
+      // to a single entry pointing back at the voter at 10000 bps so the
+      // typed-data is always well-formed; explicit splits override.
+      feeShares:
+        params.feeShares ??
+        [{ recipient: params.voter, basisPoints: 10000n }],
       nonce,
       chainId: BigInt(params.preflight.chain_id),
       expiresAt: BigInt(ttl),
