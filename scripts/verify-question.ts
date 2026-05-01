@@ -108,12 +108,19 @@ async function main() {
     qid,
     "event QuestionCosponsored(bytes32 indexed questionId, address indexed sponsor, uint256 amount, bytes32 intentHash)",
   );
+  // contributions joins through rounds — schema uses round_id, not question_id
   const ponderSponsor = dbScalar(
-    `SELECT COUNT(*) FROM ponder_indexer.confirmations WHERE intent_hash IN (SELECT '0x' || encode(intent_hash, 'hex') FROM contributions WHERE question_id='${qidArg}' AND intent_hash IS NOT NULL)`,
+    `SELECT COUNT(*) FROM ponder_indexer.confirmations WHERE intent_hash IN (
+       SELECT '0x' || encode(c.intent_hash, 'hex') FROM contributions c
+       JOIN rounds r ON c.round_id = r.id
+       WHERE r.question_id='${qidArg}' AND c.intent_hash IS NOT NULL
+     )`,
   );
-  const dbSponsor = dbScalar(`SELECT COUNT(*) FROM contributions WHERE question_id='${qidArg}'`);
+  const dbSponsor = dbScalar(
+    `SELECT COUNT(*) FROM contributions c JOIN rounds r ON c.round_id = r.id WHERE r.question_id='${qidArg}'`,
+  );
   const dbSponsorConfirmed = dbScalar(
-    `SELECT COUNT(*) FROM contributions WHERE question_id='${qidArg}' AND confirmation_status='confirmed'`,
+    `SELECT COUNT(*) FROM contributions c JOIN rounds r ON c.round_id = r.id WHERE r.question_id='${qidArg}' AND c.confirmation_status='confirmed'`,
   );
   const apiSponsor = await apiCount(`/v1/questions/${qidArg}`).then(() => 1).catch(() => 0); // question itself
   console.log(
@@ -202,16 +209,20 @@ async function main() {
   // Probe the addresses we know participated. We discover them from
   // the contributions / solutions / votes confirmed earlier.
   const knownAddresses = new Set<string>();
+  const cp = await import("node:child_process");
   for (const row of await new Promise<Array<{ a: string }>>((resolve) => {
-    const cp = require("node:child_process");
     cp.execFile(
       "psql",
       [
         "-U", "rezontree", "-d", "rezontree", "-h", "localhost", "-t", "-A", "-F", ",",
         "-c",
-        `SELECT DISTINCT lower(encode(sponsor_address,'hex')) FROM contributions WHERE question_id='${qidArg}'
-         UNION SELECT DISTINCT lower(encode(author_address,'hex')) FROM solutions WHERE question_id='${qidArg}'
-         UNION SELECT DISTINCT lower(encode(voter_address,'hex')) FROM votes WHERE question_id='${qidArg}'`,
+        `SELECT DISTINCT lower(encode(c.sponsor_address,'hex'))
+           FROM contributions c JOIN rounds r ON c.round_id = r.id
+           WHERE r.question_id='${qidArg}' AND c.sponsor_address IS NOT NULL
+         UNION SELECT DISTINCT lower(encode(author_address,'hex'))
+           FROM solutions WHERE question_id='${qidArg}' AND author_address IS NOT NULL
+         UNION SELECT DISTINCT lower(encode(voter_address,'hex'))
+           FROM votes WHERE question_id='${qidArg}' AND voter_address IS NOT NULL`,
       ],
       (err: Error | null, stdout: string) => {
         if (err) return resolve([]);
