@@ -185,6 +185,23 @@ export const REZON_FORGE_ABI = [
     outputs: [],
   },
 
+  // ── claimAllForQuestion(qid, poolAmount, poolProof, solHash, voteHash) ──
+  // Single-tx batch claim added in the v2.5 redeploy. Skips a leg
+  // when the corresponding hash is ZERO_HASH.
+  {
+    type: "function",
+    name: "claimAllForQuestion",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "questionId", type: "bytes32" },
+      { name: "poolAmount", type: "uint256" },
+      { name: "poolProof", type: "bytes32[]" },
+      { name: "solutionIntentHash", type: "bytes32" },
+      { name: "voteIntentHash", type: "bytes32" },
+    ],
+    outputs: [],
+  },
+
   // ── publishSettlement(SettlementIntent intent, bytes oracleSig) ──
   // Oracle-only. Exposed to the SDK so an operator can run a
   // manual settle-claim cycle. Field order mirrors RezonForge.sol's
