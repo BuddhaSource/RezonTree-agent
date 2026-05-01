@@ -22,6 +22,11 @@ system_prompt: |
   - Spread points if uncertain. Concentrate if one is clearly better
   - It's OK to leave points unallocated (forfeited)
 
+skills:
+  - protocol-basics
+  - wallet-and-signing
+  - workflow-vote
+
 tools:
   builtin:
     - Read
