@@ -27,6 +27,7 @@ import {
   type Hex,
   createPublicClient,
   createWalletClient,
+  fallback,
   http,
   parseUnits,
   formatUnits,
@@ -76,7 +77,14 @@ import { signUSDCPermit } from "../src/forge/permit.js";
 import { REZON_FORGE_ABI } from "../src/forge/abi.js";
 
 // ── env + clients ────────────────────────────────────────────────
-const RPC = process.env.RT_RPC_URL ?? "https://sepolia.base.org";
+// Multi-RPC: RT_RPC_URLS accepts a comma-separated list. viem's
+// `fallback` transport rotates on transport-level errors. Falls back
+// to single-URL RT_RPC_URL for backwards compatibility, then to the
+// public Coinbase endpoint as a last resort.
+const RPC_URLS = (process.env.RT_RPC_URLS ?? process.env.RT_RPC_URL ?? "https://sepolia.base.org")
+  .split(",")
+  .map((u) => u.trim())
+  .filter(Boolean);
 const BACKEND = process.env.RT_AGENT_BACKEND_URL ?? "http://localhost:8080";
 const FORGE = process.env.RT_FORGE_ADDRESS as Address;
 const USDC = (process.env.RT_USDC_ADDRESS as Address) ?? "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
@@ -84,7 +92,11 @@ const MNEMONIC = process.env.RT_AGENT_MNEMONIC!;
 if (!FORGE) throw new Error("RT_FORGE_ADDRESS required");
 if (!MNEMONIC) throw new Error("RT_AGENT_MNEMONIC required");
 
-const publicClient = createPublicClient({ chain: baseSepolia, transport: http(RPC) });
+const transport =
+  RPC_URLS.length === 1
+    ? http(RPC_URLS[0])
+    : fallback(RPC_URLS.map((u) => http(u)), { retryCount: 0 });
+const publicClient = createPublicClient({ chain: baseSepolia, transport });
 
 const CONSUMED_NONCES_ABI = [
   {
@@ -133,7 +145,7 @@ function makeWalletClient(idx: number) {
   return createWalletClient({
     account: privateKeyToAccount(privateKey),
     chain: baseSepolia,
-    transport: http(RPC),
+    transport,
   });
 }
 
