@@ -26,7 +26,7 @@ import {
   buildForgeDomain,
   type ForgeIntentDomain,
 } from "./forge-domain.js";
-import type { FeeShare } from "./fee-share.js";
+import { defaultFeeSharePolicy, type FeeShare } from "./fee-share.js";
 import type { CommitPreflight } from "./preflight-types.js";
 
 // ── Typed-data primitives ────────────────────────────────────────
@@ -194,12 +194,14 @@ export function buildCommitIntentTypedData(params: {
       feeAmount: fee,
       stakeAmount: stake,
       feeShareBps: params.feeShareBps ?? 0n,
-      // Chain rejects empty fee_shares regardless of feeShareBps. Default
-      // to a single entry pointing back at the submitter at 10000 bps so
-      // the typed-data is always well-formed; explicit splits override.
+      // Chain rejects empty fee_shares regardless of feeShareBps. Reuse
+      // defaultFeeSharePolicy's shares list (single self-recipient at
+      // 10000 bps) so the chain-valid minimum has one definition. We
+      // keep our own bps default at 0n (vs the policy's 1n) — the
+      // policy's bps is a separate knob; the shares array is the part
+      // shared.
       feeShares:
-        params.feeShares ??
-        [{ recipient: params.submitter, basisPoints: 10000n }],
+        params.feeShares ?? defaultFeeSharePolicy(params.submitter).shares,
       nonce,
       chainId: BigInt(params.preflight.chain_id),
       expiresAt: BigInt(ttl),

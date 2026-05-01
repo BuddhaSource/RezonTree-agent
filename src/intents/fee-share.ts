@@ -43,5 +43,8 @@ export function defaultFeeSharePolicy(
   };
 }
 
-// 15-min TTL on signed intents. Matches backend's MaxPermitTTL.
-export const INTENT_TTL_SECONDS = 15 * 60;
+// 5-min TTL on signed intents. Matches backend's MaxPermitTTL after
+// decision 0007 (timer-rationalization) tightened from 15min — intent
+// expiresAt is the sign-to-broadcast latency budget, not a round
+// window. Tighter ⇒ smaller replay window.
+export const INTENT_TTL_SECONDS = 5 * 60;

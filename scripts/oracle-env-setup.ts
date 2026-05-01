@@ -7,9 +7,7 @@
 
 import "dotenv/config";
 import * as fs from "node:fs";
-import * as path from "node:path";
-import * as bip39 from "@scure/bip39";
-import { HDKey } from "@scure/bip32";
+import { deriveAgentWallet } from "../src/wallet/derive.js";
 
 const mnemonic = process.env.RT_AGENT_MNEMONIC;
 if (!mnemonic) throw new Error("RT_AGENT_MNEMONIC not set");
@@ -20,12 +18,11 @@ if (!forge) throw new Error("RT_FORGE_ADDRESS not set");
 const rpcUrl = process.env.RT_RPC_URL ?? "https://sepolia.base.org";
 const chainID = "84532";
 
-// Derive m/44'/60'/0'/0/0
-const seed = bip39.mnemonicToSeedSync(mnemonic);
-const root = HDKey.fromMasterSeed(seed);
-const child = root.derive("m/44'/60'/0'/0/0");
-if (!child.privateKey) throw new Error("derivation failed");
-const keyHex = Buffer.from(child.privateKey).toString("hex");
+// Derive idx 0 (the configured oracle wallet, FORGE_DEFAULT_ORACLE).
+// deriveAgentWallet uses BIP-44 path m/44'/60'/0'/0/<idx> — same as
+// the rest of the agent-pool derivation, single source of truth.
+const wallet = deriveAgentWallet(mnemonic, 0, Number(chainID));
+const keyHex = wallet.privateKey.slice(2); // strip 0x for the env var
 
 const backendEnv = "/Volumes/Data/projects/rezontree/RezonTree/.env";
 if (!fs.existsSync(backendEnv)) {
