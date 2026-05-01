@@ -27,7 +27,7 @@ if (!MNEMONIC) throw new Error("RT_AGENT_MNEMONIC required");
 
 const MIN_ETH = parseEther("0.01");
 const MIN_USDC = parseUnits("5", 6); // 5 USDC each
-const TARGET_INDEXES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
+const TARGET_INDEXES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] as const;
 
 const ERC20 = [
   {
