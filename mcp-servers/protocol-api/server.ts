@@ -314,6 +314,24 @@ async function apiCall(
   return data;
 }
 
+/**
+ * Make an unauthenticated API call (for public endpoints like /v1/protocol).
+ */
+async function apiCallPublic(method: string, path: string): Promise<unknown> {
+  const resp = await fetch(`${API_URL}${path}`, {
+    method,
+    headers: { "Content-Type": "application/json" },
+  });
+  const data = await resp.json();
+  if (!resp.ok) {
+    const err = data as { error?: { code?: string; message?: string; action?: string } };
+    throw new Error(
+      `API error ${resp.status}: ${err.error?.code} — ${err.error?.message}\nAction: ${err.error?.action}`,
+    );
+  }
+  return data;
+}
+
 // ── MCP Server Setup ─────────────────────────────────────────────────
 
 const server = new McpServer({
@@ -325,10 +343,10 @@ const server = new McpServer({
 
 server.tool(
   "get_protocol",
-  "Get protocol version, rules, fees, error codes, and available endpoints",
+  "Get protocol version, rules, fees, field limits, error codes, and available endpoints. No auth required.",
   {},
   async () => {
-    const result = await apiCall("GET", "/v1/protocol");
+    const result = await apiCallPublic("GET", "/v1/protocol");
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   },
 );
@@ -488,7 +506,7 @@ server.tool(
       async () => {
         const pre = (await apiCall(
           "GET",
-          `/v1/questions/${params.question_id}/commit/preflight?submitter=${address}`,
+          `/v1/questions/${params.question_id}/solutions/draft?submitter=${address}`,
         )) as CommitPreflight;
 
         // Backend hashes the FULL solution body ({body, reasoning_tree,
@@ -557,40 +575,13 @@ server.tool(
   },
 );
 
-server.tool(
-  "validate_solution",
-  "Pre-flight check: validate a solution before submitting",
-  {
-    question_id: z.string().describe("The question ID"),
-    body: z.string(),
-    reasoning_tree: z.array(
-      z.object({
-        because: z.string(),
-        therefore: z.string(),
-      }),
-    ),
-    claims: z.array(
-      z.object({
-        criterion_id: z.string(),
-        value: z.union([z.number(), z.boolean(), z.array(z.object({ item: z.string(), met: z.boolean() }))]),
-        argument: z.string(),
-        falsifiable_by: z.string(),
-      }),
-    ),
-  },
-  async (params) => {
-    const result = await apiCall(
-      "POST",
-      `/v1/questions/${params.question_id}/solutions/validate`,
-      {
-        body: params.body,
-        reasoning_tree: params.reasoning_tree,
-        claims: params.claims,
-      },
-    );
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  },
-);
+// validate_solution removed (RFC 2026-05 Round A): the backend route
+// /v1/questions/:id/solutions/validate was retired some time ago; the
+// MCP tool kept advertising it and produced confusing
+// METHOD_NOT_ALLOWED errors for solver agents. Per RFC 2026-05 §1
+// (single source of truth): the POST /solutions handler does its own
+// validation and returns field_errors[] with spec on failure — that
+// is the canonical preflight. No separate validate endpoint needed.
 
 // ── Votes ────────────────────────────────────────────────────────────
 
@@ -646,7 +637,7 @@ server.tool(
       async () => {
         const pre = (await apiCall(
           "GET",
-          `/v1/questions/${params.question_id}/vote/preflight?voter=${address}`,
+          `/v1/questions/${params.question_id}/votes/draft?voter=${address}`,
         )) as VotePreflight;
 
         if (!pre.vote_salt || !pre.vote_salt_token) {
@@ -734,7 +725,7 @@ server.tool(
       async () => {
         const pre = (await apiCall(
           "GET",
-          `/v1/questions/${params.question_id}/fund/preflight?funder=${address}`,
+          `/v1/questions/${params.question_id}/sponsorships/draft?funder=${address}`,
         )) as FundPreflight;
 
         const amountWei = parseAmountToWei(params.amount, pre.token.decimals);
@@ -743,7 +734,7 @@ server.tool(
         // Per-contribution feeShares default to none — the funder's
         // share of pool revenue is captured implicitly by the contract's
         // first-sponsor accounting. Power users wanting custom splits
-        // can call /v1/questions/:id/fund directly.
+        // can call /v1/questions/:id/sponsorships directly.
         const fundResp = await (async () => {
           if (pre.mode === "sponsor") {
             const td = buildSponsorIntentTypedData({
@@ -757,7 +748,7 @@ server.tool(
 
             const resp = (await apiCall(
               "POST",
-              `/v1/questions/${params.question_id}/fund`,
+              `/v1/questions/${params.question_id}/sponsorships`,
               buildSponsorFundRequestBody({ typedData: td, signature: intentSig }),
             )) as { intent_hash: string; contribution_id: string };
 
@@ -790,7 +781,7 @@ server.tool(
 
           const resp = (await apiCall(
             "POST",
-            `/v1/questions/${params.question_id}/fund`,
+            `/v1/questions/${params.question_id}/sponsorships`,
             buildCosponsorFundRequestBody({ typedData: td, signature: intentSig }),
           )) as { intent_hash: string; contribution_id: string };
 
@@ -832,11 +823,11 @@ server.tool(
     question_id: z
       .string()
       .describe("The question ID (qst_...) whose settled round you're claiming from"),
-    question_id: z
+    qid_hex: z
       .string()
       .optional()
       .describe(
-        "Override: bytes32 question_id (0x-prefixed 66-char hex). If omitted, derived from backend.",
+        "Power-user override: bytes32 question_id (0x-prefixed 66-char hex). If omitted, derived from backend.",
       ),
     amount_wei: z
       .string()
@@ -861,14 +852,14 @@ server.tool(
     let role = "override";
 
     const fullOverride =
-      params.question_id !== undefined &&
+      params.qid_hex !== undefined &&
       params.amount_wei !== undefined &&
       params.proof !== undefined;
 
     if (fullOverride) {
       // Power-user path: caller supplies all three. Used for manual
       // settlements that didn't go through the standard pipeline.
-      questionId = params.question_id as Hex;
+      questionId = params.qid_hex as Hex;
       amountWei = BigInt(params.amount_wei!);
       proof = params.proof as Hex[];
     } else {
@@ -945,16 +936,18 @@ server.tool(
 
 server.tool(
   "close_question",
-  "Close a question — resolve or cancel (owner only)",
+  "Close a question — resolve, cancel, or archive (owner only). Uses PATCH /v1/questions/:id with a status body.",
   {
     question_id: z.string().describe("The question ID"),
-    action: z.enum(["resolve", "cancel"]).describe("resolve or cancel"),
+    status: z
+      .enum(["resolved", "cancelled", "archived"])
+      .describe("Target status: resolved (outcome decided), cancelled (void), archived (dormant)"),
   },
   async (params) => {
     const result = await apiCall(
-      "POST",
-      `/v1/questions/${params.question_id}/close`,
-      { action: params.action },
+      "PATCH",
+      `/v1/questions/${params.question_id}`,
+      { status: params.status },
     );
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   },
@@ -978,30 +971,25 @@ server.tool(
 // ── Wallet ───────────────────────────────────────────────────────────
 
 server.tool(
-  "get_balance",
-  "Get your wallet balance",
-  {},
-  async () => {
-    const result = await apiCall("GET", "/v1/wallet/balance");
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  },
-);
-
-server.tool(
-  "get_wallet_history",
-  "View paginated transaction history",
+  "get_wallet_transactions",
+  "View your on-chain wallet activity (contributions, commits, votes, refunds, claims). Wallet balance is derived from these transactions — there is no separate balance endpoint.",
   {
-    limit: z.number().optional().describe("Max entries"),
-    cursor: z.string().optional().describe("Pagination cursor"),
+    limit: z.number().optional().describe("Max entries (default 20)"),
+    before_block: z.number().optional().describe("Pagination: block number cursor"),
+    before_log_index: z.number().optional().describe("Pagination: log index cursor (pair with before_block)"),
+    chain_id: z.number().optional().describe("Filter by chain ID"),
   },
   async (params) => {
+    const { address } = getClients();
     const query = new URLSearchParams();
     if (params.limit) query.set("limit", String(params.limit));
-    if (params.cursor) query.set("cursor", params.cursor);
+    if (params.before_block) query.set("before_block", String(params.before_block));
+    if (params.before_log_index) query.set("before_log_index", String(params.before_log_index));
+    if (params.chain_id) query.set("chain_id", String(params.chain_id));
     const qs = query.toString();
     const result = await apiCall(
       "GET",
-      `/v1/wallet/history${qs ? `?${qs}` : ""}`,
+      `/v1/accounts/${address}/wallet/transactions${qs ? `?${qs}` : ""}`,
     );
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   },
@@ -1010,15 +998,15 @@ server.tool(
 // ── Agent Profile ────────────────────────────────────────────────────
 
 server.tool(
-  "get_agent_profile",
-  "Get an agent's profile with reputation stats and history",
+  "get_account_profile",
+  "Get any account's profile with reputation stats, win rate, and recent history. Pass the 0x-prefixed EVM address.",
   {
-    agent_id: z.string().describe("The agent ID"),
+    address: z.string().describe("0x-prefixed 20-byte EVM address of the account"),
   },
   async (params) => {
     const result = await apiCall(
       "GET",
-      `/v1/agents/${params.agent_id}/profile`,
+      `/v1/accounts/${params.address}/profile`,
     );
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
   },
