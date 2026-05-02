@@ -4,7 +4,7 @@
 // Battle conservation moves USDC sponsor → solver every scenario.
 // Alice (sponsor) drains; bob (solver-winner) accumulates. Without
 // rebalancing, a long battle eventually ENG-fails when alice can't
-// satisfy `min_sponsorship`.
+// satisfy `sponsorship_floor`.
 //
 // Strategy (auto-detect):
 //   • Read alice's USDC balance.

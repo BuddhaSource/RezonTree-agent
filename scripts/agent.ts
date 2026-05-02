@@ -225,7 +225,7 @@ program
   .requiredOption("--idx <n>", "HD index of the sponsor wallet", (s) => Number.parseInt(s, 10))
   .requiredOption("--question-file <path>", "Path to JSON with title/description/success_criteria")
   .option("--amount <usdc>", "Sponsor amount in USDC (default 1)", "1")
-  .option("--expiry-seconds <s>", "Intent TTL in seconds (caps fundingDeadline; chain max ~900s)", "900")
+  .option("--expiry-seconds <s>", "Intent TTL in seconds (backend MaxPermitTTL=300s after decision 0007; default 270 leaves slack)", "270")
   .action(async (opts) => {
     const idx = opts.idx as number;
     const file = path.resolve(opts.questionFile as string);
@@ -257,7 +257,7 @@ program
     );
     console.log(`  question_id=${created.id}`);
 
-    console.log(`[agent ${idx}] GET fund/preflight ...`);
+    console.log(`[agent ${idx}] GET sponsorships/draft ...`);
     const pre = await callAPI<{
       mode: string;
       qid: string;
@@ -265,7 +265,7 @@ program
       forge_address: string;
       oracle: string;
       [k: string]: unknown;
-    }>("GET", `/v1/questions/${created.id}/fund/preflight?funder=${me.address}`);
+    }>("GET", `/v1/questions/${created.id}/sponsorships/draft?funder=${me.address}`);
     if (pre.mode !== "sponsor") {
       throw new Error(`preflight mode=${pre.mode}, expected sponsor`);
     }
@@ -300,10 +300,10 @@ program
     const wallet = makeWalletClient(idx);
     const intentSig = (await wallet.account.signTypedData(td)) as Hex;
 
-    console.log(`[agent ${idx}] POST /v1/questions/${created.id}/fund (intent + body) ...`);
+    console.log(`[agent ${idx}] POST /v1/questions/${created.id}/sponsorships (intent + body) ...`);
     const fundResp = await callAPI<{ contribution_id: string }>(
       "POST",
-      `/v1/questions/${created.id}/fund`,
+      `/v1/questions/${created.id}/sponsorships`,
       buildSponsorFundRequestBody({ typedData: td, signature: intentSig }),
       me.token,
     );
@@ -361,8 +361,8 @@ program
       token: { contract_address: string; decimals: number; symbol: string; chain_id: number };
       forge_address: string; chain_id: number; nonce_next: string;
       [k: string]: unknown;
-    }>("GET", `/v1/questions/${qid}/commit/preflight?submitter=${me.address}`);
-    // commit preflight doesn't have a mode discriminator (unlike fund/preflight)
+    }>("GET", `/v1/questions/${qid}/solutions/draft?submitter=${me.address}`);
+    // commit preflight doesn't have a mode discriminator (unlike sponsorships/draft)
 
     const contentHash = computeContentHash(payload);
     const chainNonce = await chainNextUnusedNonce(me.address);
@@ -439,7 +439,7 @@ program
       forge_address: string; chain_id: number; nonce_next: string;
       vote_salt: string; vote_salt_token: string; vote_salt_expires_at: number;
       [k: string]: unknown;
-    }>("GET", `/v1/questions/${qid}/vote/preflight?voter=${me.address}`);
+    }>("GET", `/v1/questions/${qid}/votes/draft?voter=${me.address}`);
     // vote preflight has no `mode` discriminator
 
     const allocationsHash = computeAllocationsHash(payload.allocations, pre.vote_salt as `0x${string}`);

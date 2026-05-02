@@ -70,7 +70,9 @@ export interface CommitIntentTypedData {
   message: CommitIntentMessage;
 }
 
-export const DEFAULT_COMMIT_TTL_SECONDS = 10 * 60;
+// 4 min — under the backend's MaxPermitTTL=5min ceiling (decision 0007)
+// with 1min slack for clock skew + broadcast latency. Was 10min.
+export const DEFAULT_COMMIT_TTL_SECONDS = 4 * 60;
 
 // ── contentHash ──────────────────────────────────────────────────
 

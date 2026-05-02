@@ -17,16 +17,20 @@ let current: Settings | null = null;
 export async function loadSettings(
   network: "testnet" | "mainnet" = "testnet",
 ): Promise<Settings> {
-  const mod =
-    network === "mainnet"
-      ? await import("../settings/mainnet.js")
-      : await import("../settings/testnet.js");
-  let resolved = mod[network];
+  let resolved: Settings;
+  if (network === "mainnet") {
+    const mod = await import("../settings/mainnet.js");
+    resolved = mod.mainnet;
+  } else {
+    const mod = await import("../settings/testnet.js");
+    resolved = mod.testnet;
+  }
 
   // Optional local overrides — gitignored. Wrap in try/catch because
   // most installs won't have one.
   try {
-    const local = (await import("../settings/local.js")) as {
+    const localSpecifier = "../settings/local.js";
+    const local = (await import(localSpecifier)) as {
       local?: Partial<Settings>;
     };
     if (local.local) resolved = { ...resolved, ...local.local };
@@ -34,8 +38,9 @@ export async function loadSettings(
     // no local overrides — fine
   }
 
-  current = Object.freeze(resolved);
-  return current;
+  const frozen = Object.freeze(resolved);
+  current = frozen;
+  return frozen;
 }
 
 /** Synchronous accessor for already-loaded settings. */

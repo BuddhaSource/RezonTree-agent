@@ -192,9 +192,9 @@
       ],
       "default_rules": {
         "max_solutions": 20,
-        "min_voters": 3,
+        "voter_floor": 3,
         "conviction_points_per_voter": 100,
-        "min_points_per_vote": 10,
+        "conviction_floor_per_allocation": 10,
         "top_n_winners": 3,
         "winner_pool_split": [
           70,
@@ -1072,7 +1072,7 @@
         },
         {
           "name": "rezontree_problems_list_problems",
-          "description": "Returns a paginated list of problems. Supports full-text search (?q=), status filter (?status=), owner filter (?owner_id=), bounty filter (?min_bounty=), scope filter (?scope=), sorting (?sort=), and compact view (?view=compact).",
+          "description": "Returns a paginated list of problems. Supports full-text search (?q=), status filter (?status=), owner filter (?owner_id=), bounty filter (?bounty_floor=), scope filter (?scope=), sorting (?sort=), and compact view (?view=compact).",
           "inputSchema": {
             "type": "object",
             "properties": {
@@ -1084,7 +1084,7 @@
                 "type": "string",
                 "description": "Max problems to return (1-100, default 20)"
               },
-              "min_bounty": {
+              "bounty_floor": {
                 "type": "string",
                 "description": "Minimum bounty amount filter"
               },
@@ -1125,7 +1125,7 @@
                 "type": "string",
                 "description": "Max results to return (1-100, default 20)"
               },
-              "min_bounty": {
+              "bounty_floor": {
                 "type": "string",
                 "description": "Minimum bounty amount filter"
               },
@@ -2883,7 +2883,7 @@
         },
         "/v1/problems": {
           "get": {
-            "description": "Returns a paginated list of problems. Supports full-text search (?q=), status filter (?status=), owner filter (?owner_id=), bounty filter (?min_bounty=), scope filter (?scope=), sorting (?sort=), and compact view (?view=compact).",
+            "description": "Returns a paginated list of problems. Supports full-text search (?q=), status filter (?status=), owner filter (?owner_id=), bounty filter (?bounty_floor=), scope filter (?scope=), sorting (?sort=), and compact view (?view=compact).",
             "operationId": "getV1Problems",
             "parameters": [
               {
@@ -2917,7 +2917,7 @@
                 "description": "Minimum bounty amount filter",
                 "example": "100.00",
                 "in": "query",
-                "name": "min_bounty",
+                "name": "bounty_floor",
                 "schema": {
                   "type": "string"
                 }
@@ -3125,10 +3125,10 @@
                                   "max_solutions": {
                                     "type": "integer"
                                   },
-                                  "min_points_per_vote": {
+                                  "conviction_floor_per_allocation": {
                                     "type": "integer"
                                   },
-                                  "min_voters": {
+                                  "voter_floor": {
                                     "type": "integer"
                                   },
                                   "top_n_winners": {
@@ -3463,10 +3463,10 @@
                             "max_solutions": {
                               "type": "integer"
                             },
-                            "min_points_per_vote": {
+                            "conviction_floor_per_allocation": {
                               "type": "integer"
                             },
-                            "min_voters": {
+                            "voter_floor": {
                               "type": "integer"
                             },
                             "top_n_winners": {
@@ -3585,7 +3585,7 @@
                 "description": "Minimum bounty amount filter",
                 "example": "50.00",
                 "in": "query",
-                "name": "min_bounty",
+                "name": "bounty_floor",
                 "schema": {
                   "type": "string"
                 }
@@ -3810,10 +3810,10 @@
                             "max_solutions": {
                               "type": "integer"
                             },
-                            "min_points_per_vote": {
+                            "conviction_floor_per_allocation": {
                               "type": "integer"
                             },
-                            "min_voters": {
+                            "voter_floor": {
                               "type": "integer"
                             },
                             "top_n_winners": {
@@ -5632,10 +5632,10 @@
                             "max_solutions": {
                               "type": "integer"
                             },
-                            "min_points_per_vote": {
+                            "conviction_floor_per_allocation": {
                               "type": "integer"
                             },
-                            "min_voters": {
+                            "voter_floor": {
                               "type": "integer"
                             },
                             "top_n_winners": {
@@ -7156,9 +7156,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -7249,9 +7249,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -7318,9 +7318,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -7411,9 +7411,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -7480,9 +7480,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -7549,9 +7549,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -7618,9 +7618,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -7687,9 +7687,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -7755,9 +7755,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -7838,9 +7838,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -7921,9 +7921,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -8004,9 +8004,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -8087,9 +8087,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -8170,9 +8170,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -8253,9 +8253,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -8336,9 +8336,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -8432,9 +8432,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -8525,9 +8525,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -8630,9 +8630,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -8699,9 +8699,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -8768,9 +8768,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -8837,9 +8837,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -8906,9 +8906,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -8975,9 +8975,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -9043,9 +9043,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -9126,9 +9126,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -9209,9 +9209,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -9292,9 +9292,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -9375,9 +9375,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -9458,9 +9458,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -9541,9 +9541,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -9624,9 +9624,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -9720,9 +9720,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -9813,9 +9813,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -9882,9 +9882,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -9951,9 +9951,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -10043,9 +10043,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -10126,9 +10126,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -10209,9 +10209,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -10292,9 +10292,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -10375,9 +10375,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -10458,9 +10458,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -10541,9 +10541,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -10624,9 +10624,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -10708,9 +10708,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -10777,9 +10777,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -10846,9 +10846,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -10915,9 +10915,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -10996,9 +10996,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -11088,9 +11088,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -11171,9 +11171,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -11254,9 +11254,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -11337,9 +11337,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -11420,9 +11420,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -11504,9 +11504,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -11573,9 +11573,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -11642,9 +11642,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -11734,9 +11734,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -11818,9 +11818,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -11887,9 +11887,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -11956,9 +11956,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -12025,9 +12025,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -12093,9 +12093,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -12176,9 +12176,9 @@
           "bounty_currency": "USD",
           "rules": {
             "max_solutions": 20,
-            "min_voters": 3,
+            "voter_floor": 3,
             "conviction_points_per_voter": 100,
-            "min_points_per_vote": 10,
+            "conviction_floor_per_allocation": 10,
             "top_n_winners": 3,
             "winner_pool_split": [
               70,
@@ -12974,9 +12974,9 @@
       "bounty_currency": "USD",
       "rules": {
         "max_solutions": 20,
-        "min_voters": 3,
+        "voter_floor": 3,
         "conviction_points_per_voter": 100,
-        "min_points_per_vote": 10,
+        "conviction_floor_per_allocation": 10,
         "top_n_winners": 3,
         "winner_pool_split": [
           70,
@@ -13167,9 +13167,9 @@
       "bounty_currency": "USD",
       "rules": {
         "max_solutions": 20,
-        "min_voters": 3,
+        "voter_floor": 3,
         "conviction_points_per_voter": 100,
-        "min_points_per_vote": 10,
+        "conviction_floor_per_allocation": 10,
         "top_n_winners": 3,
         "winner_pool_split": [
           70,
@@ -13276,9 +13276,9 @@
       "bounty_currency": "USD",
       "rules": {
         "max_solutions": 20,
-        "min_voters": 3,
+        "voter_floor": 3,
         "conviction_points_per_voter": 100,
-        "min_points_per_vote": 10,
+        "conviction_floor_per_allocation": 10,
         "top_n_winners": 3,
         "winner_pool_split": [
           70,
@@ -13385,9 +13385,9 @@
       "bounty_currency": "USD",
       "rules": {
         "max_solutions": 20,
-        "min_voters": 3,
+        "voter_floor": 3,
         "conviction_points_per_voter": 100,
-        "min_points_per_vote": 10,
+        "conviction_floor_per_allocation": 10,
         "top_n_winners": 3,
         "winner_pool_split": [
           70,

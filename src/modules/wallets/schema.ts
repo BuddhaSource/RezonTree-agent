@@ -4,6 +4,7 @@
 // in service.ts. Keep field order aligned with the .sql file so manual
 // schema review is straightforward.
 
+import { sql } from "drizzle-orm";
 import {
   sqliteTable,
   text,
@@ -32,7 +33,7 @@ export const wallets = sqliteTable(
     index("idx_wallets_network_active").on(t.network, t.active),
     uniqueIndex("idx_wallets_alias_per_network")
       .on(t.network, t.alias)
-      .where("alias IS NOT NULL"),
+      .where(sql`alias IS NOT NULL`),
   ],
 );
 

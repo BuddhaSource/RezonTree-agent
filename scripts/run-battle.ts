@@ -470,7 +470,7 @@ class BattleRunner {
     // 2) Sponsor fund.
     const sponsorPre = await call<FundPreflight>(
       "GET",
-      `/v1/questions/${question.id}/fund/preflight?funder=${sponsor.address}`,
+      `/v1/questions/${question.id}/sponsorships/draft?funder=${sponsor.address}`,
     );
     if (sponsorPre.mode !== "sponsor") {
       throw new Error(`expected mode=sponsor, got ${sponsorPre.mode}`);
@@ -486,7 +486,7 @@ class BattleRunner {
     const sponsorSig = (await privateKeyToAccount(sponsorWallet.privateKey).signTypedData(sponsorTd)) as Hex;
     const sponsorResp = await call<{ contribution_id: string }>(
       "POST",
-      `/v1/questions/${question.id}/fund`,
+      `/v1/questions/${question.id}/sponsorships`,
       buildSponsorFundRequestBody({ typedData: sponsorTd, signature: sponsorSig }),
       sponsor.token,
     );
@@ -523,7 +523,7 @@ class BattleRunner {
       const ca = await loginWallet(wallet);
       const cosponsorPre = await call<FundPreflight>(
         "GET",
-        `/v1/questions/${question.id}/fund/preflight?funder=${ca.address}`,
+        `/v1/questions/${question.id}/sponsorships/draft?funder=${ca.address}`,
       );
       if (cosponsorPre.mode !== "cosponsor") {
         throw new Error(`expected mode=cosponsor, got ${cosponsorPre.mode}`);
@@ -539,7 +539,7 @@ class BattleRunner {
       const sig = (await privateKeyToAccount(wallet.privateKey).signTypedData(td)) as Hex;
       await call(
         "POST",
-        `/v1/questions/${question.id}/fund`,
+        `/v1/questions/${question.id}/sponsorships`,
         buildCosponsorFundRequestBody({ typedData: td, signature: sig }),
         ca.token,
       );
@@ -567,7 +567,7 @@ class BattleRunner {
       const sa = await loginWallet(wallet);
       const commitPre = await call<CommitPreflight>(
         "GET",
-        `/v1/questions/${question.id}/commit/preflight?submitter=${sa.address}`,
+        `/v1/questions/${question.id}/solutions/draft?submitter=${sa.address}`,
       );
       const body = makeSolutionBody(solverLetter, s.id);
       // Build the structured solution payload ONCE; hash it AND post
@@ -647,7 +647,7 @@ class BattleRunner {
       const va = await loginWallet(wallet);
       const votePre = await call<VotePreflight>(
         "GET",
-        `/v1/questions/${question.id}/vote/preflight?voter=${va.address}`,
+        `/v1/questions/${question.id}/votes/draft?voter=${va.address}`,
       );
       // Sybils who are also solvers self-vote; self-vote attack
       // explicitly tagged in scenario. Other voters split: 80%
@@ -941,7 +941,7 @@ class BattleRunner {
       const question = await this.makeQuestion(sponsor, "Expired-intent test");
       const pre = await call<FundPreflight>(
         "GET",
-        `/v1/questions/${question.id}/fund/preflight?funder=${sponsor.address}`,
+        `/v1/questions/${question.id}/sponsorships/draft?funder=${sponsor.address}`,
       );
       const td = buildSponsorIntentTypedData({
         preflight: pre,
@@ -955,7 +955,7 @@ class BattleRunner {
       try {
         await call(
           "POST",
-          `/v1/questions/${question.id}/fund`,
+          `/v1/questions/${question.id}/sponsorships`,
           buildSponsorFundRequestBody({ typedData: td, signature: sig }),
           sponsor.token,
         );
@@ -976,7 +976,7 @@ class BattleRunner {
       const question = await this.makeQuestion(sponsor, "feeshare-cap test");
       const pre = await call<FundPreflight>(
         "GET",
-        `/v1/questions/${question.id}/fund/preflight?funder=${sponsor.address}`,
+        `/v1/questions/${question.id}/sponsorships/draft?funder=${sponsor.address}`,
       );
       const td = buildSponsorIntentTypedData({
         preflight: pre,
@@ -989,7 +989,7 @@ class BattleRunner {
       try {
         await call(
           "POST",
-          `/v1/questions/${question.id}/fund`,
+          `/v1/questions/${question.id}/sponsorships`,
           buildSponsorFundRequestBody({ typedData: td, signature: sig }),
           sponsor.token,
         );
@@ -1010,7 +1010,7 @@ class BattleRunner {
       const solver = await loginWallet(this.wallets["mallory"]);
       const pre = await call<CommitPreflight>(
         "GET",
-        `/v1/questions/${question.id}/commit/preflight?submitter=${solver.address}`,
+        `/v1/questions/${question.id}/solutions/draft?submitter=${solver.address}`,
       );
       const recommendedStake = BigInt(pre.recommended_stake || "0");
       if (recommendedStake === 0n) {
@@ -1068,7 +1068,7 @@ class BattleRunner {
       const question = await this.makeQuestion(honest, "nonce-reuse test");
       const pre = await call<FundPreflight>(
         "GET",
-        `/v1/questions/${question.id}/fund/preflight?funder=${honest.address}`,
+        `/v1/questions/${question.id}/sponsorships/draft?funder=${honest.address}`,
       );
       const td = buildSponsorIntentTypedData({
         preflight: pre,
@@ -1080,7 +1080,7 @@ class BattleRunner {
       const sig = (await privateKeyToAccount(this.wallets["alice"].privateKey).signTypedData(td)) as Hex;
       await call(
         "POST",
-        `/v1/questions/${question.id}/fund`,
+        `/v1/questions/${question.id}/sponsorships`,
         buildSponsorFundRequestBody({ typedData: td, signature: sig }),
         honest.token,
       );
@@ -1190,7 +1190,7 @@ class BattleRunner {
   private async sponsorFund(authed: AuthedWallet, questionId: string, humanAmount: string): Promise<void> {
     const pre = await call<FundPreflight>(
       "GET",
-      `/v1/questions/${questionId}/fund/preflight?funder=${authed.address}`,
+      `/v1/questions/${questionId}/sponsorships/draft?funder=${authed.address}`,
     );
     const amountWei = parseAmountToWei(humanAmount, pre.token.decimals);
     const td = buildSponsorIntentTypedData({
@@ -1203,7 +1203,7 @@ class BattleRunner {
     const sig = (await privateKeyToAccount(authed.wallet.privateKey).signTypedData(td)) as Hex;
     await call(
       "POST",
-      `/v1/questions/${questionId}/fund`,
+      `/v1/questions/${questionId}/sponsorships`,
       buildSponsorFundRequestBody({ typedData: td, signature: sig }),
       authed.token,
     );

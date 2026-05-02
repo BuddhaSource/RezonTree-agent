@@ -6,8 +6,8 @@
 // The SDK's existing `src/bootstrap/preflight.ts` is a different
 // thing — it's a startup health check that pings the backend to
 // confirm it's reachable. These types describe the per-flow
-// preflight shapes (/fund/preflight, /commit/preflight,
-// /vote/preflight) that the intent builders consume.
+// preflight shapes (/sponsorships/draft, /solutions/draft,
+// /votes/draft) that the intent builders consume.
 //
 // v2.5: FundPreflight discriminates `sponsor` vs `cosponsor` mode
 // (replacing v2.4's `init` / `join`). Sponsor-mode preflights
@@ -31,7 +31,7 @@ export interface HypermediaAction {
 
 // RezonForge v2.5 fund preflight: `mode` discriminates sponsor vs
 // cosponsor. When mode === "sponsor", the sponsor-only fields
-// (oracle, min_stake_floor, stake_basis_points, min_sponsorship,
+// (oracle, stake_floor, stake_basis_points, sponsorship_floor,
 // vote_fee, abandonment_grace_period) are populated with backend-
 // suggested defaults the sponsor can override before signing.
 export interface FundPreflight {
@@ -46,9 +46,9 @@ export interface FundPreflight {
 
   // Sponsor-only suggested defaults.
   oracle?: string;
-  min_stake_floor?: string;
+  stake_floor?: string;
   stake_basis_points?: string;
-  min_sponsorship?: string;
+  sponsorship_floor?: string;
   vote_fee?: string;
   abandonment_grace_period?: string;
 

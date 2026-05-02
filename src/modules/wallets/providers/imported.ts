@@ -21,6 +21,7 @@ import type {
 interface ImportedProviderData {
   /** Where to find the private key at sign time. */
   keyRef: { kind: "env"; var: string } | { kind: "keychain"; service: string; account: string };
+  [key: string]: unknown;
 }
 
 export const importedProvider: WalletProvider = {

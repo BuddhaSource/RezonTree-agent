@@ -13,7 +13,7 @@
 //
 // Pinned typehash (sponsor):
 //   SponsorIntent(bytes32 questionId,address oracle,address token,
-//     uint256 minStakeFloor,uint256 stakeBasisPoints,uint256 minSponsorship,
+//     uint256 stakeFloor,uint256 stakeBasisPoints,uint256 sponsorshipFloor,
 //     uint256 voteFee,uint256 abandonmentGracePeriod,address sponsor,
 //     uint256 amount,uint256 feeShareBps,FeeShare[] feeShares,
 //     uint256 nonce,uint256 chainId,uint256 expiresAt)
@@ -41,9 +41,9 @@ export const SPONSOR_INTENT_TYPES = {
     { name: "questionId", type: "bytes32" },
     { name: "oracle", type: "address" },
     { name: "token", type: "address" },
-    { name: "minStakeFloor", type: "uint256" },
+    { name: "stakeFloor", type: "uint256" },
     { name: "stakeBasisPoints", type: "uint256" },
-    { name: "minSponsorship", type: "uint256" },
+    { name: "sponsorshipFloor", type: "uint256" },
     { name: "voteFee", type: "uint256" },
     { name: "abandonmentGracePeriod", type: "uint256" },
     { name: "sponsor", type: "address" },
@@ -60,9 +60,9 @@ export interface SponsorIntentMessage {
   questionId: `0x${string}`;
   oracle: `0x${string}`;
   token: `0x${string}`;
-  minStakeFloor: bigint;
+  stakeFloor: bigint;
   stakeBasisPoints: bigint;
-  minSponsorship: bigint;
+  sponsorshipFloor: bigint;
   voteFee: bigint;
   abandonmentGracePeriod: bigint;
   sponsor: `0x${string}`;
@@ -102,9 +102,9 @@ export function buildSponsorIntentTypedData(params: {
   feeShares: FeeShare[];
   oracle?: `0x${string}`;
   token?: `0x${string}`;
-  minStakeFloor?: bigint;
+  stakeFloor?: bigint;
   stakeBasisPoints?: bigint;
-  minSponsorship?: bigint;
+  sponsorshipFloor?: bigint;
   voteFee?: bigint;
   abandonmentGracePeriod?: bigint;
   expiresAtSeconds?: number;
@@ -125,15 +125,15 @@ export function buildSponsorIntentTypedData(params: {
   const token =
     params.token ??
     (params.preflight.token.contract_address as `0x${string}`);
-  const minStakeFloor =
-    params.minStakeFloor ??
-    BigInt(params.preflight.min_stake_floor ?? "0");
+  const stakeFloor =
+    params.stakeFloor ??
+    BigInt(params.preflight.stake_floor ?? "0");
   const stakeBasisPoints =
     params.stakeBasisPoints ??
     BigInt(params.preflight.stake_basis_points ?? "0");
-  const minSponsorship =
-    params.minSponsorship ??
-    BigInt(params.preflight.min_sponsorship ?? "0");
+  const sponsorshipFloor =
+    params.sponsorshipFloor ??
+    BigInt(params.preflight.sponsorship_floor ?? "0");
   const voteFee =
     params.voteFee ?? BigInt(params.preflight.vote_fee ?? "0");
   const abandonmentGracePeriod =
@@ -145,14 +145,14 @@ export function buildSponsorIntentTypedData(params: {
   // exactly. Rejecting here costs zero gas; signing-then-reverting
   // costs one wasted broadcast. Keep parity with Go signer
   // (internal/signer/sponsor_intent.go Validate) and Solidity guards.
-  if (minSponsorship <= 0n) {
+  if (sponsorshipFloor <= 0n) {
     throw new Error(
-      "sponsor intent: minSponsorship must be > 0 (chain reverts ForgeZeroMinSponsorship per R2-EB-1)",
+      "sponsor intent: sponsorshipFloor must be > 0 (chain reverts ForgeZeroSponsorshipFloor per R2-EB-1)",
     );
   }
-  if (voteFee === 0n && minStakeFloor === 0n) {
+  if (voteFee === 0n && stakeFloor === 0n) {
     throw new Error(
-      "sponsor intent: voteFee > 0 OR minStakeFloor > 0 required (chain reverts ForgeZeroEconomicFloor per F15)",
+      "sponsor intent: voteFee > 0 OR stakeFloor > 0 required (chain reverts ForgeZeroEconomicFloor per F15)",
     );
   }
   if (stakeBasisPoints > MAX_STAKE_BASIS_POINTS) {
@@ -172,9 +172,9 @@ export function buildSponsorIntentTypedData(params: {
       questionId: params.preflight.qid as `0x${string}`,
       oracle,
       token,
-      minStakeFloor,
+      stakeFloor,
       stakeBasisPoints,
-      minSponsorship,
+      sponsorshipFloor,
       voteFee,
       abandonmentGracePeriod,
       sponsor: params.sponsor,
@@ -205,9 +205,9 @@ export interface SponsorFundRequestBody {
   fee_shares: { recipient: string; basis_points: string }[];
   oracle: string;
   token: string;
-  min_stake_floor: string;
+  stake_floor: string;
   stake_basis_points: string;
-  min_sponsorship: string;
+  sponsorship_floor: string;
   vote_fee: string;
   abandonment_grace_period: string;
 }
@@ -233,9 +233,9 @@ export function buildSponsorFundRequestBody(params: {
     })),
     oracle: m.oracle,
     token: m.token,
-    min_stake_floor: m.minStakeFloor.toString(),
+    stake_floor: m.stakeFloor.toString(),
     stake_basis_points: m.stakeBasisPoints.toString(),
-    min_sponsorship: m.minSponsorship.toString(),
+    sponsorship_floor: m.sponsorshipFloor.toString(),
     vote_fee: m.voteFee.toString(),
     abandonment_grace_period: m.abandonmentGracePeriod.toString(),
   };

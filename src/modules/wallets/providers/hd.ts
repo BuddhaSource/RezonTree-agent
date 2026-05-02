@@ -18,6 +18,7 @@ import type {
 
 interface HdProviderData {
   hdIndex: number;
+  [key: string]: unknown;
 }
 
 const MNEMONIC_ENV = "RT_AGENT_MNEMONIC";

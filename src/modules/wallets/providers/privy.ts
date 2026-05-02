@@ -19,6 +19,7 @@ import type {
 interface PrivyProviderData {
   privyUserId: string;
   embeddedWalletId: string;
+  [key: string]: unknown;
 }
 
 export const privyProvider: WalletProvider = {
