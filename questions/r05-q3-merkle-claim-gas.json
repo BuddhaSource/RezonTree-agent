@@ -1,0 +1,27 @@
+{
+  "title": "Merkle-distributor airdrop on Base: 100k claimants, average proof depth 17. Optimize the claim() function for gas. Three changes ranked by impact.",
+  "description": "Concrete situation: Solidity 0.8.x airdrop contract on Base mainnet (~2s blocks, ~0.01 gwei base fee). Claim function takes (uint256 index, address account, uint256 amount, bytes32[] proof). Storage: mapping(uint256 => uint256) for claim bitmap. Currently uses OZ MerkleProof library + standard pattern. Per-claim gas observed: 73,500 (median).\n\nIdentify THREE optimizations and rank by gas savings. For each:\n\n1. **The change** — code-level diff sketch, not a vague concept.\n2. **Estimated gas saved** — number with a stated assumption (\"~5,000 gas, dominated by avoided SLOAD\").\n3. **The trade-off** — security weakening, code complexity, ABI compatibility, replay risk.\n\nExamples of valid optimizations:\n- Bitmap pack: store 256 claims per slot (already done in OZ MerkleDistributor — assess if relevant)\n- Calldata vs memory for proof array (cheap; how much?)\n- Custom hash assembly for keccak256(abi.encodePacked(...)) inline assembly\n- Skip-zero-amount short-circuit\n- Eliminate the address-from-storage read by using msg.sender (and document the receiver-bind change)\n- Replace OZ verify() with hand-rolled inline-assembly tree walk\n\nCommon bait answers:\n- \"Use a non-EVM chain.\" Out of scope — assume Base.\n- \"Use ZK proofs.\" Different verification primitive. Skip.\n- \"Reduce proof depth by smaller tree.\" 100k claimants → log2(100k) ≈ 17 is already minimum.\n\nVoters: judge on (a) ranked savings with numbers, (b) trade-offs disclosed honestly per item, (c) at least one of the three is an optimization beyond what OZ MerkleDistributor already does (otherwise the answer adds nothing).",
+  "success_criteria": [
+    {
+      "name": "three_ranked_with_numbers",
+      "type": "boolean",
+      "target": "true",
+      "weight": 40,
+      "description": "EXACTLY three optimizations, each with a numeric gas estimate and ranked. 'A few options' fails."
+    },
+    {
+      "name": "tradeoffs_per_item",
+      "type": "boolean",
+      "target": "true",
+      "weight": 30,
+      "description": "Each of the three has a named trade-off (security, ABI, complexity, replay). Generic 'standard caveats' fails."
+    },
+    {
+      "name": "beyond_oz_baseline",
+      "type": "boolean",
+      "target": "true",
+      "weight": 30,
+      "description": "At least one optimization is a real improvement over OZ MerkleDistributor (which already packs bitmaps). Restating OZ as 'savings' fails."
+    }
+  ]
+}

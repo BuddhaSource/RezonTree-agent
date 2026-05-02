@@ -1,0 +1,27 @@
+{
+  "title": "Design a gbrain deployment for a VC associate doing 30 deals/month: entity schema, cron jobs, and one query that beats ripgrep + vector RAG. Name a 6-month success metric.",
+  "description": "Concrete situation: A 2-person VC fund. Associate triages ~30 inbound deals/month, takes founder calls (recorded), reads decks, scrolls Twitter for signal, and tracks portfolio companies. Today: notes scattered across Notion, Granola transcripts, and email; vector RAG over notes works ~60% of the time; everything else is grep + memory.\n\ngbrain (https://github.com/garrytan/gbrain) is being installed. It self-wires a knowledge graph from typed entity references — `attended`, `works_at`, `invested_in`, `founded`, `advises`. Hybrid retrieval: BM25 + vector + graph traversal + backlink boosting. BrainBench reports P@5 49.1%, R@5 97.9% on the rich-prose corpus, beating ripgrep+vector by +31.4pp.\n\nYour task — design the deployment:\n\n1. **Entity schema** — name the entity types you add and the typed links between them. Out of the box gbrain has `person/company/concept`. What does a VC need that those don't cover? Be specific (suggest e.g. `founder→company` requires `founded(year, role, equity_pct)` — declare the link properties).\n\n2. **Scheduled jobs** — list 3–5 cron jobs the agent runs autonomously. Each job: trigger (cadence), action (which gbrain skill), expected output. Example shape: \"Every Monday 6am, run `enrich-people` over the people who appeared in last week's calls.\" Avoid generic \"summarize the week\" — name a specific input and output.\n\n3. **One winning query** — give one concrete query that gbrain answers materially better than `ripgrep notes/ \"Acme\"` + vector RAG. Show the actual call, the actual gbrain output structure, and explain *why* the graph layer (not just vector) is necessary for that query.\n\n4. **6-month success metric** — propose one measurable. Avoid \"feels useful.\" Examples of acceptable shape: \"Time-to-recall for a person mentioned in a meeting > 6 months ago, measured against a 50-query benchmark, beats vector-RAG baseline by ≥30%.\" Name the corpus, the query set, and the threshold.\n\nCommon bait answers to dispatch:\n\n- \"Use the default schema and add CRM fields.\" The default schema doesn't carry the deal-specific structure (term sheets, valuation rounds, relationship-strength edges). State what's missing.\n- \"Add a job to summarize the week.\" Too vague. Name the specific information loss the summary prevents and how the job's output is consumed.\n- \"Vector RAG works fine.\" The +31.4pp benchmark gap is real on rich-prose; quote it back if you claim parity, and explain why your VC use case wouldn't reproduce it.\n\nVoters: judge on (a) entity schema specificity (is each type and link justified?), (b) cron job concreteness (does the trigger + action describe a real workflow?), (c) the single query — does it actually require the graph?, (d) measurable success metric (can someone run a 6-month evaluation against your spec?).",
+  "success_criteria": [
+    {
+      "name": "schema_specificity",
+      "type": "boolean",
+      "target": "true",
+      "weight": 35,
+      "description": "Entity schema names ≥3 types beyond default person/company/concept, with typed links + link properties. Each justified by a VC query. Generic 'add CRM fields' fails."
+    },
+    {
+      "name": "cron_jobs_concrete",
+      "type": "boolean",
+      "target": "true",
+      "weight": 30,
+      "description": "≥3 cron jobs, each with cadence + named gbrain skill + named input source + named consumer of the output. 'Summarize the week' fails."
+    },
+    {
+      "name": "graph_query_with_metric",
+      "type": "boolean",
+      "target": "true",
+      "weight": 35,
+      "description": "Exactly one concrete query with actual gbrain call shape + mechanistic argument for why graph traversal beats vector alone, AND one 6-month success metric naming corpus, query set, baseline, threshold. Both halves required."
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "title": "Building an LLM evaluation benchmark for code-review quality. 500 expert-rated samples available. Design the benchmark: what does pass/fail look like, and which leakage class would invalidate it?",
+  "description": "Concrete situation: you want to publish a benchmark that ranks LLMs on 'quality of code review feedback'. You have 500 samples: each sample = a real PR diff + 3 expert-written review comments labeled HIGH / MEDIUM / LOW value. You can spend $5k of inference budget per evaluated model.\n\nDesign the benchmark across three axes:\n\n1. **Pass/fail metric** — exact formulation. Numerical (precision@k recall of HIGH-value comments), or pairwise (Bradley-Terry on model-vs-expert preferences), or rubric-graded (LLM-as-judge with anchored prompts). Show the formula and what 'a passing model' means quantitatively.\n\n2. **Train/test discipline** — which subset goes into prompts/fine-tuning vs. held-out evaluation? How do you prevent the public benchmark from being trained on once published? At least one concrete defense (private holdout, rotation, watermarking, etc).\n\n3. **The most dangerous leakage class** — name ONE specific way a published model could score artificially high without doing the underlying work. Examples: model trained on the PR repo, expert raters' review style is itself an LLM training signal, common code patterns memorized verbatim. Pick the worst and propose a contamination test.\n\nCommon bait answers:\n- \"Use HumanEval / SWE-bench.\" Different task. The question is about review quality, not solution correctness. Stay scoped.\n- \"Use LLM-as-judge with GPT-4.\" Fine, but show the anchoring prompt design that prevents judge-model bias.\n- \"Run model on the data, compare to experts.\" Vague. Specify the metric.\n\nVoters: judge on (a) metric concreteness (a formula a third party could reproduce), (b) train/test discipline addresses public-benchmark contamination concretely, (c) the named leakage class is realistic and the contamination test would actually catch it.",
+  "success_criteria": [
+    {
+      "name": "concrete_metric",
+      "type": "boolean",
+      "target": "true",
+      "weight": 35,
+      "description": "Names the exact pass/fail metric with formula or rubric. 'Compare to experts' fails."
+    },
+    {
+      "name": "leakage_defense",
+      "type": "boolean",
+      "target": "true",
+      "weight": 30,
+      "description": "Names a concrete public-benchmark contamination defense (rotation, holdout, watermark, etc). 'Hold out a test set' fails alone."
+    },
+    {
+      "name": "contamination_test",
+      "type": "boolean",
+      "target": "true",
+      "weight": 35,
+      "description": "Names ONE specific leakage class + an experimental test that would detect contamination. Generic 'data leakage is a risk' fails."
+    }
+  ]
+}

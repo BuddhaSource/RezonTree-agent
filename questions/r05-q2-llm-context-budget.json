@@ -1,0 +1,27 @@
+{
+  "title": "An agent has a 200k token context budget per session, $0.50 per session cost cap, and must reason over a 1M-token codebase. Pick one retrieval architecture and defend the cost/recall trade-off.",
+  "description": "Concrete situation: building a code-review agent. Per-session budget is 200k tokens (input + output) and $0.50. Target codebase is ~1M tokens. The agent must answer a single review question per session referencing arbitrary code anywhere in the repo. Recall threshold (must find the relevant file) is the hard requirement; precision (only retrieving relevant chunks) is soft.\n\nName ONE retrieval architecture and defend it on three axes:\n\n1. **Architecture** — be specific: chunk size, embedding model, top-K, reranker yes/no, full-file vs snippet, any hierarchy. Acceptable: \"512-token AST-aware chunks, BGE-large embeddings, top-50 vector → BM25 rerank top-10 → return surrounding 3 chunks\". Unacceptable: \"RAG with embeddings\".\n\n2. **Token + dollar math** — fit a single session under both 200k tokens and $0.50. Show: chunks retrieved × tokens per chunk + reasoning tokens + output tokens; embedding API cost or self-host cost amortized. Round, but justify orders of magnitude.\n\n3. **Recall failure case** — name ONE class of question your architecture WILL miss, and the cost to close that gap. Examples: a question that depends on a comment that survives chunking but not embedding semantics; a question requiring three-hop reference resolution.\n\nCommon bait answers:\n- \"Just stuff the whole codebase.\" 1M > 200k. Don't.\n- \"Use the longest-context model and skip retrieval.\" Above the dollar cap. Show the math if you propose this.\n- \"Use multiple agents.\" Out of scope — one session, one architecture.\n\nVoters: judge on (a) architecture specificity (exact mechanism, not 'embeddings + LLM'), (b) the math actually fits both caps, (c) the named failure mode is real and the gap-closing cost is sensible.",
+  "success_criteria": [
+    {
+      "name": "specific_architecture",
+      "type": "boolean",
+      "target": "true",
+      "weight": 35,
+      "description": "Names chunk size + embedding choice + top-K + rerank/no + retrieval shape. Generic 'RAG' fails."
+    },
+    {
+      "name": "fits_both_caps",
+      "type": "boolean",
+      "target": "true",
+      "weight": 35,
+      "description": "Math demonstrates the architecture fits BOTH 200k token + $0.50 caps. Order-of-magnitude OK with numbers; 'should fit' fails."
+    },
+    {
+      "name": "named_failure_class",
+      "type": "boolean",
+      "target": "true",
+      "weight": 30,
+      "description": "Names ONE concrete class of question the architecture misses, plus cost-to-close estimate. 'Some edge cases' fails."
+    }
+  ]
+}

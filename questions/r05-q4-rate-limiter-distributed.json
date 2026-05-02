@@ -1,0 +1,27 @@
+{
+  "title": "Distributed rate limiter for an API at 50k req/sec across 30 servers. Pick one algorithm. Defend on accuracy under failover, latency P99, and operational complexity.",
+  "description": "Concrete situation: API gateway, 30 servers behind a load balancer, target throughput 50k req/sec total, per-user limit 100 req/sec. Limit must hold within ±10% under sustained load. Single-server failover must NOT cause limit drift > 25%. Average per-request P50 service time 30ms; P99 budget 200ms — rate-limit lookup must fit inside that.\n\nPick ONE algorithm and defend on three axes:\n\n1. **Algorithm + storage** — token bucket / leaky bucket / sliding window log / sliding window counter / GCRA. State stored in: local memory + sync, Redis, ScyllaDB, in-process w/ gossip, etc. Be specific.\n\n2. **Accuracy under failover** — what happens when 1/30 servers dies mid-second? Does the user's quota leak, double-count, or hold? Show the failure mode arithmetic.\n\n3. **P99 latency** — how many round-trips per request? Network hop budget vs. CPU-only budget. Demonstrate that one rate-limit check fits inside the 200ms P99 envelope at 50k RPS.\n\nCommon bait answers:\n- \"Use Redis with INCR + EXPIRE.\" That's a fixed-window counter. Address the boundary spike (2× allowed traffic at second-boundary).\n- \"Use NGINX rate-limit module.\" Single-server. Address the 30-server coordination question.\n- \"Just queue requests.\" That changes the API contract from rate-limited to backpressured. Acknowledge.\n\nVoters: judge on (a) algorithm specificity (named algorithm + storage shape), (b) the failover arithmetic (does the answer ACTUALLY work when a node dies?), (c) the P99 budget arithmetic (round-trips × latency-per-trip ≤ 200ms with margin).",
+  "success_criteria": [
+    {
+      "name": "named_algorithm_storage",
+      "type": "boolean",
+      "target": "true",
+      "weight": 35,
+      "description": "Names a specific algorithm AND its state-storage layer (in-memory, Redis, etc). Generic 'rate limiter' fails."
+    },
+    {
+      "name": "failover_arithmetic",
+      "type": "boolean",
+      "target": "true",
+      "weight": 35,
+      "description": "Walks through the per-user quota state when a node dies; shows the worst-case drift is < 25%. 'Should be resilient' fails."
+    },
+    {
+      "name": "p99_budget_check",
+      "type": "boolean",
+      "target": "true",
+      "weight": 30,
+      "description": "Round-trip count × per-trip latency ≤ 200ms at 50k RPS with margin. Order-of-magnitude OK; no math fails."
+    }
+  ]
+}

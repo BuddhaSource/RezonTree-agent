@@ -1,0 +1,27 @@
+{
+  "title": "Three LLM agents pay each other on chain at 100 calls/min. Compare per-call USDC permits, batched session settle, and state channels. Pick one and defend with latency, gas, attack surface.",
+  "description": "Concrete situation: Three agents, alice/bob/carol, are running a research workflow at steady state. Alice calls bob 100×/min for embedding lookups; bob calls carol 100×/min for fact-checking. Each call has a fixed price — say 0.001 USDC. They want on-chain settlement (auditable, no custodial trust), they're on Base Sepolia, and they want sub-second perceived latency to the *initiator* of each call (bob's response to alice should not block on chain confirmation).\n\nThree candidate payment rails:\n\n**(a) Per-call USDC transfer with EIP-2612 permits.** Each call: alice signs a permit, calls bob's API, bob broadcasts the permit + transferFrom in one tx, returns the result. ~12-block finality on Base.\n\n**(b) Batched session settle.** Open a session at the start (e.g. alice deposits 60 USDC into an escrow contract for bob), accumulate calls offline, settle once at session end with a Merkle root of (call_id, amount) leaves signed by alice. Withdraw periodically.\n\n**(c) State channels.** Open a 2-of-2 multisig channel (alice ↔ bob), update an off-chain balance signed by both parties on each call, settle on close. Fraud proofs allow either party to publish the latest state.\n\nAnswer requirements:\n\n1. **Latency table.** For each rail: (i) latency added to each call (ms), (ii) latency added to settlement finality (s or block count), (iii) what blocks during disputes. Be specific to Base Sepolia's ~2s blocks.\n\n2. **Gas math.** For each rail at 100 calls/min × 3 agents = 18,000 calls/hr: (i) per-call gas, (ii) hourly gas total, (iii) cost in USDC at current Base gas price. Round, but justify the order of magnitude.\n\n3. **Attack surface.** For each rail, name the single most concerning attack and the mitigation. Examples: permit replay, channel grief by stale signature, escrow drain via batched settle with selectively-omitted leaves. Pick the *worst* attack per rail; don't enumerate.\n\n4. **Pick one** for the 100-call/min steady state. Defend the choice as a tradeoff explicit about which dimension you sacrifice and why that's acceptable here.\n\nCommon bait answers to dispatch:\n\n- \"State channels are always best for high frequency.\" State channels have a real cost: every party must stay online or risk losing funds to a stale signature. Address this.\n- \"Permits are simplest, just use those.\" 18,000 permit txs/hr at ~80k gas each = 1.4B gas/hr; this is real money on Base. Show the math.\n- \"Use a non-EVM L2.\" Out of scope — assume Base Sepolia for this scenario, justify if you propose moving.\n\nVoters: judge on (a) numerical specificity — are the latency + gas numbers grounded in Base's actual parameters?, (b) the worst-attack-per-rail picks — do they reflect each rail's real failure mode?, (c) the defended pick — is the sacrifice dimension named and acceptable for the scenario?",
+  "success_criteria": [
+    {
+      "name": "latency_gas_quantified",
+      "type": "boolean",
+      "target": "true",
+      "weight": 40,
+      "description": "Latency table covers all 3 rails with specific ms/s/blocks. Gas math at 18,000 calls/hr provides per-call gas + hourly USDC cost, grounded in Base. Order-of-magnitude OK with justification; 'fast'/'cheap' alone fails."
+    },
+    {
+      "name": "attack_surface_per_rail",
+      "type": "boolean",
+      "target": "true",
+      "weight": 30,
+      "description": "Each rail has ONE named worst-case attack + named mitigation. Attacks reflect the rail's actual failure mode (permit replay, channel grief, escrow leaf omission). Generic 'rugpull' or 'phishing' fails."
+    },
+    {
+      "name": "defended_pick",
+      "type": "boolean",
+      "target": "true",
+      "weight": 30,
+      "description": "Picks one rail for the 100-call/min scenario, names which dimension is sacrificed (latency/gas/liveness/complexity), AND addresses the 'state channels always win' or 'permits are simplest' baits with their real costs."
+    }
+  ]
+}

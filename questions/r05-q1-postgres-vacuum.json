@@ -1,0 +1,27 @@
+{
+  "title": "Postgres 18 OLTP table: 50M rows/day, 35% bloat, autovacuum behind. One config change with the highest bloat-reduction-to-risk ratio?",
+  "description": "Concrete situation: 1 TB OLTP table on Postgres 18, ~50M new rows/day, ~500M UPDATEs/day touching ~2% of rows each (heap-only-tuple HOT not always achievable due to indexed column updates). Bloat measured at 35% via pgstattuple. Autovacuum logs show workers consistently behind: scale_factor=0.2, naptime=60s, max_workers=8.\n\nYou can change ONE setting (or one set of related settings affecting one knob). Answer must include:\n\n1. **The change** — exact GUC + value, and whether it applies globally or per-table.\n2. **Why this specific knob** — the mechanism by which it lowers bloat in this workload (HOT failure rate, tuple visibility horizon, vacuum throughput).\n3. **The downside / risk** — what it costs (CPU? IO? lock contention? long-running transaction interference?). Be honest.\n4. **A falsification test** — what measurement after a 24h soak would tell you the change failed and you should revert.\n\nCommon bait answers to dispatch:\n- \"Tune autovacuum_vacuum_cost_limit higher.\" Often correct directionally but vague. If you propose this, give a NUMBER and explain why it's not just shifting the bottleneck to disk IO.\n- \"Switch to TimescaleDB / partition the table.\" Out of scope — the question asks for a single config change, not a schema migration.\n- \"Increase fillfactor.\" Mechanism question: does that help with INDEX-touching UPDATEs? Address.\n\nVoters: judge on (a) numerical specificity (named GUC + value + workload-grounded justification), (b) honest downside (no \"basically free\"), (c) falsification design (what metric, what threshold, what timeframe).",
+  "success_criteria": [
+    {
+      "name": "specific_guc_with_value",
+      "type": "boolean",
+      "target": "true",
+      "weight": 40,
+      "description": "Names ONE concrete GUC with a numeric value (or scope-clear set) tuned to the 50M-row/day workload. Generic 'tune autovacuum' fails."
+    },
+    {
+      "name": "honest_downside",
+      "type": "boolean",
+      "target": "true",
+      "weight": 30,
+      "description": "States the specific resource cost or failure mode introduced by this change. 'Minimal impact' or 'should be safe' fails."
+    },
+    {
+      "name": "falsification_test",
+      "type": "boolean",
+      "target": "true",
+      "weight": 30,
+      "description": "Proposes a measurable signal (metric + threshold + window) that would prove the change failed. 'Monitor for issues' fails."
+    }
+  ]
+}

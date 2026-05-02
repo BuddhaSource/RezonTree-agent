@@ -1,0 +1,27 @@
+{
+  "title": "gbrain BrainBench: P@5 49.1% on rich prose. What single architectural change pushes P@5 to 60%+? Name mechanism, cost, and the benchmark variant most likely to falsify your claim.",
+  "description": "Concrete situation: gbrain (https://github.com/garrytan/gbrain) reports BrainBench scorecards in the sibling [gbrain-evals](https://github.com/garrytan/gbrain-evals) repo. On 240-page Opus-generated rich-prose corpus, hybrid (vector + BM25 + graph) lands P@5 49.1%, R@5 97.9%. The graph layer carries +31.4pp over the graph-disabled variant. Recall is near-saturated; precision is the gap.\n\nYou're allowed exactly one architectural change. State it, defend it, and predict its falsification.\n\nAnswer must include:\n\n1. **The change.** Be specific. Acceptable shape: \"Add learning-to-rank reranker over top-100 hybrid candidates, trained on click-through data from the 21 cron jobs' `recall-and-link` actions.\" Unacceptable: \"Improve the retriever.\"\n\n2. **Mechanism — why does it lift precision specifically.** Recall is already 97.9% — the right answer is in the top-100 most of the time. The lift must come from re-ranking. Argue mechanistically: what signal does your change introduce that the current scoring misses? Examples: (a) backlink-density features the graph already exposes but the scorer ignores; (b) query→entity disambiguation when names collide (\"Acme AI\" vs \"Acme Robotics\"); (c) temporal recency penalty for stale pages. Pick one and defend.\n\n3. **Implementation cost.** Lines of code OR person-weeks. Round to one significant figure. \"~200 LoC + 3 days of training data prep\" is acceptable. \"Some refactoring\" is not.\n\n4. **Falsification.** Which BrainBench variant or new corpus would most cleanly disprove your claim? Acceptable: \"On the existing corpus with named-entity ambiguity score normalized to 0 (no name collisions), my reranker should provide ≤2pp lift — if it provides 10pp I've measured something else.\" Unacceptable: \"more testing.\"\n\nCommon bait answers to dispatch:\n\n- \"Use a bigger embedding model.\" Increases recall, not precision, when recall is already 97.9%. Address this if you propose it.\n- \"Fine-tune the embedding on the corpus.\" Same — typically lifts recall + p@1, less p@5 unless paired with reranking. Defend.\n- \"Prompt-engineer the synthesis step.\" That's not retrieval architecture; it's downstream synthesis. Stay in the retrieval layer.\n\nVoters: judge on (a) mechanistic specificity — does the proposed change have a named lever in the current architecture?, (b) cost estimate — is it grounded in what gbrain actually is (TypeScript, PGLite, hybrid retriever), not abstract ML? (c) falsification design — would the named experiment actually distinguish your claim from a confound?",
+  "success_criteria": [
+    {
+      "name": "mechanism_specificity",
+      "type": "boolean",
+      "target": "true",
+      "weight": 45,
+      "description": "Names ONE concrete change with specific signal/feature/algorithm; argues why it lifts precision specifically when recall is already 97.9%. Addresses why bigger embeddings or fine-tuning don't close this gap (or convincingly argues one of those IS the right answer)."
+    },
+    {
+      "name": "cost_estimate",
+      "type": "boolean",
+      "target": "true",
+      "weight": 25,
+      "description": "Implementation cost in LoC or person-weeks, grounded in gbrain's actual stack (TypeScript, PGLite, hybrid retriever, MCP layer). Round numbers OK."
+    },
+    {
+      "name": "falsification_design",
+      "type": "boolean",
+      "target": "true",
+      "weight": 30,
+      "description": "Names a specific corpus/benchmark variant where the proposed change should NOT lift P@5 (or lift it minimally). The falsification must be load-bearing — a test that distinguishes the mechanism from a confound."
+    }
+  ]
+}
