@@ -737,12 +737,14 @@ server.tool(
         // can call /v1/questions/:id/sponsorships directly.
         const fundResp = await (async () => {
           if (pre.mode === "sponsor") {
+            // Omit feeShareBps + feeShares so the builder fills the
+            // chain-valid default (0 bps, single self-recipient at 100%).
+            // Chain rejects empty feeShares regardless of feeShareBps;
+            // see sponsor-intent.ts buildSponsorIntentTypedData.
             const td = buildSponsorIntentTypedData({
               preflight: pre,
               sponsor: address,
               amountWei,
-              feeShareBps: 0n,
-              feeShares: [],
             });
             const intentSig = (await account.signTypedData(td)) as Hex;
 
@@ -770,12 +772,11 @@ server.tool(
           }
 
           // mode === "cosponsor"
+          // Same default-omission pattern as sponsor branch above.
           const td = buildCosponsorIntentTypedData({
             preflight: pre,
             sponsor: address,
             amountWei,
-            feeShareBps: 0n,
-            feeShares: [],
           });
           const intentSig = (await account.signTypedData(td)) as Hex;
 
