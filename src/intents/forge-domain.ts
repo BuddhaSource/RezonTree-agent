@@ -1,9 +1,9 @@
-// forge-domain.ts — EIP-712 domain for RezonForge intents (v2.5).
+// forge-domain.ts — EIP-712 domain for RezonForge intents (v2.7).
 //
 // Distinct from the wallet-login domain (services/wallet-auth.ts):
 // wallet-login targets the Oracle (name="RezonTreeOracle", version="1");
 // RezonForge intents target the on-chain RezonForge contract
-// (name="RezonForge", version="2.5"). A mismatch here produces
+// (name="RezonForge", version="2.7"). A mismatch here produces
 // signatures the contract rejects on-chain with a bad-signer revert —
 // so every field must match RezonForge.sol's constructor-set domain
 // byte-for-byte.
@@ -15,7 +15,7 @@
 // build-time hard-code in development.
 
 export const FORGE_DOMAIN_NAME = "RezonForge" as const;
-export const FORGE_DOMAIN_VERSION = "2.5" as const;
+export const FORGE_DOMAIN_VERSION = "2.7" as const;
 
 export interface ForgeIntentDomain {
   name: typeof FORGE_DOMAIN_NAME;
