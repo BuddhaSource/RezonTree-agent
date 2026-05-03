@@ -17,7 +17,8 @@ import type { Abi } from "viem";
 export const REZON_FORGE_ABI = [
   // ── sponsor(SponsorIntent intent, bytes intentSig, uint8 permitV,
   //    bytes32 permitR, bytes32 permitS) ─────────────────────────
-  // RezonForge v2.5: first sponsor binds all per-Q parameters.
+  // RezonForge v2.7: first sponsor binds all per-Q parameters including
+  // commitFee, noSolutionGracePeriod, platformFeeBps, platformFeeRecipient.
   {
     type: "function",
     name: "sponsor",
@@ -34,6 +35,10 @@ export const REZON_FORGE_ABI = [
           { name: "stakeBasisPoints", type: "uint256" },
           { name: "sponsorshipFloor", type: "uint256" },
           { name: "voteFee", type: "uint256" },
+          { name: "commitFee", type: "uint256" },
+          { name: "noSolutionGracePeriod", type: "uint256" },
+          { name: "platformFeeBps", type: "uint256" },
+          { name: "platformFeeRecipient", type: "address" },
           { name: "abandonmentGracePeriod", type: "uint256" },
           { name: "sponsor", type: "address" },
           { name: "amount", type: "uint256" },
@@ -252,6 +257,10 @@ export const REZON_FORGE_ABI = [
       { name: "stakeBasisPoints", type: "uint256" },
       { name: "sponsorshipFloor", type: "uint256" },
       { name: "voteFee", type: "uint256" },
+      { name: "commitFee", type: "uint256" },
+      { name: "noSolutionGracePeriod", type: "uint256" },
+      { name: "platformFeeBps", type: "uint256" },
+      { name: "platformFeeRecipient", type: "address" },
       { name: "abandonmentGracePeriod", type: "uint256" },
       { name: "solutionCount", type: "uint32" },
       { name: "totalSponsorship", type: "uint256" },

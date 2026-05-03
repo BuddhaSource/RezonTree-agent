@@ -1,4 +1,4 @@
-// Pure-function coverage for the SponsorIntent (v2.5) builders.
+// Pure-function coverage for the SponsorIntent (v2.7) builders.
 // 3-stack fence: field order + types here MUST match
 // contracts/src/RezonForge.sol's SPONSOR_INTENT_TYPEHASH +
 // internal/signer/sponsor_intent.go +
@@ -10,6 +10,8 @@ import {
   buildSponsorFundRequestBody,
   buildSponsorIntentTypedData,
   DEFAULT_SPONSOR_TTL_SECONDS,
+  MAX_PLATFORM_FEE_BPS,
+  MIN_NO_SOLUTION_GRACE,
   parseAmountToWei,
   SPONSOR_INTENT_TYPES,
 } from "./sponsor-intent.js";
@@ -48,6 +50,10 @@ function sponsorPreflight(
     stake_basis_points: "1000",
     sponsorship_floor: "1000000",
     vote_fee: "0",
+    commit_fee: "0",
+    no_solution_grace_period: String(MIN_NO_SOLUTION_GRACE),
+    platform_fee_bps: "0",
+    platform_fee_recipient: "0x0000000000000000000000000000000000000000",
     abandonment_grace_period: "86400",
     _actions: [],
     ...overrides,
@@ -76,7 +82,7 @@ function cosponsorPreflight(
 }
 
 describe("SPONSOR_INTENT_TYPES field order", () => {
-  it("matches RezonForge typehash byte-for-byte (15 fields)", () => {
+  it("matches RezonForge v2.7 typehash byte-for-byte (19 fields)", () => {
     expect(SPONSOR_INTENT_TYPES.SponsorIntent).toEqual([
       { name: "questionId", type: "bytes32" },
       { name: "oracle", type: "address" },
@@ -85,6 +91,10 @@ describe("SPONSOR_INTENT_TYPES field order", () => {
       { name: "stakeBasisPoints", type: "uint256" },
       { name: "sponsorshipFloor", type: "uint256" },
       { name: "voteFee", type: "uint256" },
+      { name: "commitFee", type: "uint256" },
+      { name: "noSolutionGracePeriod", type: "uint256" },
+      { name: "platformFeeBps", type: "uint256" },
+      { name: "platformFeeRecipient", type: "address" },
       { name: "abandonmentGracePeriod", type: "uint256" },
       { name: "sponsor", type: "address" },
       { name: "amount", type: "uint256" },
@@ -100,16 +110,16 @@ describe("SPONSOR_INTENT_TYPES field order", () => {
     ]);
   });
 
-  // Pinned typehash (RFC 2026-05 Round A: minSponsorship→sponsorshipFloor +
-  // minStakeFloor→stakeFloor): 0x2373... — matches Solidity
-  // SPONSOR_INTENT_TYPEHASH and Go SPONSOR_INTENT_TYPEHASH byte-for-byte.
+  // Pinned typehash (v2.7: +commitFee, +noSolutionGracePeriod,
+  // +platformFeeBps, +platformFeeRecipient after voteFee).
+  // Matches Solidity SPONSOR_INTENT_TYPEHASH and Go SPONSOR_INTENT_TYPEHASH.
   it("typehash text matches the pinned cross-stack invariant", () => {
     const text =
-      "SponsorIntent(bytes32 questionId,address oracle,address token,uint256 stakeFloor,uint256 stakeBasisPoints,uint256 sponsorshipFloor,uint256 voteFee,uint256 abandonmentGracePeriod,address sponsor,uint256 amount,uint256 feeShareBps,FeeShare[] feeShares,uint256 nonce,uint256 chainId,uint256 expiresAt)" +
+      "SponsorIntent(bytes32 questionId,address oracle,address token,uint256 stakeFloor,uint256 stakeBasisPoints,uint256 sponsorshipFloor,uint256 voteFee,uint256 commitFee,uint256 noSolutionGracePeriod,uint256 platformFeeBps,address platformFeeRecipient,uint256 abandonmentGracePeriod,address sponsor,uint256 amount,uint256 feeShareBps,FeeShare[] feeShares,uint256 nonce,uint256 chainId,uint256 expiresAt)" +
       "FeeShare(address recipient,uint256 basisPoints)";
     const hash = keccak256(stringToBytes(text));
     expect(hash).toBe(
-      "0x2373a121776f1812623b9db98de9b0269b341de348a783cdc527abeff1db41ac",
+      "0x46dfa40d30fc4115d754a56211df6a6344984283e98cecd57b207f22b5ba74e2",
     );
   });
 });
@@ -118,7 +128,7 @@ describe("buildSponsorIntentTypedData", () => {
   const NOW = 1_714_000_000;
   const policy = defaultFeeSharePolicy(SPONSOR);
 
-  it("composes the RezonForge v2.5 EIP-712 domain", () => {
+  it("composes the RezonForge v2.7 EIP-712 domain", () => {
     const td = buildSponsorIntentTypedData({
       preflight: sponsorPreflight(),
       sponsor: SPONSOR,
@@ -147,6 +157,10 @@ describe("buildSponsorIntentTypedData", () => {
     expect(td.message.stakeBasisPoints).toBe(BigInt("1000"));
     expect(td.message.sponsorshipFloor).toBe(BigInt("1000000"));
     expect(td.message.voteFee).toBe(BigInt("0"));
+    // v2.7 fields:
+    expect(td.message.commitFee).toBe(BigInt("0"));
+    expect(td.message.noSolutionGracePeriod).toBe(MIN_NO_SOLUTION_GRACE);
+    expect(td.message.platformFeeBps).toBe(BigInt("0"));
     expect(td.message.abandonmentGracePeriod).toBe(BigInt("86400"));
   });
 
@@ -259,6 +273,10 @@ describe("buildSponsorFundRequestBody", () => {
     expect(body.stake_basis_points).toBe("1000");
     expect(body.sponsorship_floor).toBe("1000000");
     expect(body.abandonment_grace_period).toBe("86400");
+    // v2.7 fields:
+    expect(body.commit_fee).toBe("0");
+    expect(body.no_solution_grace_period).toBe(String(MIN_NO_SOLUTION_GRACE));
+    expect(body.platform_fee_bps).toBe("0");
     expect(body.fee_share_bps).toBe("1");
     expect(body.fee_shares).toEqual([
       { recipient: SPONSOR, basis_points: "10000" },

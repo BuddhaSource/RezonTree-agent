@@ -1,4 +1,4 @@
-// abi.test.ts — pins the RezonForge v2.5 ABI shape as a
+// abi.test.ts — pins the RezonForge v2.7 ABI shape as a
 // cross-language contract. Any rename / reorder on RezonForge.sol
 // must mirror here; the test catches drift at SDK-test time
 // instead of at on-chain-revert time.
@@ -16,8 +16,8 @@ function findFunction(name: string) {
   );
 }
 
-describe("REZON_FORGE_ABI shape (v2.5)", () => {
-  it("exports the v2.5 agent-writable functions", () => {
+describe("REZON_FORGE_ABI shape (v2.7)", () => {
+  it("exports the v2.7 agent-writable functions", () => {
     expect(FORGE_WRITE_FUNCTIONS).toEqual([
       "sponsor",
       "cosponsor",
@@ -27,7 +27,7 @@ describe("REZON_FORGE_ABI shape (v2.5)", () => {
     ]);
   });
 
-  it("sponsor tuple matches SponsorIntent struct (15 fields in typehash order)", () => {
+  it("sponsor tuple matches SponsorIntent struct (19 fields in typehash order, v2.7)", () => {
     const fn = findFunction("sponsor");
     expect(fn).toBeDefined();
     const intentInput = fn!.inputs[0] as {
@@ -43,6 +43,11 @@ describe("REZON_FORGE_ABI shape (v2.5)", () => {
       "stakeBasisPoints",
       "sponsorshipFloor",
       "voteFee",
+      // v2.7 fields inserted after voteFee:
+      "commitFee",
+      "noSolutionGracePeriod",
+      "platformFeeBps",
+      "platformFeeRecipient",
       "abandonmentGracePeriod",
       "sponsor",
       "amount",

@@ -1,23 +1,27 @@
-// sponsor-intent.ts — SponsorIntent EIP-712 builders for RezonForge v2.5.
+// sponsor-intent.ts — SponsorIntent EIP-712 builders for RezonForge v2.7.
 //
 // Signed by the FIRST sponsor of a question. Carries the full per-Q
-// parameter set (oracle / token / floors / voteFee / abandonmentGrace)
-// that the chain pins on first contact; subsequent contributors use
-// CosponsorIntent (cosponsor-intent.ts) and inherit those params from
-// chain state.
+// parameter set (oracle / token / floors / voteFee / commitFee /
+// noSolutionGracePeriod / platformFeeBps / platformFeeRecipient /
+// abandonmentGrace) that the chain pins on first contact; subsequent
+// contributors use CosponsorIntent (cosponsor-intent.ts) and inherit
+// those params from chain state.
 //
 // 3-stack fence: Solidity (contracts/src/RezonForge.sol) ↔ Go
 // (internal/signer/sponsor_intent.go) ↔ TS (this file +
 // RezonTree-UI/lib/intents/sponsor-intent.ts). Any drift surfaces as
 // a bad-signer revert on chain.
 //
-// Pinned typehash (sponsor):
+// Pinned typehash (v2.7):
 //   SponsorIntent(bytes32 questionId,address oracle,address token,
 //     uint256 stakeFloor,uint256 stakeBasisPoints,uint256 sponsorshipFloor,
-//     uint256 voteFee,uint256 abandonmentGracePeriod,address sponsor,
+//     uint256 voteFee,uint256 commitFee,uint256 noSolutionGracePeriod,
+//     uint256 platformFeeBps,address platformFeeRecipient,
+//     uint256 abandonmentGracePeriod,address sponsor,
 //     uint256 amount,uint256 feeShareBps,FeeShare[] feeShares,
 //     uint256 nonce,uint256 chainId,uint256 expiresAt)
 //   FeeShare(address recipient,uint256 basisPoints)
+//   → 0x46dfa40d30fc4115d754a56211df6a6344984283e98cecd57b207f22b5ba74e2
 //
 // R-CHAIN-VERIFIES-INTENT — the signature is verified on-chain.
 // R-CLIENT-IS-TRUST-ORIGIN — client constructs from advertised params.
@@ -45,6 +49,11 @@ export const SPONSOR_INTENT_TYPES = {
     { name: "stakeBasisPoints", type: "uint256" },
     { name: "sponsorshipFloor", type: "uint256" },
     { name: "voteFee", type: "uint256" },
+    // v2.7 fields (must appear in this order to match typehash):
+    { name: "commitFee", type: "uint256" },
+    { name: "noSolutionGracePeriod", type: "uint256" },
+    { name: "platformFeeBps", type: "uint256" },
+    { name: "platformFeeRecipient", type: "address" },
     { name: "abandonmentGracePeriod", type: "uint256" },
     { name: "sponsor", type: "address" },
     { name: "amount", type: "uint256" },
@@ -64,6 +73,11 @@ export interface SponsorIntentMessage {
   stakeBasisPoints: bigint;
   sponsorshipFloor: bigint;
   voteFee: bigint;
+  // v2.7 fields:
+  commitFee: bigint;
+  noSolutionGracePeriod: bigint;
+  platformFeeBps: bigint;
+  platformFeeRecipient: `0x${string}`;
   abandonmentGracePeriod: bigint;
   sponsor: `0x${string}`;
   amount: bigint;
@@ -96,6 +110,11 @@ export const MAX_STAKE_BASIS_POINTS = 5000n;
 
 // ── Builder ──────────────────────────────────────────────────────
 
+// MAX_NO_SOLUTION_GRACE + MIN_NO_SOLUTION_GRACE mirror RezonForge v2.7 constants.
+export const MIN_NO_SOLUTION_GRACE = 1800n;  // 30 minutes
+export const MAX_NO_SOLUTION_GRACE = 86400n; // 24 hours
+export const MAX_PLATFORM_FEE_BPS = 2000n;   // 20%
+
 export function buildSponsorIntentTypedData(params: {
   preflight: FundPreflight;
   sponsor: `0x${string}`;
@@ -108,6 +127,11 @@ export function buildSponsorIntentTypedData(params: {
   stakeBasisPoints?: bigint;
   sponsorshipFloor?: bigint;
   voteFee?: bigint;
+  // v2.7 optional overrides (fall back to preflight defaults):
+  commitFee?: bigint;
+  noSolutionGracePeriod?: bigint;
+  platformFeeBps?: bigint;
+  platformFeeRecipient?: `0x${string}`;
   abandonmentGracePeriod?: bigint;
   expiresAtSeconds?: number;
   nonce?: bigint;
@@ -138,15 +162,25 @@ export function buildSponsorIntentTypedData(params: {
     BigInt(params.preflight.sponsorship_floor ?? "0");
   const voteFee =
     params.voteFee ?? BigInt(params.preflight.vote_fee ?? "0");
+  const commitFee =
+    params.commitFee ?? BigInt(params.preflight.commit_fee ?? "0");
+  const noSolutionGracePeriod =
+    params.noSolutionGracePeriod ??
+    BigInt(params.preflight.no_solution_grace_period ?? String(MIN_NO_SOLUTION_GRACE));
+  const platformFeeBps =
+    params.platformFeeBps ?? BigInt(params.preflight.platform_fee_bps ?? "0");
+  const platformFeeRecipient =
+    (params.platformFeeRecipient ??
+      (params.preflight.platform_fee_recipient as `0x${string}` | undefined) ??
+      "0x0000000000000000000000000000000000000000") as `0x${string}`;
   const abandonmentGracePeriod =
     params.abandonmentGracePeriod ??
     BigInt(params.preflight.abandonment_grace_period ?? "0");
 
-  // ─── Contract-mirroring fence (mega-audit T2) ────────────────
-  // R2-EB-1 / F15 / stakeBasisPoints cap match RezonForge.sol guards
-  // exactly. Rejecting here costs zero gas; signing-then-reverting
-  // costs one wasted broadcast. Keep parity with Go signer
-  // (internal/signer/sponsor_intent.go Validate) and Solidity guards.
+  // ─── Contract-mirroring fence (mega-audit T2 + v2.7) ────────
+  // R2-EB-1 / F15 / stakeBasisPoints cap + v2.7 platform-fee cap
+  // match RezonForge.sol guards exactly. Rejecting here costs zero
+  // gas; signing-then-reverting costs one wasted broadcast.
   if (sponsorshipFloor <= 0n) {
     throw new Error(
       "sponsor intent: sponsorshipFloor must be > 0 (chain reverts ForgeZeroSponsorshipFloor per R2-EB-1)",
@@ -160,6 +194,16 @@ export function buildSponsorIntentTypedData(params: {
   if (stakeBasisPoints > MAX_STAKE_BASIS_POINTS) {
     throw new Error(
       `sponsor intent: stakeBasisPoints ${stakeBasisPoints} exceeds max ${MAX_STAKE_BASIS_POINTS} (chain reverts on >5000)`,
+    );
+  }
+  if (platformFeeBps > MAX_PLATFORM_FEE_BPS) {
+    throw new Error(
+      `sponsor intent: platformFeeBps ${platformFeeBps} exceeds max ${MAX_PLATFORM_FEE_BPS} (chain reverts ForgePlatformFeeBpsTooHigh)`,
+    );
+  }
+  if (noSolutionGracePeriod < MIN_NO_SOLUTION_GRACE || noSolutionGracePeriod > MAX_NO_SOLUTION_GRACE) {
+    throw new Error(
+      `sponsor intent: noSolutionGracePeriod ${noSolutionGracePeriod} outside [${MIN_NO_SOLUTION_GRACE}, ${MAX_NO_SOLUTION_GRACE}]`,
     );
   }
 
@@ -178,6 +222,10 @@ export function buildSponsorIntentTypedData(params: {
       stakeBasisPoints,
       sponsorshipFloor,
       voteFee,
+      commitFee,
+      noSolutionGracePeriod,
+      platformFeeBps,
+      platformFeeRecipient,
       abandonmentGracePeriod,
       sponsor: params.sponsor,
       amount: params.amountWei,
@@ -215,6 +263,11 @@ export interface SponsorFundRequestBody {
   stake_basis_points: string;
   sponsorship_floor: string;
   vote_fee: string;
+  // v2.7 fields:
+  commit_fee: string;
+  no_solution_grace_period: string;
+  platform_fee_bps: string;
+  platform_fee_recipient: string;
   abandonment_grace_period: string;
 }
 
@@ -243,6 +296,10 @@ export function buildSponsorFundRequestBody(params: {
     stake_basis_points: m.stakeBasisPoints.toString(),
     sponsorship_floor: m.sponsorshipFloor.toString(),
     vote_fee: m.voteFee.toString(),
+    commit_fee: m.commitFee.toString(),
+    no_solution_grace_period: m.noSolutionGracePeriod.toString(),
+    platform_fee_bps: m.platformFeeBps.toString(),
+    platform_fee_recipient: m.platformFeeRecipient,
     abandonment_grace_period: m.abandonmentGracePeriod.toString(),
   };
 }

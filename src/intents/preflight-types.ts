@@ -50,6 +50,11 @@ export interface FundPreflight {
   stake_basis_points?: string;
   sponsorship_floor?: string;
   vote_fee?: string;
+  // v2.7 sponsor-only fields.
+  commit_fee?: string;
+  no_solution_grace_period?: string;
+  platform_fee_bps?: string;
+  platform_fee_recipient?: string;
   abandonment_grace_period?: string;
 
   _actions: HypermediaAction[];
