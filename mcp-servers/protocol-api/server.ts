@@ -706,13 +706,19 @@ server.tool(
 
 server.tool(
   "fund_question",
-  "Fund a question via RezonForge v2.5 flow: preflight → sign Sponsor or Cosponsor intent (auto-detected from preflight.mode) → POST /fund → USDC permit → broadcast sponsor()/cosponsor(). The first contributor of an OPEN question signs SponsorIntent (binds per-Q params on-chain); subsequent contributors sign CosponsorIntent (params inherited from chain state). Amount is in human USDC (e.g. '1.5' = 1.5 USDC, 1500000 wei at 6dp).",
+  "Fund a question via RezonForge v2.7 flow: preflight → sign Sponsor or Cosponsor intent (auto-detected from preflight.mode) → POST /sponsorships → USDC permit → broadcast sponsor()/cosponsor(). The first contributor signs SponsorIntent (binds per-Q params on-chain); subsequent contributors sign CosponsorIntent (inherits chain state). Amount is in human USDC (e.g. '1.5' = 1.5 USDC). IMPORTANT: check get_usdc_balance before calling — this pulls from your on-chain wallet. For first-sponsors, sponsorship_floor defaults to preflight.sponsorship_floor (usually 1 USDC) but can be overridden lower if your balance requires it.",
   {
     question_id: z.string().describe("The question ID to fund"),
     amount: z
       .string()
       .describe(
-        "Amount in human USDC, e.g. '1' for 1 USDC. Backend enforces min 1 USDC for L2 activation.",
+        "Amount in human USDC, e.g. '0.5' for 0.5 USDC. Must be >= sponsorship_floor.",
+      ),
+    sponsorship_floor: z
+      .string()
+      .optional()
+      .describe(
+        "Override the minimum per-contribution floor (human USDC). Defaults to preflight recommendation. Set lower if your balance is below the default 1 USDC floor — must be > 0 and <= amount.",
       ),
   },
   async (params) => {
@@ -745,6 +751,9 @@ server.tool(
               preflight: pre,
               sponsor: address,
               amountWei,
+              ...(params.sponsorship_floor
+                ? { sponsorshipFloor: parseAmountToWei(params.sponsorship_floor, pre.token.decimals) }
+                : {}),
             });
             const intentSig = (await account.signTypedData(td)) as Hex;
 
@@ -971,9 +980,66 @@ server.tool(
 
 // ── Wallet ───────────────────────────────────────────────────────────
 
+// get_usdc_balance reads the ERC-20 balanceOf directly from the chain.
+// This is DIFFERENT from get_wallet_transactions: the transactions endpoint
+// reflects protocol-internal ledger entries only (funds that moved through
+// RezonForge). A faucet-funded wallet with no protocol activity will show
+// 0 in transactions but may have a positive on-chain balance here.
+// Always check this first before concluding "insufficient balance".
+server.tool(
+  "get_usdc_balance",
+  "Read the on-chain USDC balance for your agent wallet directly from the ERC-20 contract. Use this to check your spendable balance before funding a question. NOTE: this is the raw chain balance — funds received via testnet faucet, transfers, or prior round payouts all appear here. The get_wallet_transactions endpoint tracks protocol-internal history only and may show 0 even when this balance is positive.",
+  {},
+  async () => {
+    const { publicClient, address } = getClients();
+    const raw = await publicClient.readContract({
+      address: USDC_ADDRESS,
+      abi: [
+        {
+          name: "balanceOf",
+          type: "function",
+          stateMutability: "view",
+          inputs: [{ name: "account", type: "address" }],
+          outputs: [{ name: "", type: "uint256" }],
+        },
+        {
+          name: "decimals",
+          type: "function",
+          stateMutability: "view",
+          inputs: [],
+          outputs: [{ name: "", type: "uint8" }],
+        },
+      ],
+      functionName: "balanceOf",
+      args: [address],
+    }) as bigint;
+    const decimals = 6; // USDC is always 6 decimals
+    const human = (Number(raw) / 10 ** decimals).toFixed(decimals);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              address,
+              token: USDC_ADDRESS,
+              balance_raw: raw.toString(),
+              balance_human: human,
+              decimals,
+              note: "On-chain balance. Fund a question to move tokens into the protocol.",
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+    };
+  },
+);
+
 server.tool(
   "get_wallet_transactions",
-  "View your on-chain wallet activity (contributions, commits, votes, refunds, claims). Wallet balance is derived from these transactions — there is no separate balance endpoint.",
+  "View your protocol-internal wallet activity (contributions, commits, votes, refunds, claims). This reflects funds that have moved through RezonForge only — NOT your raw on-chain USDC balance. Use get_usdc_balance to check spendable tokens before funding.",
   {
     limit: z.number().optional().describe("Max entries (default 20)"),
     before_block: z.number().optional().describe("Pagination: block number cursor"),
