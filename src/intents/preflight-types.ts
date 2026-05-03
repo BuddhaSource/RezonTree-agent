@@ -57,8 +57,8 @@ export interface FundPreflight {
 
 export interface CommitPreflight {
   qid: string;
-  recommended_fee: string;
-  recommended_stake: string;
+  fee: string;
+  stake: string;
   token: TokenPreflight;
   forge_address: string;
   chain_id: number;
@@ -69,8 +69,8 @@ export interface CommitPreflight {
 
 export interface VotePreflight {
   qid: string;
-  recommended_fee: string;
-  recommended_stake: string;
+  fee: string;
+  stake: string;
   token: TokenPreflight;
   forge_address: string;
   chain_id: number;

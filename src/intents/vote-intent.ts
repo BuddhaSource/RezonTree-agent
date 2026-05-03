@@ -219,9 +219,8 @@ export function buildVoteIntentTypedData(params: {
   const now = params.nowSeconds ?? Math.floor(Date.now() / 1000);
   const ttl = params.expiresAtSeconds ?? now + DEFAULT_VOTE_TTL_SECONDS;
   const nonce = params.nonce ?? BigInt(params.preflight.nonce_next);
-  const fee = params.feeWei ?? BigInt(params.preflight.recommended_fee || "0");
-  const stake =
-    params.stakeWei ?? BigInt(params.preflight.recommended_stake || "0");
+  const fee = params.feeWei ?? BigInt(params.preflight.fee || "0");
+  const stake = params.stakeWei ?? BigInt(params.preflight.stake || "0");
 
   return {
     domain: buildForgeDomain({

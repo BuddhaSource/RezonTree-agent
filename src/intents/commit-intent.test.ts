@@ -32,8 +32,8 @@ const CONTENT_HASH =
 function preflight(overrides: Partial<CommitPreflight> = {}): CommitPreflight {
   return {
     qid: QID,
-    recommended_fee: "500000",
-    recommended_stake: "5000000",
+    fee: "500000",
+    stake: "5000000",
     token: {
       contract_address: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
       decimals: 6,

@@ -41,8 +41,8 @@ const ROUTER = "0x00000000000000000000000000000000000000ab" as const;
 function preflight(overrides: Partial<VotePreflight> = {}): VotePreflight {
   return {
     qid: QID,
-    recommended_fee: "100000",
-    recommended_stake: "1000000",
+    fee: "100000",
+    stake: "1000000",
     token: {
       contract_address: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
       decimals: 6,
