@@ -186,9 +186,12 @@ export function buildSponsorIntentTypedData(params: {
       "sponsor intent: sponsorshipFloor must be > 0 (chain reverts ForgeZeroSponsorshipFloor per R2-EB-1)",
     );
   }
-  if (voteFee === 0n && stakeFloor === 0n) {
+  // F15: all three economic floors must not simultaneously be zero.
+  // commitFee was added in v2.7; previously only voteFee + stakeFloor were
+  // checked here, which meant a commitFee-only floor was incorrectly rejected.
+  if (voteFee === 0n && stakeFloor === 0n && commitFee === 0n) {
     throw new Error(
-      "sponsor intent: voteFee > 0 OR stakeFloor > 0 required (chain reverts ForgeZeroEconomicFloor per F15)",
+      "sponsor intent: at least one of voteFee, stakeFloor, or commitFee must be > 0 (chain reverts ForgeZeroEconomicFloor per F15)",
     );
   }
   if (stakeBasisPoints > MAX_STAKE_BASIS_POINTS) {

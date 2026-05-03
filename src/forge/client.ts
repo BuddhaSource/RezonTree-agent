@@ -1,4 +1,4 @@
-// client.ts — RezonForge v2.5 write client. Wraps viem's
+// client.ts — RezonForge v2.7 write client. Wraps viem's
 // writeContract for the agent-facing entry points (sponsor,
 // cosponsor, commitSolution, castVote, claim, publishSettlement).
 //
@@ -96,6 +96,12 @@ export async function broadcastSponsor(
         stakeBasisPoints: params.intent.stakeBasisPoints,
         sponsorshipFloor: params.intent.sponsorshipFloor,
         voteFee: params.intent.voteFee,
+        // v2.7 fields — must appear between voteFee and abandonmentGracePeriod
+        // to match the Solidity struct field order (ABI-encoding is positional):
+        commitFee: params.intent.commitFee,
+        noSolutionGracePeriod: params.intent.noSolutionGracePeriod,
+        platformFeeBps: params.intent.platformFeeBps,
+        platformFeeRecipient: params.intent.platformFeeRecipient,
         abandonmentGracePeriod: params.intent.abandonmentGracePeriod,
         sponsor: params.intent.sponsor,
         amount: params.intent.amount,
