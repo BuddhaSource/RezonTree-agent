@@ -27,7 +27,7 @@ import {
   buildForgeDomain,
   type ForgeIntentDomain,
 } from "./forge-domain.js";
-import type { FeeShare } from "./fee-share.js";
+import { defaultFeeSharePolicy, type FeeShare } from "./fee-share.js";
 import type { FundPreflight } from "./preflight-types.js";
 
 // ── Typed-data primitives ────────────────────────────────────────
@@ -83,9 +83,11 @@ export interface SponsorIntentTypedData {
 
 // ── TTL policy ───────────────────────────────────────────────────
 // R-INTENT-CARRIES-EXPIRY: every signed intent declares its own
-// TTL. 10 minutes is the default — past wallet-prompt + broadcast
-// latency, well under the backend's MaxPermitTTL of 15 min.
-export const DEFAULT_SPONSOR_TTL_SECONDS = 10 * 60;
+// TTL. 4 minutes — must stay under the backend's MaxPermitTTL ceiling
+// of 5 min. Earlier 10-min default produced silent VALIDATION_ERROR
+// on every sponsor (caught in May 2026 round). Aligned with the 4-min
+// commit/vote defaults for one-cap-fits-all uniformity across intents.
+export const DEFAULT_SPONSOR_TTL_SECONDS = 4 * 60;
 
 // MAX_STAKE_BASIS_POINTS mirrors RezonForge.MAX_STAKE_BASIS_POINTS
 // (5000 bps = 50%). Exceeding it reverts on-chain; mirror as a hard
@@ -98,8 +100,8 @@ export function buildSponsorIntentTypedData(params: {
   preflight: FundPreflight;
   sponsor: `0x${string}`;
   amountWei: bigint;
-  feeShareBps: bigint;
-  feeShares: FeeShare[];
+  feeShareBps?: bigint;
+  feeShares?: FeeShare[];
   oracle?: `0x${string}`;
   token?: `0x${string}`;
   stakeFloor?: bigint;
@@ -179,8 +181,12 @@ export function buildSponsorIntentTypedData(params: {
       abandonmentGracePeriod,
       sponsor: params.sponsor,
       amount: params.amountWei,
-      feeShareBps: params.feeShareBps,
-      feeShares: params.feeShares,
+      feeShareBps: params.feeShareBps ?? 0n,
+      // Chain rejects empty feeShares regardless of feeShareBps. Auto-default
+      // to a single self-recipient at 100% bps so the chain-valid minimum has
+      // one definition (mirrors commit/vote intent builders).
+      feeShares:
+        params.feeShares ?? defaultFeeSharePolicy(params.sponsor).shares,
       nonce,
       chainId: BigInt(params.preflight.chain_id),
       expiresAt: BigInt(expiresAt),

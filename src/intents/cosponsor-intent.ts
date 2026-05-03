@@ -25,7 +25,7 @@ import {
   buildForgeDomain,
   type ForgeIntentDomain,
 } from "./forge-domain.js";
-import type { FeeShare } from "./fee-share.js";
+import { defaultFeeSharePolicy, type FeeShare } from "./fee-share.js";
 import type { FundPreflight } from "./preflight-types.js";
 
 // ── Typed-data primitives ────────────────────────────────────────
@@ -67,7 +67,9 @@ export interface CosponsorIntentTypedData {
   message: CosponsorIntentMessage;
 }
 
-export const DEFAULT_COSPONSOR_TTL_SECONDS = 10 * 60;
+// 4 min — must stay under backend MaxPermitTTL ceiling of 5 min.
+// See sponsor-intent.ts for rationale (same fix, same root cause).
+export const DEFAULT_COSPONSOR_TTL_SECONDS = 4 * 60;
 
 // ── Builder ──────────────────────────────────────────────────────
 
@@ -75,8 +77,8 @@ export function buildCosponsorIntentTypedData(params: {
   preflight: FundPreflight;
   sponsor: `0x${string}`;
   amountWei: bigint;
-  feeShareBps: bigint;
-  feeShares: FeeShare[];
+  feeShareBps?: bigint;
+  feeShares?: FeeShare[];
   expiresAtSeconds?: number;
   nonce?: bigint;
   nowSeconds?: number;
@@ -97,8 +99,11 @@ export function buildCosponsorIntentTypedData(params: {
       questionId: params.preflight.qid as `0x${string}`,
       sponsor: params.sponsor,
       amount: params.amountWei,
-      feeShareBps: params.feeShareBps,
-      feeShares: params.feeShares,
+      feeShareBps: params.feeShareBps ?? 0n,
+      // Chain rejects empty feeShares regardless of feeShareBps. Auto-default
+      // to a single self-recipient at 100% bps (matches sponsor/commit/vote).
+      feeShares:
+        params.feeShares ?? defaultFeeSharePolicy(params.sponsor).shares,
       nonce,
       chainId: BigInt(params.preflight.chain_id),
       expiresAt: BigInt(expiresAt),

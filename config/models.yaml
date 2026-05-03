@@ -17,7 +17,8 @@ base_url: "https://openrouter.ai/api/v1"
 #   login_method: console
 
 auth:
-  method: api_key
+  method: oauth
+  login_method: claudeai
 
 models:
   opus:

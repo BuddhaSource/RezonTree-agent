@@ -21,6 +21,20 @@ BOUNTY="${2:-15}"
 : "${RT_AGENT_MNEMONIC:?RT_AGENT_MNEMONIC not set. Run 'pnpm testnet:bootstrap' first — see docs/testnet-migration-plan.md}"
 : "${RT_AGENT_BACKEND_URL:=http://localhost:8080}"
 
+# Auth method for the agentkit subprocesses. Defaults to oauth (Claude.ai
+# session) so the round runs without ANTHROPIC_API_KEY. Override via env:
+#   AGENT_AUTH=oauth          → Claude.ai session (default)
+#   AGENT_AUTH=oauth:console  → Anthropic Console OAuth billing
+#   AGENT_AUTH=api_key        → ANTHROPIC_API_KEY / OPENROUTER_API_KEY
+#   AGENT_AUTH=bedrock        → AWS Bedrock (uses AWS credentials)
+#   AGENT_AUTH=vertex         → Google Vertex AI
+#   AGENT_AUTH=               → empty: use models.yaml `auth:` block as-is
+AGENT_AUTH="${AGENT_AUTH:-oauth}"
+AUTH_FLAG=""
+if [ -n "$AGENT_AUTH" ]; then
+  AUTH_FLAG="--auth $AGENT_AUTH"
+fi
+
 if ! pnpm --silent exec tsc --noEmit >/dev/null 2>&1; then
   echo "ERROR: TypeScript build broken. Run 'pnpm build' and fix errors before running a round."
   exit 2
@@ -38,12 +52,12 @@ echo ""
 
 # Phase 1: Questioners create problems (run in parallel)
 echo "── Phase 1: Asking Questions ──"
-$CLI agent run questioner-01 \
+$CLI agent run questioner-01 $AUTH_FLAG \
   -p "Create a problem about: $TOPIC. Set a bounty of $BOUNTY credits. Set the voting deadline to 48 hours from now." \
   -v > "$LOG_DIR/questioner-01.log" 2>&1 &
 PID_Q1=$!
 
-$CLI agent run questioner-02 \
+$CLI agent run questioner-02 $AUTH_FLAG \
   -p "Create a different problem related to: $TOPIC. Set a bounty of $BOUNTY credits. Set the voting deadline to 48 hours from now. Make sure your question takes a unique angle." \
   -v > "$LOG_DIR/questioner-02.log" 2>&1 &
 PID_Q2=$!
@@ -57,7 +71,7 @@ echo ""
 # Phase 2: Solvers submit solutions (run in parallel)
 echo "── Phase 2: Solving ──"
 for i in 02 03 04 05; do
-  $CLI agent run solver-$i \
+  $CLI agent run solver-$i $AUTH_FLAG \
     -p "List open problems on the RezonTree protocol with list_problems. Find problems about: $TOPIC. Choose one to solve, read it carefully, then submit a thorough solution. Validate first with validate_solution, then submit with submit_solution." \
     -v > "$LOG_DIR/solver-${i}-answer.log" 2>&1 &
   eval "PID_S${i}=$!"
@@ -71,7 +85,7 @@ echo ""
 # Phase 3: Solvers vote on solutions (run in parallel)
 echo "── Phase 3: Voting ──"
 for i in 02 03 04 05; do
-  $CLI agent run solver-$i \
+  $CLI agent run solver-$i $AUTH_FLAG \
     -p "List open problems on the RezonTree protocol with list_problems. Find problems about: $TOPIC. For each problem, list_solutions and evaluate them. Vote on the best solutions using cast_vote. You have 100 conviction points per problem. Be thorough in your evaluation." \
     -v > "$LOG_DIR/solver-${i}-vote.log" 2>&1 &
   eval "PID_V${i}=$!"
