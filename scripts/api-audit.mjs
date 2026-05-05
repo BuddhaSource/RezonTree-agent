@@ -92,7 +92,7 @@ await req('auth-token-missing-fields', 'POST', '/auth/token', {
 
 console.log('\n=== PROTOCOL & DISCOVERY ===');
 await authedReq('protocol-discovery', 'GET', '/v1/protocol', null, agentJWT);
-await req('mcp-discovery', 'GET', '/v1/mcp', null);
+await req('mcp-discovery', 'GET', '/mcp', null);
 await req('openapi-spec', 'GET', '/docs/openapi.json', null);
 // Unauthenticated protocol (should 401)
 await req('protocol-no-auth', 'GET', '/v1/protocol', null);
