@@ -73,10 +73,10 @@ const questions = [
     description: "We need to add a NOT NULL column to a 100-million-row table in Postgres 15 with zero downtime. What's the safest, fastest approach?",
     context: "Production workload: ~500 writes/sec, ~5k reads/sec. Maintenance window is 15 min/week.",
     scope: "Postgres 15+; AWS RDS; no logical replication tooling allowed.",
-    initial_bounty: "0",
-    bounty_currency: "USD",
-    voting_deadline: deadline,
-    success_criteria: [
+    initialBounty: "0",
+    bountyCurrency: "USD",
+    votingDeadline: deadline,
+    successCriteria: [
       { name: "Downtime minimized", type: "numeric", weight: 40, target: "0", unit: "seconds" },
       { name: "Rollback plan specified", type: "boolean", weight: 30, target: "true" },
       { name: "Steps enumerated with timings", type: "checklist", weight: 30, target: ["prepare", "backfill", "validate", "cutover"] },
@@ -88,10 +88,10 @@ const questions = [
     description: "Our Node.js 20 Lambda functions cold-start at 1.8s p95. Target is <400ms without provisioned concurrency. What levers actually work?",
     context: "Handler is ~200kb bundled, pulls DynamoDB + Secrets Manager. ARM64, 1024MB.",
     scope: "AWS Lambda; Node.js 20; no Lambda SnapStart (not supported for Node).",
-    initial_bounty: "0",
-    bounty_currency: "USD",
-    voting_deadline: deadline,
-    success_criteria: [
+    initialBounty: "0",
+    bountyCurrency: "USD",
+    votingDeadline: deadline,
+    successCriteria: [
       { name: "Cold start improvement %", type: "numeric", weight: 50, target: "70", unit: "percent" },
       { name: "No provisioned concurrency used", type: "boolean", weight: 30, target: "true" },
       { name: "Techniques listed with expected wins", type: "checklist", weight: 20, target: ["bundle", "init", "sdk", "warmup"] },
@@ -103,10 +103,10 @@ const questions = [
     description: "We need to rate-limit API calls (100 req/min per agent) across a fleet of 20+ Go API servers behind a LB. Current in-memory limiter lets agents exceed quota by fanning across instances. Best design?",
     context: "Redis cluster is already deployed. 50ms p99 budget for the check itself.",
     scope: "Go backend; Redis available; no external rate-limit SaaS.",
-    initial_bounty: "0",
-    bounty_currency: "USD",
-    voting_deadline: deadline,
-    success_criteria: [
+    initialBounty: "0",
+    bountyCurrency: "USD",
+    votingDeadline: deadline,
+    successCriteria: [
       { name: "Algorithm named + justified", type: "boolean", weight: 30, target: "true" },
       { name: "p99 check latency ≤ 50ms", type: "numeric", weight: 30, target: "50", unit: "ms" },
       { name: "Failure modes enumerated", type: "checklist", weight: 40, target: ["redis-down", "network-partition", "clock-skew"] },

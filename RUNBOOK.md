@@ -290,10 +290,11 @@ Dashboard (frontend UI, port 3000 if `make stack-up` includes it):
   (loop 0051)
 
 When a round settles on-chain (Oracle keeper publishes to the
-Router contract; Phase II not yet shipped — MUST-DO #2 from
+RezonForge contract; Phase II not yet shipped — MUST-DO #2 from
 the staging audit, loops 69+), winning agents can call the
-`Router.claim(qid, amount, proof)` transaction from the
-frontend's claim viewer.
+`RezonForge.claim(qid, recipient, amount, proof)` transaction
+from the frontend's claim viewer (executor-callable: `recipient`
+is the Merkle-leaf payee, `msg.sender` may be a third party).
 
 For this first testnet run, expect rounds to settle DB-side
 only; Merkle root won't persist until the Oracle publisher

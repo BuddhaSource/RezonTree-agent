@@ -1,7 +1,7 @@
 # Agent SDK scripts — index
 
 Each script targets a specific scenario against the live RezonForge
-v2.5 deployment on Base Sepolia. They compose a backend + the
+deployment on Base Sepolia. They compose a backend + the
 Router; the backend is reached via `RT_BACKEND_URL` (default
 `http://localhost:8080`).
 
@@ -9,7 +9,7 @@ Router; the backend is reached via `RT_BACKEND_URL` (default
 
 | Script | Purpose |
 |---|---|
-| **`run-battle.ts`** | Walks every scenario in `battle-scenarios.yaml` through the full v2.5 lifecycle (sponsor → cosponsor → commit → vote → settle → claim → bond refund) and runs the attack lane. Writes `battle-report.json` with finance reconciliation + sybil findings + attack-defense outcomes. |
+| **`run-battle.ts`** | Walks every scenario in `battle-scenarios.yaml` through the full RezonForge lifecycle (sponsor → cosponsor → commit → vote → settle → claim → bond refund) and runs the attack lane. Writes `battle-report.json` with finance reconciliation + sybil findings + attack-defense outcomes. |
 | **`battle-scenarios.yaml`** | 24 lifecycle scenarios across technical / governance / policy / design / economic domains, plus 5 sybil scenarios + 6 attack vectors. |
 | **`finance-audit.ts`** | Module that snapshots wallet + Router USDC balances, reconciles per-problem inflows vs distributions, and computes chain-total drift. Imported by `run-battle.ts`; can also be `import`ed from one-off audit scripts. |
 
@@ -87,12 +87,12 @@ scenario shows up in `perProblem` with `notes`.
 
 - `broadcast-full.ts` / `broadcast-fund.ts` / `broadcast-multi-party.ts`
   / `broadcast-multi-round.ts` / `broadcast-swarm.ts` /
-  `broadcast-swarm-full.ts` / `simulate-flow.ts` — pre-v2.5 prototypes
-  that imported `fund-intent` (renamed to `sponsor-intent` /
-  `cosponsor-intent` in v2.5). Their lifecycle coverage now lives in
+  `broadcast-swarm-full.ts` / `simulate-flow.ts` — legacy prototypes
+  that imported `fund-intent` (since renamed to `sponsor-intent` /
+  `cosponsor-intent`). Their lifecycle coverage now lives in
   `run-battle.ts` driven by `battle-scenarios.yaml`.
 - `probe-router-v24.ts` / `probe-0xsplits.ts` — rejected feasibility
-  probes (v2.3 audit pass).
+  probes from earlier audit cycles.
 - `deposit-and-round.mjs` / `probe-auth.mjs` — pre-Phase-H email/
   password / internal-ledger flows.
 
@@ -100,7 +100,7 @@ scenario shows up in `perProblem` with `notes`.
 
 All scripts source `.env` for:
 - `RT_AGENT_MNEMONIC` — operator BIP-44 mnemonic (wallets 0..N derived)
-- `RT_FORGE_ADDRESS` — RezonForge v2.5 deploy address on Base Sepolia
+- `RT_FORGE_ADDRESS` — RezonForge deploy address on Base Sepolia
 - `RT_RPC_URL` — defaults to `https://sepolia.base.org`
 - `RT_BACKEND_URL` — defaults to `http://localhost:8080`
 - `RT_PLATFORM_FEE_BPS` — settlement fee in basis points (default 1000 = 10%)

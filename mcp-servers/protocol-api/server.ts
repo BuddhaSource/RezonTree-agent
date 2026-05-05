@@ -426,13 +426,16 @@ server.tool(
       .describe("Assumptions that constrain the question"),
   },
   async (params) => {
+    // Wire body is camelCase (R-NAME-MATCHES-CHAIN). The MCP tool
+    // params remain snake_case (MCP SDK convention) so callers don't
+    // see a contract change; map to the backend wire shape here.
     const result = await apiCall("POST", "/v1/questions", {
       title: params.title,
       description: params.description,
-      bounty_amount: params.bounty_amount,
-      bounty_currency: params.bounty_currency || "USD",
-      voting_deadline: params.voting_deadline,
-      success_criteria: params.success_criteria,
+      initialBounty: params.bounty_amount,
+      bountyCurrency: params.bounty_currency || "USD",
+      votingDeadline: params.voting_deadline,
+      successCriteria: params.success_criteria,
       context: params.context,
       example: params.example,
       scope: params.scope,
@@ -509,15 +512,22 @@ server.tool(
           `/v1/questions/${params.question_id}/solutions/draft?submitter=${address}`,
         )) as CommitPreflight;
 
-        // Backend hashes the FULL solution body ({body, reasoning_tree,
+        // Backend hashes the FULL solution body ({body, reasoningTree,
         // claims}) into intent.contentHash via canonicalStringify; the
         // /solutions POST below must carry the same bytes so the hashes
         // align. Hashing just `params.body` (a string) is wrong — backend
-        // expects the structured object hash.
+        // expects the structured object hash. Wire shape is camelCase
+        // (R-NAME-MATCHES-CHAIN); map MCP-snake params to the backend
+        // wire fields here.
         const contentHash = computeContentHash({
           body: params.body,
-          reasoning_tree: params.reasoning_tree,
-          claims: params.claims,
+          reasoningTree: params.reasoning_tree,
+          claims: params.claims.map((c) => ({
+            criterionId: c.criterion_id,
+            value: c.value,
+            argument: c.argument,
+            falsifiableBy: c.falsifiable_by,
+          })),
         });
         const td = buildCommitIntentTypedData({
           preflight: pre,
@@ -532,16 +542,21 @@ server.tool(
           "POST",
           `/v1/questions/${params.question_id}/commit`,
           buildSubmitCommitRequestBody({ typedData: td, signature: intentSig }),
-        )) as { intent_hash: string };
+        )) as { intentHash: string };
 
         const solResp = (await apiCall(
           "POST",
           `/v1/questions/${params.question_id}/solutions`,
           {
-            intent_hash: commitResp.intent_hash,
+            intentHash: commitResp.intentHash,
             body: params.body,
-            reasoning_tree: params.reasoning_tree,
-            claims: params.claims,
+            reasoningTree: params.reasoning_tree,
+            claims: params.claims.map((c) => ({
+              criterionId: c.criterion_id,
+              value: c.value,
+              argument: c.argument,
+              falsifiableBy: c.falsifiable_by,
+            })),
           },
         )) as { id: string };
 
@@ -564,7 +579,7 @@ server.tool(
 
         return {
           solution_id: solResp.id,
-          intent_hash: commitResp.intent_hash,
+          intent_hash: commitResp.intentHash,
           commit_tx_hash: txHash,
           fee_paid: td.message.feeAmount.toString(),
           stake_paid: td.message.stakeAmount.toString(),
@@ -625,9 +640,9 @@ server.tool(
     const { walletClient, publicClient, privateKey, address } = getClients();
 
     // Canonicalise allocations for the intent signer
-    // (signer.Allocation: {solution_id, points}).
+    // (signer.Allocation: {solutionId, points}).
     const canonicalAllocs: Allocation[] = params.allocations.map((a) => ({
-      solution_id: a.solution_id,
+      solutionId: a.solution_id,
       points: a.conviction_points,
     }));
 
@@ -640,24 +655,23 @@ server.tool(
           `/v1/questions/${params.question_id}/votes/draft?voter=${address}`,
         )) as VotePreflight;
 
-        if (!pre.vote_salt || !pre.vote_salt_token) {
+        if (!pre.voteSalt || !pre.voteSaltToken) {
           throw new Error(
-            "vote preflight missing vote_salt; backend requires it for privacy",
+            "vote preflight missing voteSalt; backend requires it for privacy",
           );
         }
-        const voteSalt = pre.vote_salt as `0x${string}`;
-        const voteSaltToken = pre.vote_salt_token as `0x${string}`;
+        const voteSalt = pre.voteSalt as `0x${string}`;
+        const voteSaltToken = pre.voteSaltToken as `0x${string}`;
         const allocationsHash = computeAllocationsHash(canonicalAllocs, voteSalt);
-        // Bind the intent's expiresAt to the salt's expires_at —
+        // Bind the intent's expiresAt to the salt's expiresAt —
         // otherwise the HMAC over (voter, salt, expiresAt) embedded
-        // in vote_salt_token won't verify against the intent we sign,
-        // and the backend rejects with "vote_salt_token rejected".
+        // in voteSaltToken won't verify against the intent we sign,
+        // and the backend rejects with "voteSaltToken rejected".
         const td = buildVoteIntentTypedData({
           preflight: pre,
           voter: address,
           allocationsHash,
-          expiresAtSeconds: (pre as { vote_salt_expires_at?: number })
-            .vote_salt_expires_at,
+          expiresAtSeconds: pre.voteSaltExpiresAt,
         });
         const intentSig = (await privateKeyToAccount(privateKey).signTypedData(
           td,
@@ -673,7 +687,7 @@ server.tool(
             voteSalt,
             voteSaltToken,
           }),
-        )) as { intent_hash: string };
+        )) as { intentHash: string };
 
         const permitValue =
           BigInt(td.message.feeAmount) + BigInt(td.message.stakeAmount);
@@ -693,7 +707,7 @@ server.tool(
         await awaitReceipt(publicClient, txHash);
 
         return {
-          intent_hash: voteResp.intent_hash,
+          intent_hash: voteResp.intentHash,
           vote_tx_hash: txHash,
           stake_paid: td.message.stakeAmount.toString(),
         };
@@ -761,7 +775,7 @@ server.tool(
               "POST",
               `/v1/questions/${params.question_id}/sponsorships`,
               buildSponsorFundRequestBody({ typedData: td, signature: intentSig }),
-            )) as { intent_hash: string; contribution_id: string };
+            )) as { intentHash: string; contributionId: string };
 
             const permit = await signUSDCPermit(walletClient, publicClient, {
               usdc: USDC_ADDRESS,
@@ -793,7 +807,7 @@ server.tool(
             "POST",
             `/v1/questions/${params.question_id}/sponsorships`,
             buildCosponsorFundRequestBody({ typedData: td, signature: intentSig }),
-          )) as { intent_hash: string; contribution_id: string };
+          )) as { intentHash: string; contributionId: string };
 
           const permit = await signUSDCPermit(walletClient, publicClient, {
             usdc: USDC_ADDRESS,
@@ -814,8 +828,8 @@ server.tool(
 
         return {
           mode: fundResp.mode,
-          contribution_id: fundResp.contribution_id,
-          intent_hash: fundResp.intent_hash,
+          contribution_id: fundResp.contributionId,
+          intent_hash: fundResp.intentHash,
           fund_tx_hash: fundResp.txHash,
           amount_wei: amountWei.toString(),
         };
@@ -879,20 +893,25 @@ server.tool(
       // the persisted RoundResult and returns the proof for this
       // address; amount is in USD decimal so we shift to USDC 6dp
       // wei to match the on-chain leaf encoding.
+      // Backend response is camelCase (R-NAME-MATCHES-CHAIN). The
+      // claim endpoint returns `qid` (chain bytes32 hex) at the top
+      // level — preferred over the legacy `questionId` string for the
+      // chain-bound qid we hand to Router.claim.
       const claim = (await apiCall(
         "GET",
         `/v1/questions/${params.question_id}/claims/${address}`,
       )) as {
-        question_id: string | null;
+        questionId: string;
+        qid: string | null;
         role: string;
         amount: string;
         proof: string[];
-        merkle_root: string | null;
+        merkleRoot: string | null;
       };
 
-      if (!claim.question_id) {
+      if (!claim.qid) {
         throw new Error(
-          `Question ${params.question_id} has no chain_question_id yet — round may not be funded on-chain.`,
+          `Question ${params.question_id} has no chain qid yet — round may not be funded on-chain.`,
         );
       }
       if (claim.role === "none") {
@@ -900,13 +919,13 @@ server.tool(
           `Address ${address} did not participate in question ${params.question_id}; nothing to claim.`,
         );
       }
-      if (!claim.merkle_root) {
+      if (!claim.merkleRoot) {
         throw new Error(
-          `Round for question ${params.question_id} is not yet settled on-chain — no merkle_root persisted. Wait for SettlementPublished, then retry.`,
+          `Round for question ${params.question_id} is not yet settled on-chain — no merkleRoot persisted. Wait for SettlementPublished, then retry.`,
         );
       }
 
-      questionId = claim.question_id as Hex;
+      questionId = claim.qid as Hex;
       amountWei = parseUnits(claim.amount as `${number}`, 6); // USDC 6dp
       proof = claim.proof as Hex[];
       role = claim.role;

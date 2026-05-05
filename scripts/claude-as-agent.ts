@@ -228,8 +228,8 @@ async function actSponsor(idx: number, qid: string, amount: string) {
 
 async function actCommit(idx: number, qid: string, body: {
   body: string;
-  reasoning_tree: Array<{ because: string; therefore: string }>;
-  claims: Array<{ criterion_id: string; value: unknown; argument: string; falsifiable_by: string }>;
+  reasoningTree: Array<{ because: string; therefore: string }>;
+  claims: Array<{ criterionId: string; value: unknown; argument: string; falsifiableBy: string }>;
 }) {
   const { account, publicClient, walletClient, address } = clientsFor(idx);
   const pre = (await api(
@@ -243,10 +243,10 @@ async function actCommit(idx: number, qid: string, body: {
   });
   const intentSig = (await account.signTypedData(td)) as Hex;
   const commitResp = (await api(idx, "POST", `/v1/questions/${qid}/commit`,
-    buildSubmitCommitRequestBody({ typedData: td, signature: intentSig }))) as { intent_hash: string };
+    buildSubmitCommitRequestBody({ typedData: td, signature: intentSig }))) as { intentHash: string };
   const solResp = await api(idx, "POST", `/v1/questions/${qid}/solutions`, {
-    intent_hash: commitResp.intent_hash,
-    body: body.body, reasoning_tree: body.reasoning_tree, claims: body.claims,
+    intentHash: commitResp.intentHash,
+    body: body.body, reasoningTree: body.reasoningTree, claims: body.claims,
   });
   const permitValue = BigInt(td.message.feeAmount) + BigInt(td.message.stakeAmount);
   const permit = await signUSDCPermit(walletClient, publicClient, {
@@ -257,8 +257,8 @@ async function actCommit(idx: number, qid: string, body: {
   });
   await awaitReceipt(publicClient, txHash);
   console.log(JSON.stringify({
-    txHash, intent_hash: commitResp.intent_hash, solution: solResp,
-    fee: td.message.feeAmount.toString(), stake: td.message.stakeAmount.toString(),
+    txHash, intentHash: commitResp.intentHash, solution: solResp,
+    feeAmount: td.message.feeAmount.toString(), stakeAmount: td.message.stakeAmount.toString(),
   }, null, 2));
 }
 
@@ -267,7 +267,10 @@ async function actVote(idx: number, qid: string, allocations: Allocation[]) {
   const pre = (await api(
     idx, "GET", `/v1/questions/${qid}/votes/draft`,
   )) as VotePreflight;
-  const allocationsHash = computeAllocationsHash(allocations, pre.vote_salt);
+  if (!pre.voteSalt || !pre.voteSaltToken) {
+    throw new Error("vote preflight missing voteSalt/voteSaltToken; pass ?voter= to draft endpoint");
+  }
+  const allocationsHash = computeAllocationsHash(allocations, pre.voteSalt as `0x${string}`);
   const td = buildVoteIntentTypedData({
     preflight: pre, voter: address, allocationsHash, feeShareBps: 0n,
     feeShares: [{ recipient: address, basisPoints: 10000n }],
@@ -276,7 +279,9 @@ async function actVote(idx: number, qid: string, allocations: Allocation[]) {
   const intentSig = (await account.signTypedData(td)) as Hex;
   const resp = await api(idx, "POST", `/v1/questions/${qid}/votes`,
     buildSubmitVoteIntentRequestBody({
-      typedData: td, signature: intentSig, allocations, voteSaltToken: pre.vote_salt_token,
+      typedData: td, signature: intentSig, allocations,
+      voteSalt: pre.voteSalt as `0x${string}`,
+      voteSaltToken: pre.voteSaltToken as `0x${string}`,
     }));
   const permit = await signUSDCPermit(walletClient, publicClient, {
     usdc: USDC, spender: FORGE!, value: td.message.stakeAmount,

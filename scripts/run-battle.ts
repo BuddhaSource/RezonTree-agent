@@ -449,19 +449,19 @@ class BattleRunner {
 
     // 1) Authed sponsor + create question (free L1 first; sponsor amount comes via /fund).
     const sponsor = await loginWallet(sponsorWallet);
-    const question = await call<{ id: string; success_criteria: { id: string; name: string }[] }>(
+    const question = await call<{ id: string; successCriteria: { id: string; name: string }[] }>(
       "POST",
       "/v1/questions",
       {
         title: s.title,
         description: s.description ?? s.title,
-        success_criteria: s.success_criteria.map((sc) => ({
+        successCriteria: s.success_criteria.map((sc) => ({
           name: sc.name,
           type: sc.type,
           target: sc.target,
           weight: sc.weight,
         })),
-        initial_bounty: "0",
+        initialBounty: "0",
       },
       sponsor.token,
     );
@@ -484,13 +484,13 @@ class BattleRunner {
       feeShares: this.defaultFeeShares(),
     });
     const sponsorSig = (await privateKeyToAccount(sponsorWallet.privateKey).signTypedData(sponsorTd)) as Hex;
-    const sponsorResp = await call<{ contribution_id: string }>(
+    const sponsorResp = await call<{ contributionId: string }>(
       "POST",
       `/v1/questions/${question.id}/sponsorships`,
       buildSponsorFundRequestBody({ typedData: sponsorTd, signature: sponsorSig }),
       sponsor.token,
     );
-    info(`sponsor row ${sponsorResp.contribution_id}`);
+    info(`sponsor row ${sponsorResp.contributionId}`);
 
     const qid = sponsorTd.message.questionId;
     this.knownQids.push(qid);
@@ -577,7 +577,7 @@ class BattleRunner {
       // hits the legacy path and doesn't match.
       const solutionPayload = {
         body,
-        reasoning_tree: [
+        reasoningTree: [
           { because: `${solverLetter} examined the live workload first`, therefore: "ALTER TABLE without NOT VALID would lock writers for the validation scan" },
           { because: "Validation scan walks every row at AccessExclusiveLock", therefore: "use ADD CONSTRAINT … NOT VALID then VALIDATE CONSTRAINT separately" },
           { because: "VALIDATE CONSTRAINT acquires only ShareUpdateExclusiveLock", therefore: "concurrent writers can keep going while the constraint is verified" },
@@ -586,10 +586,10 @@ class BattleRunner {
           { because: "Replication slots inflate WAL during long backfills", therefore: "monitor pg_replication_slots and pause if the slot retention nears disk" },
         ],
         claims: s.success_criteria.map((sc, i) => ({
-          criterion_id: question.success_criteria[i].id,
+          criterionId: question.successCriteria[i].id,
           value: true,
           argument: `claim against ${sc.name}`,
-          falsifiable_by: "audit failure",
+          falsifiableBy: "audit failure",
         })),
       };
       const contentHash = computeContentHash(solutionPayload);
@@ -601,7 +601,7 @@ class BattleRunner {
         feeShares: this.defaultFeeShares(),
       });
       const sig = (await privateKeyToAccount(wallet.privateKey).signTypedData(td)) as Hex;
-      const intentResp = await call<{ intent_hash: string }>(
+      const intentResp = await call<{ intentHash: string }>(
         "POST",
         `/v1/questions/${question.id}/commit`,
         buildSubmitCommitRequestBody({ typedData: td, signature: sig }),
@@ -610,10 +610,10 @@ class BattleRunner {
       const solResp = await call<{ id: string }>(
         "POST",
         `/v1/questions/${question.id}/solutions`,
-        { intent_hash: intentResp.intent_hash, ...solutionPayload },
+        { intentHash: intentResp.intentHash, ...solutionPayload },
         sa.token,
       );
-      const intentHash = intentResp.intent_hash as Hex;
+      const intentHash = intentResp.intentHash as Hex;
       this.knownCommits.push(intentHash);
       const fee = BigInt(td.message.feeAmount);
       const stake = BigInt(td.message.stakeAmount);
@@ -656,35 +656,35 @@ class BattleRunner {
       const allocs: Allocation[] = [];
       const isSybilSelfVote = voterLetter === s.intended_winner_profile;
       if (isSybilSelfVote) {
-        allocs.push({ solution_id: winnerSolution.id, points: 100 });
+        allocs.push({ solutionId: winnerSolution.id, points: 100 });
       } else {
         const others = s.solvers.filter((l) => l !== s.intended_winner_profile);
         if (others.length === 0) {
-          allocs.push({ solution_id: winnerSolution.id, points: 100 });
+          allocs.push({ solutionId: winnerSolution.id, points: 100 });
         } else {
-          allocs.push({ solution_id: winnerSolution.id, points: 80 });
+          allocs.push({ solutionId: winnerSolution.id, points: 80 });
           const share = Math.floor(20 / others.length);
           let assigned = 80;
           for (let i = 0; i < others.length; i++) {
             const sol = solutionsByLetter[others[i]];
             const pts = i === others.length - 1 ? 100 - assigned : share;
             assigned += pts;
-            if (sol) allocs.push({ solution_id: sol.id, points: pts });
+            if (sol) allocs.push({ solutionId: sol.id, points: pts });
           }
         }
       }
       // Vote salt + token come from the preflight response
       // (server-issued, HMAC-bound to this voter+qid+expiry). Without
       // them the backend rejects the submission.
-      if (!votePre.vote_salt || !votePre.vote_salt_token) {
+      if (!votePre.voteSalt || !votePre.voteSaltToken) {
         throw new Error(
-          `vote preflight missing vote_salt; backend requires it for privacy`,
+          `vote preflight missing voteSalt; backend requires it for privacy`,
         );
       }
-      const voteSalt = votePre.vote_salt as `0x${string}`;
-      const voteSaltToken = votePre.vote_salt_token as `0x${string}`;
+      const voteSalt = votePre.voteSalt as `0x${string}`;
+      const voteSaltToken = votePre.voteSaltToken as `0x${string}`;
       const allocationsHash = computeAllocationsHash(allocs, voteSalt);
-      // intent.expiresAt MUST equal vote_salt_expires_at — the backend
+      // intent.expiresAt MUST equal voteSaltExpiresAt — the backend
       // recomputes the salt-token HMAC using intent.ExpiresAt as its
       // expiry input (handler/vote_intent.go:168). Diverging expiries
       // produce a guaranteed `vote salt token mismatch` (F-NEW-1, fixed
@@ -695,10 +695,10 @@ class BattleRunner {
         allocationsHash,
         feeShareBps: 0n,
         feeShares: this.defaultFeeShares(),
-        expiresAtSeconds: votePre.vote_salt_expires_at,
+        expiresAtSeconds: votePre.voteSaltExpiresAt,
       });
       const sig = (await privateKeyToAccount(wallet.privateKey).signTypedData(td)) as Hex;
-      const voteResp = await call<{ intent_hash: string }>(
+      const voteResp = await call<{ intentHash: string }>(
         "POST",
         `/v1/questions/${question.id}/vote-intent`,
         buildSubmitVoteIntentRequestBody({
@@ -710,7 +710,7 @@ class BattleRunner {
         }),
         va.token,
       );
-      const intentHash = voteResp.intent_hash as Hex;
+      const intentHash = voteResp.intentHash as Hex;
       this.knownVotes.push(intentHash);
       const fee = BigInt(td.message.feeAmount);
       const stake = BigInt(td.message.stakeAmount);
@@ -807,6 +807,9 @@ class BattleRunner {
       const wTx = await broadcastClaim(winnerClient, {
         forgeAddress: FORGE!,
         questionId: qid,
+        // v2.9: explicit recipient — pass winner's address. The merkle
+        // leaf is bound to this address; any other value fails the proof.
+        recipient: winnerClient.account!.address,
         amount: winnerAmount,
         proof: winnerProof,
       });
@@ -816,6 +819,7 @@ class BattleRunner {
       const fTx = await broadcastClaim(feeClient, {
         forgeAddress: FORGE!,
         questionId: qid,
+        recipient: feeClient.account!.address,
         amount: feeAmount,
         proof: feeProof,
       });
@@ -1012,7 +1016,7 @@ class BattleRunner {
         "GET",
         `/v1/questions/${question.id}/solutions/draft?submitter=${solver.address}`,
       );
-      const recommendedStake = BigInt(pre.recommended_stake || "0");
+      const recommendedStake = BigInt(pre.stakeAmount || "0");
       if (recommendedStake === 0n) {
         return this.attackFailed(a, "preflight returned 0 stake — cannot test sub-floor");
       }
@@ -1023,7 +1027,7 @@ class BattleRunner {
         contentHash: computeContentHash(`subfloor-${a.id}`),
         feeShareBps: 0n,
         feeShares: [],
-        stakeWei: subFloor,
+        stakeAmount: subFloor,
       });
       const sig = (await privateKeyToAccount(this.wallets["mallory"].privateKey).signTypedData(td)) as Hex;
       try {
@@ -1137,9 +1141,13 @@ class BattleRunner {
       const fakeQid = ("0x" + "ab".repeat(32)) as Hex;
       const fakeProof: Hex[] = [];
       try {
-        await broadcastClaim(this.makeWalletClient(this.wallets["mallory"]), {
+        const mallory = this.makeWalletClient(this.wallets["mallory"]);
+        await broadcastClaim(mallory, {
           forgeAddress: FORGE!,
           questionId: fakeQid,
+          // v2.9: recipient parameter; for the frontrun-claim sybil case
+          // any address fails the (nonexistent) proof check.
+          recipient: mallory.account!.address,
           amount: parseAmountToWei("1", 6),
           proof: fakeProof,
         });
@@ -1171,17 +1179,17 @@ class BattleRunner {
     });
   }
 
-  private async makeQuestion(authed: AuthedWallet, title: string): Promise<{ id: string; success_criteria: { id: string }[] }> {
-    return await call<{ id: string; success_criteria: { id: string }[] }>(
+  private async makeQuestion(authed: AuthedWallet, title: string): Promise<{ id: string; successCriteria: { id: string }[] }> {
+    return await call<{ id: string; successCriteria: { id: string }[] }>(
       "POST",
       "/v1/questions",
       {
         title,
         description: title,
-        success_criteria: [
+        successCriteria: [
           { name: "primary", type: "boolean", target: "true", weight: 100 },
         ],
-        initial_bounty: "0",
+        initialBounty: "0",
       },
       authed.token,
     );

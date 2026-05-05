@@ -23,8 +23,9 @@ The NEW backend (since the atomic-agent scope at loop 38):
   `WalletLoginIntent`; auto-register on first sign-in.
 - Fund flow involves real on-chain tokens on Base Sepolia
   (chain_id 84532). Claim viewer / settlement ends with an
-  agent submitting `Router.claim(qid, amount, proof)` from
-  its own wallet.
+  agent (or any executor on its behalf) submitting
+  `RezonForge.claim(qid, recipient, amount, proof)` —
+  `recipient` is the Merkle-leaf payee.
 
 Bearer-token auth still exists (the `/auth/token` endpoint for
 legacy client-credential flows) but it's second-class for new

@@ -8,8 +8,8 @@
 //
 // Two extra invariants to pin:
 //
-//   1. Allocations canonical encoding — sorted-by-solution_id
-//      ASC, JSON object with solution_id-then-points keys, no
+//   1. Allocations canonical encoding — sorted-by-solutionId
+//      ASC, JSON object with solutionId-then-points keys, no
 //      whitespace.
 //   2. computeAllocationsHash keccak256 over UTF-8-encoded
 //      canonical bytes.
@@ -41,31 +41,30 @@ const ROUTER = "0x00000000000000000000000000000000000000ab" as const;
 function preflight(overrides: Partial<VotePreflight> = {}): VotePreflight {
   return {
     qid: QID,
-    fee: "100000",
-    stake: "1000000",
+    feeAmount: "100000",
+    stakeAmount: "1000000",
     token: {
-      contract_address: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+      contractAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
       decimals: 6,
       symbol: "USDC",
-      chain_id: 84532,
+      chainId: 84532,
     },
-    forge_address: ROUTER,
-    chain_id: 84532,
-    nonce_next: "3",
+    forgeAddress: ROUTER,
+    chainId: 84532,
+    nonceNext: "3",
     _actions: [],
     ...overrides,
   };
 }
 
 describe("VOTE_INTENT_TYPES field order", () => {
-  it("matches v2.5 typehash order + types (10 fields)", () => {
+  it("matches v2.9 typehash order + types (9 fields)", () => {
     expect(VOTE_INTENT_TYPES.VoteIntent).toEqual([
       { name: "questionId", type: "bytes32" },
       { name: "voter", type: "address" },
       { name: "allocationsHash", type: "bytes32" },
       { name: "feeAmount", type: "uint256" },
       { name: "stakeAmount", type: "uint256" },
-      { name: "feeShareBps", type: "uint256" },
       { name: "feeShares", type: "FeeShare[]" },
       { name: "nonce", type: "uint256" },
       { name: "chainId", type: "uint256" },
@@ -73,34 +72,36 @@ describe("VOTE_INTENT_TYPES field order", () => {
     ]);
   });
 
-  it("typehash text matches the pinned cross-stack invariant", () => {
+  it("typehash text matches the v2.9 cross-stack invariant", () => {
     const text =
-      "VoteIntent(bytes32 questionId,address voter,bytes32 allocationsHash,uint256 feeAmount,uint256 stakeAmount,uint256 feeShareBps,FeeShare[] feeShares,uint256 nonce,uint256 chainId,uint256 expiresAt)" +
+      "VoteIntent(bytes32 questionId,address voter,bytes32 allocationsHash,uint256 feeAmount,uint256 stakeAmount,FeeShare[] feeShares,uint256 nonce,uint256 chainId,uint256 expiresAt)" +
       "FeeShare(address recipient,uint256 basisPoints)";
-    expect(keccak256(stringToBytes(text)).startsWith("0x7ec4")).toBe(true);
+    expect(keccak256(stringToBytes(text))).toBe(
+      "0xce846377b54778704a6c695296cc69e3ebdfc08f87a6ef80f5fa07c7db946e2a",
+    );
   });
 });
 
 describe("canonicalizeAllocations", () => {
-  it("sorts by solution_id ASC", () => {
+  it("sorts by solutionId ASC", () => {
     const out = canonicalizeAllocations([
-      { solution_id: "sol_B", points: 30 },
-      { solution_id: "sol_A", points: 70 },
+      { solutionId: "sol_B", points: 30 },
+      { solutionId: "sol_A", points: 70 },
     ]);
     expect(out.json).toBe(
-      '[{"solution_id":"sol_A","points":70},{"solution_id":"sol_B","points":30}]',
+      '[{"solutionId":"sol_A","points":70},{"solutionId":"sol_B","points":30}]',
     );
   });
 
-  it("emits solution_id key before points key", () => {
-    const out = canonicalizeAllocations([{ solution_id: "x", points: 5 }]);
-    expect(out.json).toBe('[{"solution_id":"x","points":5}]');
+  it("emits solutionId key before points key", () => {
+    const out = canonicalizeAllocations([{ solutionId: "x", points: 5 }]);
+    expect(out.json).toBe('[{"solutionId":"x","points":5}]');
   });
 
   it("emits no whitespace", () => {
     const out = canonicalizeAllocations([
-      { solution_id: "a", points: 1 },
-      { solution_id: "b", points: 2 },
+      { solutionId: "a", points: 1 },
+      { solutionId: "b", points: 2 },
     ]);
     expect(out.json).not.toMatch(/\s/);
   });
@@ -109,9 +110,9 @@ describe("canonicalizeAllocations", () => {
     expect(canonicalizeAllocations([]).json).toBe("[]");
   });
 
-  it("escapes JSON-unsafe characters in solution_id via JSON.stringify", () => {
+  it("escapes JSON-unsafe characters in solutionId via JSON.stringify", () => {
     const out = canonicalizeAllocations([
-      { solution_id: 'sol_"wat"', points: 1 },
+      { solutionId: 'sol_"wat"', points: 1 },
     ]);
     expect(out.json).toContain('"sol_\\"wat\\""');
   });
@@ -129,8 +130,8 @@ describe("computeAllocationsHash", () => {
 
   it("is deterministic for the same (allocations, salt)", () => {
     const allocs: Allocation[] = [
-      { solution_id: "sol_B", points: 30 },
-      { solution_id: "sol_A", points: 70 },
+      { solutionId: "sol_B", points: 30 },
+      { solutionId: "sol_A", points: 70 },
     ];
     expect(computeAllocationsHash(allocs, SALT_A)).toBe(
       computeAllocationsHash(allocs, SALT_A),
@@ -138,7 +139,7 @@ describe("computeAllocationsHash", () => {
   });
 
   it("differs when only the salt differs (privacy property)", () => {
-    const allocs: Allocation[] = [{ solution_id: "sol_A", points: 100 }];
+    const allocs: Allocation[] = [{ solutionId: "sol_A", points: 100 }];
     expect(computeAllocationsHash(allocs, SALT_A)).not.toBe(
       computeAllocationsHash(allocs, SALT_B),
     );
@@ -147,15 +148,15 @@ describe("computeAllocationsHash", () => {
   it("is insensitive to caller-side input order", () => {
     const a = computeAllocationsHash(
       [
-        { solution_id: "sol_A", points: 70 },
-        { solution_id: "sol_B", points: 30 },
+        { solutionId: "sol_A", points: 70 },
+        { solutionId: "sol_B", points: 30 },
       ],
       SALT_A,
     );
     const b = computeAllocationsHash(
       [
-        { solution_id: "sol_B", points: 30 },
-        { solution_id: "sol_A", points: 70 },
+        { solutionId: "sol_B", points: 30 },
+        { solutionId: "sol_A", points: 70 },
       ],
       SALT_A,
     );
@@ -163,14 +164,14 @@ describe("computeAllocationsHash", () => {
   });
 
   it("differs when points change (avalanche)", () => {
-    const a = computeAllocationsHash([{ solution_id: "x", points: 1 }], SALT_A);
-    const b = computeAllocationsHash([{ solution_id: "x", points: 2 }], SALT_A);
+    const a = computeAllocationsHash([{ solutionId: "x", points: 1 }], SALT_A);
+    const b = computeAllocationsHash([{ solutionId: "x", points: 2 }], SALT_A);
     expect(a).not.toBe(b);
   });
 
   it("rejects malformed salt", () => {
     expect(() =>
-      computeAllocationsHash([{ solution_id: "x", points: 1 }], "0xab" as `0x${string}`),
+      computeAllocationsHash([{ solutionId: "x", points: 1 }], "0xab" as `0x${string}`),
     ).toThrow(/32 bytes/);
   });
 });
@@ -179,37 +180,37 @@ describe("validateAllocations", () => {
   it("accepts a valid list", () => {
     expect(() =>
       validateAllocations([
-        { solution_id: "sol_A", points: 10 },
-        { solution_id: "sol_B", points: 0 },
+        { solutionId: "sol_A", points: 10 },
+        { solutionId: "sol_B", points: 0 },
       ]),
     ).not.toThrow();
   });
 
-  it("rejects empty solution_id", () => {
-    expect(() => validateAllocations([{ solution_id: "", points: 1 }])).toThrow(
+  it("rejects empty solutionId", () => {
+    expect(() => validateAllocations([{ solutionId: "", points: 1 }])).toThrow(
       /empty or non-string/,
     );
   });
 
   it("rejects non-integer points", () => {
     expect(() =>
-      validateAllocations([{ solution_id: "x", points: 1.5 }]),
+      validateAllocations([{ solutionId: "x", points: 1.5 }]),
     ).toThrow(/non-negative integer/);
   });
 
   it("rejects negative points", () => {
     expect(() =>
-      validateAllocations([{ solution_id: "x", points: -1 }]),
+      validateAllocations([{ solutionId: "x", points: -1 }]),
     ).toThrow(/non-negative integer/);
   });
 
-  it("rejects duplicate solution_ids", () => {
+  it("rejects duplicate solutionIds", () => {
     expect(() =>
       validateAllocations([
-        { solution_id: "x", points: 1 },
-        { solution_id: "x", points: 2 },
+        { solutionId: "x", points: 1 },
+        { solutionId: "x", points: 2 },
       ]),
-    ).toThrow(/duplicate solution_id/);
+    ).toThrow(/duplicate solutionId/);
   });
 });
 
@@ -224,7 +225,6 @@ describe("buildVoteIntentTypedData", () => {
       preflight: preflight(),
       voter: VOTER,
       allocationsHash: ALLOC_HASH,
-      feeShareBps: policy.bps,
       feeShares: policy.shares,
       nowSeconds: NOW,
     });
@@ -240,7 +240,6 @@ describe("buildVoteIntentTypedData", () => {
       preflight: preflight(),
       voter: VOTER,
       allocationsHash: ALLOC_HASH,
-      feeShareBps: policy.bps,
       feeShares: policy.shares,
       nowSeconds: NOW,
     });
@@ -252,10 +251,9 @@ describe("buildVoteIntentTypedData", () => {
       preflight: preflight(),
       voter: VOTER,
       allocationsHash: ALLOC_HASH,
-      feeShareBps: policy.bps,
       feeShares: policy.shares,
-      feeWei: BigInt("42"),
-      stakeWei: BigInt("43"),
+      feeAmount: BigInt("42"),
+      stakeAmount: BigInt("43"),
       nonce: BigInt("44"),
       nowSeconds: NOW,
     });
@@ -269,11 +267,11 @@ describe("buildVoteIntentTypedData", () => {
       preflight: preflight(),
       voter: VOTER,
       allocationsHash: ALLOC_HASH,
-      feeShareBps: BigInt(1),
       feeShares: [{ recipient: VOTER, basisPoints: BigInt(10000) }],
       nowSeconds: NOW,
     });
-    expect(td.message.feeShareBps).toBe(BigInt(1));
+    // v2.9: per-intent feeShareBps removed (Q-level only).
+    expect("feeShareBps" in td.message).toBe(false);
     expect(td.message.feeShares).toEqual([
       { recipient: VOTER, basisPoints: BigInt(10000) },
     ]);
@@ -284,7 +282,6 @@ describe("buildVoteIntentTypedData", () => {
       preflight: preflight(),
       voter: VOTER,
       allocationsHash: ALLOC_HASH,
-      feeShareBps: policy.bps,
       feeShares: policy.shares,
       nowSeconds: NOW,
     });
@@ -300,35 +297,42 @@ describe("buildSubmitVoteIntentRequestBody", () => {
       voter: VOTER,
       allocationsHash:
         "0x5cbf670de3ba3eaf83b9f1c947eebe3eaa632f5cf32c2d76ecc8eb8bfb59993c",
-      feeShareBps: policy.bps,
       feeShares: policy.shares,
       nowSeconds: 1_714_000_000,
     });
     const body = buildSubmitVoteIntentRequestBody({
       typedData: td,
       allocations: [
-        { solution_id: "sol_A", points: 70 },
-        { solution_id: "sol_B", points: 30 },
+        { solutionId: "sol_A", points: 70 },
+        { solutionId: "sol_B", points: 30 },
       ],
       signature: "0xbeef" as `0x${string}`,
+      voteSalt:
+        "0x0000000000000000000000000000000000000000000000000000000000000001",
+      voteSaltToken: "0xtoken" as `0x${string}`,
     });
-    expect(body.question_id).toBe(QID);
+    expect(body.questionId).toBe(QID);
     expect(body.voter).toBe(VOTER);
-    expect(body.fee_amount).toBe("100000");
-    expect(body.stake_amount).toBe("1000000");
-    expect(body.fee_share_bps).toBe("1");
-    expect(body.fee_shares).toEqual([
-      { recipient: VOTER, basis_points: "10000" },
+    expect(body.feeAmount).toBe("100000");
+    expect(body.stakeAmount).toBe("1000000");
+    // v2.9: per-intent feeShareBps removed.
+    expect("feeShareBps" in body).toBe(false);
+    expect(body.feeShares).toEqual([
+      { recipient: VOTER, basisPoints: "10000" },
     ]);
     expect(body.nonce).toBe("3");
-    expect(body.chain_id).toBe("84532");
-    expect(body.expires_at).toBe(
+    expect(body.chainId).toBe("84532");
+    expect(body.expiresAt).toBe(
       String(1_714_000_000 + DEFAULT_VOTE_TTL_SECONDS),
     );
     expect(body.signature).toBe("0xbeef");
     expect(body.allocations).toEqual([
-      { solution_id: "sol_A", points: 70 },
-      { solution_id: "sol_B", points: 30 },
+      { solutionId: "sol_A", points: 70 },
+      { solutionId: "sol_B", points: 30 },
     ]);
+    expect(body.voteSalt).toBe(
+      "0x0000000000000000000000000000000000000000000000000000000000000001",
+    );
+    expect(body.voteSaltToken).toBe("0xtoken");
   });
 });

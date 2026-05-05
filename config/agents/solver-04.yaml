@@ -47,7 +47,7 @@ tools:
   mcp:
     - rezontree-solver-04
 
-max_turns: 60
-max_budget_usd: 1.00
+max_turns: 80
+max_budget_usd: 5.00
 timeout_seconds: 300
 output_format: json

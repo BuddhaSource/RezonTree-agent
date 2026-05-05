@@ -14,12 +14,15 @@
 // advertise the full per-Q parameter set the first sponsor binds
 // on-chain; cosponsor-mode preflights are minimal — per-Q params
 // are inherited from chain state.
+//
+// R-NAME-MATCHES-CHAIN — wire fields are camelCase, mirroring the
+// backend's JSON tags. No snake_case, no short aliases.
 
 export interface TokenPreflight {
-  contract_address: string;
+  contractAddress: string;
   decimals: number;
   symbol: string;
-  chain_id: number;
+  chainId: number;
 }
 
 export interface HypermediaAction {
@@ -31,63 +34,71 @@ export interface HypermediaAction {
 
 // RezonForge v2.5 fund preflight: `mode` discriminates sponsor vs
 // cosponsor. When mode === "sponsor", the sponsor-only fields
-// (oracle, stake_floor, stake_basis_points, sponsorship_floor,
-// vote_fee, abandonment_grace_period) are populated with backend-
+// (oracle, stakeFloor, stakeBasisPoints, sponsorshipFloor,
+// voteFee, abandonmentGracePeriod) are populated with backend-
 // suggested defaults the sponsor can override before signing.
 export interface FundPreflight {
   mode: "sponsor" | "cosponsor";
   qid: string;
-  recommended_amount_floor: string;
+  recommendedAmountFloor: string;
   token: TokenPreflight;
-  forge_address: string;
-  chain_id: number;
-  nonce_next: string;
-  funding_deadline?: number;
+  forgeAddress: string;
+  chainId: number;
+  nonceNext: string;
+  fundingDeadline?: number;
 
   // Sponsor-only suggested defaults.
   oracle?: string;
-  stake_floor?: string;
-  stake_basis_points?: string;
-  sponsorship_floor?: string;
-  vote_fee?: string;
+  stakeFloor?: string;
+  stakeBasisPoints?: string;
+  sponsorshipFloor?: string;
+  voteFee?: string;
   // v2.7 sponsor-only fields.
-  commit_fee?: string;
-  no_solution_grace_period?: string;
-  platform_fee_bps?: string;
-  platform_fee_recipient?: string;
-  abandonment_grace_period?: string;
+  commitFee?: string;
+  noSolutionGracePeriod?: string;
+  // v2.9: feeShareBps is the new Q-level fee rate (replaces v2.8 platformFeeBps).
+  // platformFeeBps retained as a deprecated field for transition; new backends
+  // emit feeShareBps.
+  platformFeeBps?: string;
+  feeShareBps?: string;
+  platformFeeRecipient?: string;
+  abandonmentGracePeriod?: string;
+  // v2.10 (C03): recommended sponsor-signed fundingDeadline (unix seconds).
+  // Distinct from `fundingDeadline` above (which is the active round's
+  // coordination deadline). Populated only in sponsor mode.
+  sponsorFundingDeadline?: string;
 
   _actions: HypermediaAction[];
 }
 
 export interface CommitPreflight {
   qid: string;
-  fee: string;
-  stake: string;
+  feeAmount: string;
+  stakeAmount: string;
   token: TokenPreflight;
-  forge_address: string;
-  chain_id: number;
-  nonce_next: string;
-  submission_deadline?: number;
+  forgeAddress: string;
+  chainId: number;
+  nonceNext: string;
+  submissionDeadline?: number;
   _actions: HypermediaAction[];
 }
 
 export interface VotePreflight {
   qid: string;
-  fee: string;
-  stake: string;
+  feeAmount: string;
+  stakeAmount: string;
   token: TokenPreflight;
-  forge_address: string;
-  chain_id: number;
-  nonce_next: string;
-  vote_deadline?: number;
-  // vote_salt + vote_salt_token are server-issued at preflight and
+  forgeAddress: string;
+  chainId: number;
+  nonceNext: string;
+  voteDeadline?: number;
+  // voteSalt + voteSaltToken are server-issued at preflight and
   // echoed verbatim in the submit body; the salt is mixed into
   // allocationsHash to defeat on-chain rainbow-table enumeration.
-  // Empty when the caller didn't pass `?voter=` (preflight can't
-  // bind a salt to an unknown voter).
-  vote_salt?: string;
-  vote_salt_token?: string;
-  vote_salt_expires_at?: number;
+  // Absent when the caller didn't pass `?voter=` (preflight can't
+  // bind a salt to an unknown voter — the backend rejects at draft time).
+  voteSalt?: string;
+  voteSaltToken?: string;
+  voteSaltExpiresAt?: number;
   _actions: HypermediaAction[];
 }

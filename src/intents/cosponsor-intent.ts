@@ -1,18 +1,21 @@
 // cosponsor-intent.ts — CosponsorIntent EIP-712 builders for
-// RezonForge v2.5.
+// RezonForge v2.9.
 //
 // Signed by SUBSEQUENT contributors to an OPEN question. Per-Q
-// parameters (oracle / token / floors / voteFee /
+// parameters (oracle / token / floors / voteFee / feeShareBps /
 // abandonmentGracePeriod) are inherited from chain state — the
 // cosponsor doesn't re-state them. They DO sign their own per-
 // contribution share array (each contributor independently chooses
 // how to split their own share reserve).
 //
-// Pinned typehash (cosponsor):
+// v2.9 change: per-intent feeShareBps REMOVED — the rate is now
+// Q-level on the question state, frozen by the first sponsor.
+//
+// Pinned typehash (v2.9):
 //   CosponsorIntent(bytes32 questionId,address sponsor,uint256 amount,
-//     uint256 feeShareBps,FeeShare[] feeShares,uint256 nonce,
-//     uint256 chainId,uint256 expiresAt)
+//     FeeShare[] feeShares,uint256 nonce,uint256 chainId,uint256 expiresAt)
 //   FeeShare(address recipient,uint256 basisPoints)
+//   → 0xd9c03036132b2691bcf944f8964155d518856f9766727315bba50e72a9769dd4
 //
 // Mirrors contracts/src/RezonForge.sol's COSPONSOR_INTENT_TYPEHASH +
 // internal/signer/cosponsor_intent.go +
@@ -39,7 +42,7 @@ export const COSPONSOR_INTENT_TYPES = {
     { name: "questionId", type: "bytes32" },
     { name: "sponsor", type: "address" },
     { name: "amount", type: "uint256" },
-    { name: "feeShareBps", type: "uint256" },
+    // v2.9: per-intent feeShareBps REMOVED (Q-level only).
     { name: "feeShares", type: "FeeShare[]" },
     { name: "nonce", type: "uint256" },
     { name: "chainId", type: "uint256" },
@@ -53,7 +56,6 @@ export interface CosponsorIntentMessage {
   // it's the cosponsor's wallet — the sponsor of THIS contribution.
   sponsor: `0x${string}`;
   amount: bigint;
-  feeShareBps: bigint;
   feeShares: FeeShare[];
   nonce: bigint;
   chainId: bigint;
@@ -68,7 +70,6 @@ export interface CosponsorIntentTypedData {
 }
 
 // 4 min — must stay under backend MaxPermitTTL ceiling of 5 min.
-// See sponsor-intent.ts for rationale (same fix, same root cause).
 export const DEFAULT_COSPONSOR_TTL_SECONDS = 4 * 60;
 
 // ── Builder ──────────────────────────────────────────────────────
@@ -77,7 +78,6 @@ export function buildCosponsorIntentTypedData(params: {
   preflight: FundPreflight;
   sponsor: `0x${string}`;
   amountWei: bigint;
-  feeShareBps?: bigint;
   feeShares?: FeeShare[];
   expiresAtSeconds?: number;
   nonce?: bigint;
@@ -86,12 +86,12 @@ export function buildCosponsorIntentTypedData(params: {
   const now = params.nowSeconds ?? Math.floor(Date.now() / 1000);
   const expiresAt =
     params.expiresAtSeconds ?? now + DEFAULT_COSPONSOR_TTL_SECONDS;
-  const nonce = params.nonce ?? BigInt(params.preflight.nonce_next);
+  const nonce = params.nonce ?? BigInt(params.preflight.nonceNext);
 
   return {
     domain: buildForgeDomain({
-      chainId: params.preflight.chain_id,
-      forgeAddress: params.preflight.forge_address as `0x${string}`,
+      chainId: params.preflight.chainId,
+      forgeAddress: params.preflight.forgeAddress as `0x${string}`,
     }),
     types: COSPONSOR_INTENT_TYPES,
     primaryType: "CosponsorIntent",
@@ -99,13 +99,12 @@ export function buildCosponsorIntentTypedData(params: {
       questionId: params.preflight.qid as `0x${string}`,
       sponsor: params.sponsor,
       amount: params.amountWei,
-      feeShareBps: params.feeShareBps ?? 0n,
-      // Chain rejects empty feeShares regardless of feeShareBps. Auto-default
-      // to a single self-recipient at 100% bps (matches sponsor/commit/vote).
+      // Chain rejects empty feeShares unconditionally. Auto-default to a
+      // single self-recipient at 100% bps (matches sponsor/commit/vote).
       feeShares:
         params.feeShares ?? defaultFeeSharePolicy(params.sponsor).shares,
       nonce,
-      chainId: BigInt(params.preflight.chain_id),
+      chainId: BigInt(params.preflight.chainId),
       expiresAt: BigInt(expiresAt),
     },
   };
@@ -118,15 +117,14 @@ export function buildCosponsorIntentTypedData(params: {
 
 export interface CosponsorFundRequestBody {
   mode: "cosponsor";
-  question_id: string;
+  questionId: string;
   funder: string;
   amount: string;
   nonce: string;
-  chain_id: string;
-  expires_at: string;
+  chainId: string;
+  expiresAt: string;
   signature: string;
-  fee_share_bps: string;
-  fee_shares: { recipient: string; basis_points: string }[];
+  feeShares: { recipient: string; basisPoints: string }[];
 }
 
 export function buildCosponsorFundRequestBody(params: {
@@ -136,17 +134,16 @@ export function buildCosponsorFundRequestBody(params: {
   const m = params.typedData.message;
   return {
     mode: "cosponsor",
-    question_id: m.questionId,
+    questionId: m.questionId,
     funder: m.sponsor,
     amount: m.amount.toString(),
     nonce: m.nonce.toString(),
-    chain_id: m.chainId.toString(),
-    expires_at: m.expiresAt.toString(),
+    chainId: m.chainId.toString(),
+    expiresAt: m.expiresAt.toString(),
     signature: params.signature,
-    fee_share_bps: m.feeShareBps.toString(),
-    fee_shares: m.feeShares.map((s) => ({
+    feeShares: m.feeShares.map((s) => ({
       recipient: s.recipient,
-      basis_points: s.basisPoints.toString(),
+      basisPoints: s.basisPoints.toString(),
     })),
   };
 }

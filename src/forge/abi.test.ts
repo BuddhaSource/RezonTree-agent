@@ -16,8 +16,8 @@ function findFunction(name: string) {
   );
 }
 
-describe("REZON_FORGE_ABI shape (v2.7)", () => {
-  it("exports the v2.7 agent-writable functions", () => {
+describe("REZON_FORGE_ABI shape (v2.9)", () => {
+  it("exports the v2.9 agent-writable functions", () => {
     expect(FORGE_WRITE_FUNCTIONS).toEqual([
       "sponsor",
       "cosponsor",
@@ -27,7 +27,7 @@ describe("REZON_FORGE_ABI shape (v2.7)", () => {
     ]);
   });
 
-  it("sponsor tuple matches SponsorIntent struct (19 fields in typehash order, v2.7)", () => {
+  it("sponsor tuple matches v2.9 SponsorIntent struct (18 fields in typehash order)", () => {
     const fn = findFunction("sponsor");
     expect(fn).toBeDefined();
     const intentInput = fn!.inputs[0] as {
@@ -43,15 +43,15 @@ describe("REZON_FORGE_ABI shape (v2.7)", () => {
       "stakeBasisPoints",
       "sponsorshipFloor",
       "voteFee",
-      // v2.7 fields inserted after voteFee:
       "commitFee",
       "noSolutionGracePeriod",
-      "platformFeeBps",
+      // v2.9: feeShareBps replaces v2.8 platformFeeBps at this slot.
+      "feeShareBps",
       "platformFeeRecipient",
       "abandonmentGracePeriod",
       "sponsor",
       "amount",
-      "feeShareBps",
+      // v2.9: per-intent feeShareBps removed (Q-level only).
       "feeShares",
       "nonce",
       "chainId",
@@ -59,7 +59,7 @@ describe("REZON_FORGE_ABI shape (v2.7)", () => {
     ]);
   });
 
-  it("cosponsor tuple matches CosponsorIntent struct (8 fields)", () => {
+  it("cosponsor tuple matches v2.9 CosponsorIntent struct (7 fields)", () => {
     const fn = findFunction("cosponsor");
     expect(fn).toBeDefined();
     const intentInput = fn!.inputs[0] as {
@@ -71,7 +71,7 @@ describe("REZON_FORGE_ABI shape (v2.7)", () => {
       "questionId",
       "sponsor",
       "amount",
-      "feeShareBps",
+      // v2.9: per-intent feeShareBps removed (Q-level only).
       "feeShares",
       "nonce",
       "chainId",
@@ -79,7 +79,7 @@ describe("REZON_FORGE_ABI shape (v2.7)", () => {
     ]);
   });
 
-  it("commitSolution tuple matches v2.5 CommitIntent struct (10 fields)", () => {
+  it("commitSolution tuple matches v2.9 CommitIntent struct (9 fields)", () => {
     const fn = findFunction("commitSolution");
     const intentInput = fn!.inputs[0] as {
       components: { name: string; type: string }[];
@@ -90,7 +90,7 @@ describe("REZON_FORGE_ABI shape (v2.7)", () => {
       "contentHash",
       "feeAmount",
       "stakeAmount",
-      "feeShareBps",
+      // v2.9: per-intent feeShareBps removed (Q-level only).
       "feeShares",
       "nonce",
       "chainId",
@@ -98,7 +98,7 @@ describe("REZON_FORGE_ABI shape (v2.7)", () => {
     ]);
   });
 
-  it("castVote tuple matches v2.5 VoteIntent struct (10 fields)", () => {
+  it("castVote tuple matches v2.9 VoteIntent struct (9 fields)", () => {
     const fn = findFunction("castVote");
     const intentInput = fn!.inputs[0] as {
       components: { name: string; type: string }[];
@@ -109,7 +109,7 @@ describe("REZON_FORGE_ABI shape (v2.7)", () => {
       "allocationsHash",
       "feeAmount",
       "stakeAmount",
-      "feeShareBps",
+      // v2.9: per-intent feeShareBps removed (Q-level only).
       "feeShares",
       "nonce",
       "chainId",
@@ -117,17 +117,45 @@ describe("REZON_FORGE_ABI shape (v2.7)", () => {
     ]);
   });
 
-  it("claim takes (bytes32 qid, uint256 amount, bytes32[] proof)", () => {
+  it("claim takes v2.9 (qid, recipient, amount, proof) — executor-callable", () => {
     const fn = findFunction("claim");
     expect(fn!.inputs.map((i) => i.name)).toEqual([
       "questionId",
+      "recipient",
       "amount",
       "proof",
     ]);
     expect(fn!.inputs.map((i) => i.type)).toEqual([
       "bytes32",
+      "address",
       "uint256",
       "bytes32[]",
+    ]);
+  });
+
+  it("claimAllForQuestion takes v2.9 recipient parameter", () => {
+    const fn = findFunction("claimAllForQuestion");
+    expect(fn!.inputs.map((i) => i.name)).toEqual([
+      "questionId",
+      "recipient",
+      "poolAmount",
+      "poolProof",
+      "solutionIntentHash",
+      "voteIntentHash",
+    ]);
+  });
+
+  it("claimPendingShares takes v2.9 (recipient, token, amount) — executor-callable", () => {
+    const fn = findFunction("claimPendingShares");
+    expect(fn!.inputs.map((i) => i.name)).toEqual([
+      "recipient",
+      "token",
+      "amount",
+    ]);
+    expect(fn!.inputs.map((i) => i.type)).toEqual([
+      "address",
+      "address",
+      "uint256",
     ]);
   });
 

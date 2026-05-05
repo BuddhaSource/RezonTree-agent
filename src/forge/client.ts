@@ -96,16 +96,17 @@ export async function broadcastSponsor(
         stakeBasisPoints: params.intent.stakeBasisPoints,
         sponsorshipFloor: params.intent.sponsorshipFloor,
         voteFee: params.intent.voteFee,
-        // v2.7 fields — must appear between voteFee and abandonmentGracePeriod
-        // to match the Solidity struct field order (ABI-encoding is positional):
+        // v2.9 fields — must match the Solidity struct field order
+        // (ABI-encoding is positional). feeShareBps replaced platformFeeBps
+        // at the Q-level slot; the per-intent feeShareBps after `amount`
+        // was removed.
         commitFee: params.intent.commitFee,
         noSolutionGracePeriod: params.intent.noSolutionGracePeriod,
-        platformFeeBps: params.intent.platformFeeBps,
+        feeShareBps: params.intent.feeShareBps,
         platformFeeRecipient: params.intent.platformFeeRecipient,
         abandonmentGracePeriod: params.intent.abandonmentGracePeriod,
         sponsor: params.intent.sponsor,
         amount: params.intent.amount,
-        feeShareBps: params.intent.feeShareBps,
         feeShares: params.intent.feeShares.map((s) => ({
           recipient: s.recipient,
           basisPoints: s.basisPoints,
@@ -149,7 +150,7 @@ export async function broadcastCosponsor(
         questionId: params.intent.questionId,
         sponsor: params.intent.sponsor,
         amount: params.intent.amount,
-        feeShareBps: params.intent.feeShareBps,
+        // v2.9: per-intent feeShareBps removed (Q-level only).
         feeShares: params.intent.feeShares.map((s) => ({
           recipient: s.recipient,
           basisPoints: s.basisPoints,
@@ -194,7 +195,7 @@ export async function broadcastCommit(
         contentHash: params.intent.contentHash,
         feeAmount: params.intent.feeAmount,
         stakeAmount: params.intent.stakeAmount,
-        feeShareBps: params.intent.feeShareBps,
+        // v2.9: per-intent feeShareBps removed (Q-level only).
         feeShares: params.intent.feeShares.map((s) => ({
           recipient: s.recipient,
           basisPoints: s.basisPoints,
@@ -239,7 +240,7 @@ export async function broadcastVote(
         allocationsHash: params.intent.allocationsHash,
         feeAmount: params.intent.feeAmount,
         stakeAmount: params.intent.stakeAmount,
-        feeShareBps: params.intent.feeShareBps,
+        // v2.9: per-intent feeShareBps removed (Q-level only).
         feeShares: params.intent.feeShares.map((s) => ({
           recipient: s.recipient,
           basisPoints: s.basisPoints,
@@ -260,10 +261,19 @@ export async function broadcastVote(
 }
 
 // ─── claim() ───────────────────────────────────────────────────
+//
+// v2.9 EXECUTOR-CALLABLE: msg.sender (the wallet) pays gas; the
+// merkle-bound `recipient` receives the funds. Pass your own address
+// as recipient to claim normally; pass another participant's address
+// (only useful when you hold their proof) to act as a relayer.
 
 export interface BroadcastClaimParams {
   forgeAddress: Address;
   questionId: Hex;
+  // v2.9: explicit recipient. The merkle leaf was authored as
+  // keccak256(qid, recipient, amount); supplying any other address
+  // makes the proof check fail.
+  recipient: Address;
   amount: bigint;
   proof: Hex[];
 }
@@ -273,10 +283,7 @@ export async function broadcastClaim(
   params: BroadcastClaimParams,
 ): Promise<Hex> {
   // F21 (mega-audit T2 fence): the contract reverts
-  // ForgeZeroClaimAmount when amount == 0. Reject here to skip the
-  // wasted broadcast + revert. Validators in this SDK + Solidity
-  // guards must agree byte-for-byte; see internal/signer for the
-  // backend equivalent.
+  // ForgeZeroClaimAmount when amount == 0.
   if (params.amount <= 0n) {
     throw new Error(
       "claim: amount must be > 0 (chain reverts ForgeZeroClaimAmount per F21)",
@@ -286,7 +293,7 @@ export async function broadcastClaim(
     address: params.forgeAddress,
     abi: REZON_FORGE_ABI,
     functionName: "claim",
-    args: [params.questionId, params.amount, params.proof],
+    args: [params.questionId, params.recipient, params.amount, params.proof],
     account: wallet.account as Account,
     chain: wallet.chain,
   });

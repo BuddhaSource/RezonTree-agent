@@ -1,5 +1,16 @@
-// abi.ts — RezonForge v2.5 function ABI. Hand-written from
+// abi.ts — RezonForge v2.9 function ABI. Hand-written from
 // contracts/src/RezonForge.sol.
+//
+// v2.9 deltas vs v2.8:
+//   * SponsorIntent struct: platformFeeBps replaced by Q-level
+//     feeShareBps; per-intent feeShareBps after `amount` removed.
+//   * CosponsorIntent / CommitIntent / VoteIntent: feeShareBps
+//     dropped (rate is Q-level only).
+//   * QuestionState public-mapping getter: platformFeeBps renamed
+//     to feeShareBps.
+//   * Claim functions take an explicit `recipient` argument so a
+//     third-party executor can pay gas while funds flow to the
+//     on-chain-recorded payee.
 //
 // Includes the entry points agents call (sponsor, cosponsor,
 // commitSolution, castVote, claim, claim{Solution,Vote}Stake),
@@ -37,12 +48,13 @@ export const REZON_FORGE_ABI = [
           { name: "voteFee", type: "uint256" },
           { name: "commitFee", type: "uint256" },
           { name: "noSolutionGracePeriod", type: "uint256" },
-          { name: "platformFeeBps", type: "uint256" },
+          // v2.9: Q-level feeShareBps (was platformFeeBps in v2.8).
+          { name: "feeShareBps", type: "uint256" },
           { name: "platformFeeRecipient", type: "address" },
           { name: "abandonmentGracePeriod", type: "uint256" },
           { name: "sponsor", type: "address" },
           { name: "amount", type: "uint256" },
-          { name: "feeShareBps", type: "uint256" },
+          // v2.9: per-intent feeShareBps removed.
           {
             name: "feeShares",
             type: "tuple[]",
@@ -79,7 +91,7 @@ export const REZON_FORGE_ABI = [
           { name: "questionId", type: "bytes32" },
           { name: "sponsor", type: "address" },
           { name: "amount", type: "uint256" },
-          { name: "feeShareBps", type: "uint256" },
+          // v2.9: per-intent feeShareBps removed (Q-level only).
           {
             name: "feeShares",
             type: "tuple[]",
@@ -117,7 +129,7 @@ export const REZON_FORGE_ABI = [
           { name: "contentHash", type: "bytes32" },
           { name: "feeAmount", type: "uint256" },
           { name: "stakeAmount", type: "uint256" },
-          { name: "feeShareBps", type: "uint256" },
+          // v2.9: per-intent feeShareBps removed (Q-level only).
           {
             name: "feeShares",
             type: "tuple[]",
@@ -155,7 +167,7 @@ export const REZON_FORGE_ABI = [
           { name: "allocationsHash", type: "bytes32" },
           { name: "feeAmount", type: "uint256" },
           { name: "stakeAmount", type: "uint256" },
-          { name: "feeShareBps", type: "uint256" },
+          // v2.9: per-intent feeShareBps removed (Q-level only).
           {
             name: "feeShares",
             type: "tuple[]",
@@ -177,32 +189,52 @@ export const REZON_FORGE_ABI = [
     outputs: [],
   },
 
-  // ── claim(bytes32 qid, uint256 amount, bytes32[] proof) ────
+  // ── claim(bytes32 qid, address recipient, uint256 amount, bytes32[] proof) ────
+  // v2.9 EXECUTOR-CALLABLE: msg.sender pays gas, recipient receives funds.
+  // Recipient is bound by the merkle leaf at settlement time, so the
+  // call reverts if you pass a recipient the oracle did not author.
   {
     type: "function",
     name: "claim",
     stateMutability: "nonpayable",
     inputs: [
       { name: "questionId", type: "bytes32" },
+      { name: "recipient", type: "address" },
       { name: "amount", type: "uint256" },
       { name: "proof", type: "bytes32[]" },
     ],
     outputs: [],
   },
 
-  // ── claimAllForQuestion(qid, poolAmount, poolProof, solHash, voteHash) ──
-  // Single-tx batch claim added in the v2.5 redeploy. Skips a leg
-  // when the corresponding hash is ZERO_HASH.
+  // ── claimAllForQuestion(qid, recipient, poolAmount, poolProof, solHash, voteHash) ──
+  // v2.9 EXECUTOR-CALLABLE: pool funds → recipient (merkle-bound);
+  // stake funds → chain-recorded solutionStakeOwner / voteStakeOwner.
   {
     type: "function",
     name: "claimAllForQuestion",
     stateMutability: "nonpayable",
     inputs: [
       { name: "questionId", type: "bytes32" },
+      { name: "recipient", type: "address" },
       { name: "poolAmount", type: "uint256" },
       { name: "poolProof", type: "bytes32[]" },
       { name: "solutionIntentHash", type: "bytes32" },
       { name: "voteIntentHash", type: "bytes32" },
+    ],
+    outputs: [],
+  },
+
+  // ── claimPendingShares(address recipient, address token, uint256 amount) ──
+  // v2.9 EXECUTOR-CALLABLE: pulls from pendingShares[recipient][token]
+  // and transfers to `recipient`. Anyone can call (msg.sender pays gas).
+  {
+    type: "function",
+    name: "claimPendingShares",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "recipient", type: "address" },
+      { name: "token", type: "address" },
+      { name: "amount", type: "uint256" },
     ],
     outputs: [],
   },
@@ -259,7 +291,8 @@ export const REZON_FORGE_ABI = [
       { name: "voteFee", type: "uint256" },
       { name: "commitFee", type: "uint256" },
       { name: "noSolutionGracePeriod", type: "uint256" },
-      { name: "platformFeeBps", type: "uint256" },
+      // v2.9: feeShareBps replaces v2.8 platformFeeBps.
+      { name: "feeShareBps", type: "uint256" },
       { name: "platformFeeRecipient", type: "address" },
       { name: "abandonmentGracePeriod", type: "uint256" },
       { name: "solutionCount", type: "uint32" },

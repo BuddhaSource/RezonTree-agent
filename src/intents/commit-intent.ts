@@ -1,18 +1,21 @@
 // commit-intent.ts — CommitIntent EIP-712 typed-data + POST body
-// builders for RezonForge v2.5 (10-field — extends v2.4's 8-field
-// shape with feeShareBps + feeShares per migration 043).
+// builders for RezonForge v2.9.
 //
 // CommitIntent signs over a `contentHash`, NOT the content body.
 // The body is POSTed separately to /v1/questions/:id/solutions; the
 // backend asserts `keccak256(content) == intent.contentHash` to
 // bind body to signature.
 //
-// Pinned typehash:
+// v2.9 change: per-intent feeShareBps REMOVED — the rate is Q-level
+// on the question state, frozen by the first sponsor.
+//
+// Pinned typehash (v2.9):
 //   CommitIntent(bytes32 questionId,address submitter,bytes32 contentHash,
-//     uint256 feeAmount,uint256 stakeAmount,uint256 feeShareBps,
+//     uint256 feeAmount,uint256 stakeAmount,
 //     FeeShare[] feeShares,uint256 nonce,uint256 chainId,
 //     uint256 expiresAt)
 //   FeeShare(address recipient,uint256 basisPoints)
+//   → 0x6c9a41343766487b62acf6bde0a8c4100342465502c5fe1cf72f3a36114a84a9
 //
 // Mirrors contracts/src/RezonForge.sol's COMMIT_INTENT_TYPEHASH +
 // internal/signer/commit_intent.go +
@@ -42,7 +45,7 @@ export const COMMIT_INTENT_TYPES = {
     { name: "contentHash", type: "bytes32" },
     { name: "feeAmount", type: "uint256" },
     { name: "stakeAmount", type: "uint256" },
-    { name: "feeShareBps", type: "uint256" },
+    // v2.9: per-intent feeShareBps REMOVED (Q-level only).
     { name: "feeShares", type: "FeeShare[]" },
     { name: "nonce", type: "uint256" },
     { name: "chainId", type: "uint256" },
@@ -56,7 +59,6 @@ export interface CommitIntentMessage {
   contentHash: `0x${string}`;
   feeAmount: bigint;
   stakeAmount: bigint;
-  feeShareBps: bigint;
   feeShares: FeeShare[];
   nonce: bigint;
   chainId: bigint;
@@ -85,12 +87,12 @@ export const DEFAULT_COMMIT_TTL_SECONDS = 4 * 60;
  */
 export interface SolutionBody {
   body: string;
-  reasoning_tree: Array<{ because: string; therefore: string }>;
+  reasoningTree: Array<{ because: string; therefore: string }>;
   claims: Array<{
-    criterion_id: string;
+    criterionId: string;
     value: unknown;
     argument: string;
-    falsifiable_by: string;
+    falsifiableBy: string;
   }>;
 }
 
@@ -167,24 +169,23 @@ export function buildCommitIntentTypedData(params: {
   preflight: CommitPreflight;
   submitter: `0x${string}`;
   contentHash: `0x${string}`;
-  feeShareBps?: bigint;
   feeShares?: FeeShare[];
-  feeWei?: bigint;
-  stakeWei?: bigint;
+  feeAmount?: bigint;
+  stakeAmount?: bigint;
   expiresAtSeconds?: number;
   nonce?: bigint;
   nowSeconds?: number;
 }): CommitIntentTypedData {
   const now = params.nowSeconds ?? Math.floor(Date.now() / 1000);
   const ttl = params.expiresAtSeconds ?? now + DEFAULT_COMMIT_TTL_SECONDS;
-  const nonce = params.nonce ?? BigInt(params.preflight.nonce_next);
-  const fee = params.feeWei ?? BigInt(params.preflight.fee || "0");
-  const stake = params.stakeWei ?? BigInt(params.preflight.stake || "0");
+  const nonce = params.nonce ?? BigInt(params.preflight.nonceNext);
+  const fee = params.feeAmount ?? BigInt(params.preflight.feeAmount || "0");
+  const stake = params.stakeAmount ?? BigInt(params.preflight.stakeAmount || "0");
 
   return {
     domain: buildForgeDomain({
-      chainId: params.preflight.chain_id,
-      forgeAddress: params.preflight.forge_address as `0x${string}`,
+      chainId: params.preflight.chainId,
+      forgeAddress: params.preflight.forgeAddress as `0x${string}`,
     }),
     types: COMMIT_INTENT_TYPES,
     primaryType: "CommitIntent",
@@ -194,17 +195,13 @@ export function buildCommitIntentTypedData(params: {
       contentHash: params.contentHash,
       feeAmount: fee,
       stakeAmount: stake,
-      feeShareBps: params.feeShareBps ?? 0n,
-      // Chain rejects empty fee_shares regardless of feeShareBps. Reuse
+      // Chain rejects empty fee_shares unconditionally. Reuse
       // defaultFeeSharePolicy's shares list (single self-recipient at
-      // 10000 bps) so the chain-valid minimum has one definition. We
-      // keep our own bps default at 0n (vs the policy's 1n) — the
-      // policy's bps is a separate knob; the shares array is the part
-      // shared.
+      // 10000 bps) so the chain-valid minimum has one definition.
       feeShares:
         params.feeShares ?? defaultFeeSharePolicy(params.submitter).shares,
       nonce,
-      chainId: BigInt(params.preflight.chain_id),
+      chainId: BigInt(params.preflight.chainId),
       expiresAt: BigInt(ttl),
     },
   };
@@ -216,16 +213,15 @@ export function buildCommitIntentTypedData(params: {
 // hex fields are 0x-prefixed.
 
 export interface SubmitCommitRequestBody {
-  question_id: string;
+  questionId: string;
   submitter: string;
-  content_hash: string;
-  fee_amount: string;
-  stake_amount: string;
-  fee_share_bps: string;
-  fee_shares: { recipient: string; basis_points: string }[];
+  contentHash: string;
+  feeAmount: string;
+  stakeAmount: string;
+  feeShares: { recipient: string; basisPoints: string }[];
   nonce: string;
-  chain_id: string;
-  expires_at: string;
+  chainId: string;
+  expiresAt: string;
   signature: string;
 }
 
@@ -235,19 +231,18 @@ export function buildSubmitCommitRequestBody(params: {
 }): SubmitCommitRequestBody {
   const m = params.typedData.message;
   return {
-    question_id: m.questionId,
+    questionId: m.questionId,
     submitter: m.submitter,
-    content_hash: m.contentHash,
-    fee_amount: m.feeAmount.toString(),
-    stake_amount: m.stakeAmount.toString(),
-    fee_share_bps: m.feeShareBps.toString(),
-    fee_shares: m.feeShares.map((s) => ({
+    contentHash: m.contentHash,
+    feeAmount: m.feeAmount.toString(),
+    stakeAmount: m.stakeAmount.toString(),
+    feeShares: m.feeShares.map((s) => ({
       recipient: s.recipient,
-      basis_points: s.basisPoints.toString(),
+      basisPoints: s.basisPoints.toString(),
     })),
     nonce: m.nonce.toString(),
-    chain_id: m.chainId.toString(),
-    expires_at: m.expiresAt.toString(),
+    chainId: m.chainId.toString(),
+    expiresAt: m.expiresAt.toString(),
     signature: params.signature,
   };
 }

@@ -186,6 +186,8 @@ async function main() {
   const claimTx = await broadcastClaim(winnerWallet, {
     forgeAddress: ROUTER!,
     questionId: QID!,
+    // v2.9: explicit recipient — winner is both gas-payer and recipient.
+    recipient: winner.address,
     amount: poolAmount,
     proof,
   });

@@ -11,6 +11,7 @@ import { keccak256, stringToBytes } from "viem";
 import {
   buildCommitIntentTypedData,
   buildSubmitCommitRequestBody,
+  canonicalStringify,
   COMMIT_INTENT_TYPES,
   computeContentHash,
   DEFAULT_COMMIT_TTL_SECONDS,
@@ -32,31 +33,30 @@ const CONTENT_HASH =
 function preflight(overrides: Partial<CommitPreflight> = {}): CommitPreflight {
   return {
     qid: QID,
-    fee: "500000",
-    stake: "5000000",
+    feeAmount: "500000",
+    stakeAmount: "5000000",
     token: {
-      contract_address: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+      contractAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
       decimals: 6,
       symbol: "USDC",
-      chain_id: 84532,
+      chainId: 84532,
     },
-    forge_address: ROUTER,
-    chain_id: 84532,
-    nonce_next: "11",
+    forgeAddress: ROUTER,
+    chainId: 84532,
+    nonceNext: "11",
     _actions: [],
     ...overrides,
   };
 }
 
 describe("COMMIT_INTENT_TYPES field order", () => {
-  it("matches v2.5 typehash order + types (10 fields)", () => {
+  it("matches v2.9 typehash order + types (9 fields)", () => {
     expect(COMMIT_INTENT_TYPES.CommitIntent).toEqual([
       { name: "questionId", type: "bytes32" },
       { name: "submitter", type: "address" },
       { name: "contentHash", type: "bytes32" },
       { name: "feeAmount", type: "uint256" },
       { name: "stakeAmount", type: "uint256" },
-      { name: "feeShareBps", type: "uint256" },
       { name: "feeShares", type: "FeeShare[]" },
       { name: "nonce", type: "uint256" },
       { name: "chainId", type: "uint256" },
@@ -64,11 +64,13 @@ describe("COMMIT_INTENT_TYPES field order", () => {
     ]);
   });
 
-  it("typehash text matches the pinned cross-stack invariant", () => {
+  it("typehash text matches the v2.9 cross-stack invariant", () => {
     const text =
-      "CommitIntent(bytes32 questionId,address submitter,bytes32 contentHash,uint256 feeAmount,uint256 stakeAmount,uint256 feeShareBps,FeeShare[] feeShares,uint256 nonce,uint256 chainId,uint256 expiresAt)" +
+      "CommitIntent(bytes32 questionId,address submitter,bytes32 contentHash,uint256 feeAmount,uint256 stakeAmount,FeeShare[] feeShares,uint256 nonce,uint256 chainId,uint256 expiresAt)" +
       "FeeShare(address recipient,uint256 basisPoints)";
-    expect(keccak256(stringToBytes(text)).startsWith("0x653d")).toBe(true);
+    expect(keccak256(stringToBytes(text))).toBe(
+      "0x6c9a41343766487b62acf6bde0a8c4100342465502c5fe1cf72f3a36114a84a9",
+    );
   });
 });
 
@@ -104,13 +106,13 @@ describe("computeContentHash", () => {
   it("hashes structured bodies in key-order-independent fashion", () => {
     const a = {
       body: "hi",
-      reasoning_tree: [{ because: "x", therefore: "y" }],
+      reasoningTree: [{ because: "x", therefore: "y" }],
       claims: [],
     };
     const b: typeof a = {} as typeof a;
     // Insert in reverse / scrambled order.
     (b as Record<string, unknown>).claims = [];
-    (b as Record<string, unknown>).reasoning_tree = [
+    (b as Record<string, unknown>).reasoningTree = [
       { therefore: "y", because: "x" },
     ];
     (b as Record<string, unknown>).body = "hi";
@@ -118,9 +120,40 @@ describe("computeContentHash", () => {
   });
 
   it("differs when structured-body content differs", () => {
-    const a = { body: "hi", reasoning_tree: [], claims: [] };
-    const b = { body: "hI", reasoning_tree: [], claims: [] };
+    const a = { body: "hi", reasoningTree: [], claims: [] };
+    const b = { body: "hI", reasoningTree: [], claims: [] };
     expect(computeContentHash(a)).not.toBe(computeContentHash(b));
+  });
+
+  // Cross-stack pinned vector — bytes-identical to the Go fixture in
+  // internal/service/content_hash_test.go::TestComputeSolutionContentHash_RoundTrip.
+  // Any drift in either side breaks signature verification on chain
+  // (the contentHash is signed by the submitter and recomputed by the
+  // backend at submit time).
+  it("matches the cross-stack pinned canonical vector", () => {
+    const body = {
+      body: "This is the markdown body.",
+      reasoningTree: [
+        { because: "premise A", therefore: "conclusion A" },
+        { because: "premise B", therefore: "conclusion B" },
+      ],
+      claims: [
+        {
+          criterionId: "crit_1",
+          value: 150,
+          argument: "load test shows p95=150ms",
+          falsifiableBy: "rerun the same load test",
+        },
+      ],
+    };
+    const expectedJSON =
+      '{"body":"This is the markdown body.","claims":[{"argument":"load test shows p95=150ms","criterionId":"crit_1","falsifiableBy":"rerun the same load test","value":150}],"reasoningTree":[{"because":"premise A","therefore":"conclusion A"},{"because":"premise B","therefore":"conclusion B"}]}';
+    expect(canonicalStringify(body)).toBe(expectedJSON);
+    // Pin matches keccak256 of expectedJSON — the Go side asserts the
+    // same hash via crypto.Keccak256([]byte(expectedJSON)).
+    expect(computeContentHash(body)).toBe(
+      keccak256(stringToBytes(expectedJSON)),
+    );
   });
 });
 
@@ -133,7 +166,6 @@ describe("buildCommitIntentTypedData", () => {
       preflight: preflight(),
       submitter: SUBMITTER,
       contentHash: CONTENT_HASH,
-      feeShareBps: policy.bps,
       feeShares: policy.shares,
       nowSeconds: NOW,
     });
@@ -149,7 +181,6 @@ describe("buildCommitIntentTypedData", () => {
       preflight: preflight(),
       submitter: SUBMITTER,
       contentHash: CONTENT_HASH,
-      feeShareBps: policy.bps,
       feeShares: policy.shares,
       nowSeconds: NOW,
     });
@@ -162,10 +193,9 @@ describe("buildCommitIntentTypedData", () => {
       preflight: preflight(),
       submitter: SUBMITTER,
       contentHash: CONTENT_HASH,
-      feeShareBps: policy.bps,
       feeShares: policy.shares,
-      feeWei: BigInt("1000"),
-      stakeWei: BigInt("2000"),
+      feeAmount: BigInt("1000"),
+      stakeAmount: BigInt("2000"),
       nowSeconds: NOW,
     });
     expect(td.message.feeAmount).toBe(BigInt("1000"));
@@ -177,11 +207,11 @@ describe("buildCommitIntentTypedData", () => {
       preflight: preflight(),
       submitter: SUBMITTER,
       contentHash: CONTENT_HASH,
-      feeShareBps: BigInt(1),
       feeShares: [{ recipient: SUBMITTER, basisPoints: BigInt(10000) }],
       nowSeconds: NOW,
     });
-    expect(td.message.feeShareBps).toBe(BigInt(1));
+    // v2.9: per-intent feeShareBps removed (Q-level only).
+    expect("feeShareBps" in td.message).toBe(false);
     expect(td.message.feeShares).toEqual([
       { recipient: SUBMITTER, basisPoints: BigInt(10000) },
     ]);
@@ -192,7 +222,6 @@ describe("buildCommitIntentTypedData", () => {
       preflight: preflight(),
       submitter: SUBMITTER,
       contentHash: CONTENT_HASH,
-      feeShareBps: policy.bps,
       feeShares: policy.shares,
       nowSeconds: NOW,
     });
@@ -207,7 +236,6 @@ describe("buildSubmitCommitRequestBody", () => {
       preflight: preflight(),
       submitter: SUBMITTER,
       contentHash: CONTENT_HASH,
-      feeShareBps: policy.bps,
       feeShares: policy.shares,
       nowSeconds: 1_714_000_000,
     });
@@ -215,14 +243,15 @@ describe("buildSubmitCommitRequestBody", () => {
       typedData: td,
       signature: "0xbeef" as `0x${string}`,
     });
-    expect(body.question_id).toBe(QID);
+    expect(body.questionId).toBe(QID);
     expect(body.submitter).toBe(SUBMITTER);
-    expect(body.content_hash).toBe(CONTENT_HASH);
-    expect(body.fee_amount).toBe("500000");
-    expect(body.stake_amount).toBe("5000000");
-    expect(body.fee_share_bps).toBe("1");
-    expect(body.fee_shares).toEqual([
-      { recipient: SUBMITTER, basis_points: "10000" },
+    expect(body.contentHash).toBe(CONTENT_HASH);
+    expect(body.feeAmount).toBe("500000");
+    expect(body.stakeAmount).toBe("5000000");
+    // v2.9: per-intent feeShareBps removed.
+    expect("feeShareBps" in body).toBe(false);
+    expect(body.feeShares).toEqual([
+      { recipient: SUBMITTER, basisPoints: "10000" },
     ]);
     expect(body.signature).toBe("0xbeef");
   });

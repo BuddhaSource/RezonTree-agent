@@ -29,28 +29,27 @@ function preflight(overrides: Partial<FundPreflight> = {}): FundPreflight {
   return {
     mode: "cosponsor",
     qid: QID,
-    recommended_amount_floor: "1000000",
+    recommendedAmountFloor: "1000000",
     token: {
-      contract_address: TOKEN,
+      contractAddress: TOKEN,
       decimals: 6,
       symbol: "USDC",
-      chain_id: 84532,
+      chainId: 84532,
     },
-    forge_address: ROUTER,
-    chain_id: 84532,
-    nonce_next: "11",
+    forgeAddress: ROUTER,
+    chainId: 84532,
+    nonceNext: "11",
     _actions: [],
     ...overrides,
   };
 }
 
 describe("COSPONSOR_INTENT_TYPES field order", () => {
-  it("matches RezonForge typehash byte-for-byte (8 fields)", () => {
+  it("matches RezonForge v2.9 typehash byte-for-byte (7 fields)", () => {
     expect(COSPONSOR_INTENT_TYPES.CosponsorIntent).toEqual([
       { name: "questionId", type: "bytes32" },
       { name: "sponsor", type: "address" },
       { name: "amount", type: "uint256" },
-      { name: "feeShareBps", type: "uint256" },
       { name: "feeShares", type: "FeeShare[]" },
       { name: "nonce", type: "uint256" },
       { name: "chainId", type: "uint256" },
@@ -58,13 +57,15 @@ describe("COSPONSOR_INTENT_TYPES field order", () => {
     ]);
   });
 
-  // Pinned typehash (per goals.md): 0x06c6...
-  it("typehash text matches the pinned cross-stack invariant", () => {
+  // v2.9 pinned typehash: 0xd9c03036...
+  it("typehash text matches the v2.9 cross-stack invariant", () => {
     const text =
-      "CosponsorIntent(bytes32 questionId,address sponsor,uint256 amount,uint256 feeShareBps,FeeShare[] feeShares,uint256 nonce,uint256 chainId,uint256 expiresAt)" +
+      "CosponsorIntent(bytes32 questionId,address sponsor,uint256 amount,FeeShare[] feeShares,uint256 nonce,uint256 chainId,uint256 expiresAt)" +
       "FeeShare(address recipient,uint256 basisPoints)";
     const hash = keccak256(stringToBytes(text));
-    expect(hash.startsWith("0x06c6")).toBe(true);
+    expect(hash).toBe(
+      "0xd9c03036132b2691bcf944f8964155d518856f9766727315bba50e72a9769dd4",
+    );
   });
 });
 
@@ -77,7 +78,7 @@ describe("buildCosponsorIntentTypedData", () => {
       preflight: preflight(),
       sponsor: COSPONSOR,
       amountWei: BigInt("5000000"),
-      feeShareBps: policy.bps,
+
       feeShares: policy.shares,
       nowSeconds: NOW,
     });
@@ -91,7 +92,7 @@ describe("buildCosponsorIntentTypedData", () => {
       preflight: preflight(),
       sponsor: COSPONSOR,
       amountWei: BigInt("5000000"),
-      feeShareBps: policy.bps,
+
       feeShares: policy.shares,
       nowSeconds: NOW,
     });
@@ -110,7 +111,7 @@ describe("buildCosponsorIntentTypedData", () => {
       preflight: preflight(),
       sponsor: COSPONSOR,
       amountWei: BigInt("1000000"),
-      feeShareBps: policy.bps,
+
       feeShares: policy.shares,
       nowSeconds: NOW,
     });
@@ -127,7 +128,7 @@ describe("buildCosponsorFundRequestBody", () => {
       preflight: preflight(),
       sponsor: COSPONSOR,
       amountWei: BigInt("5000000"),
-      feeShareBps: policy.bps,
+
       feeShares: policy.shares,
       nowSeconds: 1_714_000_000,
     });
@@ -137,12 +138,13 @@ describe("buildCosponsorFundRequestBody", () => {
     });
     expect(body.mode).toBe("cosponsor");
     expect("oracle" in body).toBe(false);
-    expect("stake_floor" in body).toBe(false);
-    expect("sponsorship_floor" in body).toBe(false);
-    expect("abandonment_grace_period" in body).toBe(false);
-    expect(body.fee_share_bps).toBe("1");
-    expect(body.fee_shares).toEqual([
-      { recipient: COSPONSOR, basis_points: "10000" },
+    expect("stakeFloor" in body).toBe(false);
+    expect("sponsorshipFloor" in body).toBe(false);
+    expect("abandonmentGracePeriod" in body).toBe(false);
+    // v2.9: per-intent feeShareBps removed — body must NOT carry it.
+    expect("feeShareBps" in body).toBe(false);
+    expect(body.feeShares).toEqual([
+      { recipient: COSPONSOR, basisPoints: "10000" },
     ]);
     expect(body.signature).toBe("0xcafe");
   });
