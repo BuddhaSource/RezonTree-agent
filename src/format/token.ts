@@ -20,7 +20,7 @@ export interface TokenInfo {
   /** Number of decimals — single source of truth for fmt/parse. */
   decimals: number;
   /** Optional EIP-155 chain id; useful for explorer links. */
-  chain_id?: number;
+  chainId?: number;
 }
 
 export interface FmtTokenOptions {

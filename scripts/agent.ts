@@ -190,12 +190,12 @@ async function login(idx: number): Promise<{ token: string; address: Address }> 
     expiresAt,
     domain,
   });
-  const r = await callAPI<{ access_token: string; address: string }>(
+  const r = await callAPI<{ accessToken: string; address: string }>(
     "POST",
     "/auth/wallet",
-    { address, chain_id: domain.chainId, expires_at: expiresAt, signature: signed.signature },
+    { address, chainId: domain.chainId, expiresAt: expiresAt, signature: signed.signature },
   );
-  return { token: r.access_token, address: address };
+  return { token: r.accessToken, address: address };
 }
 
 async function awaitReceipt(hash: Hex): Promise<void> {
@@ -344,7 +344,7 @@ program
   .description("Author + commit a solution. Reads payload from --solution-file.")
   .requiredOption("--idx <n>", "HD index of the solver wallet", (s) => Number.parseInt(s, 10))
   .requiredOption("--qid <id>", "question_id (qst_...)")
-  .requiredOption("--solution-file <path>", "JSON: { body, reasoning_tree, claims }")
+  .requiredOption("--solution-file <path>", "JSON: { body, reasoningTree, claims }")
   .action(async (opts) => {
     const idx = opts.idx as number;
     const qid = opts.qid as string;

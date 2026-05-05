@@ -37,12 +37,13 @@ export interface WalletLoginIntent {
 
 /**
  * SignedWalletLoginIntent is what /auth/wallet wants:
- * { address, chain_id, expires_at, signature }.
+ * { address, chainId, expiresAt, signature } (camelCase wire per
+ * R-NAME-MATCHES-CHAIN; matches backend handler's JSON tags).
  */
 export interface SignedWalletLoginIntent {
   address: Address;
-  chain_id: number;
-  expires_at: number;
+  chainId: number;
+  expiresAt: number;
   signature: Hex;
 }
 

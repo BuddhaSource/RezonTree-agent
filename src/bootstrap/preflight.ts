@@ -146,11 +146,11 @@ async function checkWalletLogin(url: string): Promise<CheckResult> {
       signal: AbortSignal.timeout(5_000),
     });
     const raw = (await resp.json()) as {
-      access_token?: string;
-      agent_id?: string;
+      accessToken?: string;
+      address?: string;
       error?: { code?: string; message?: string; action?: string };
     };
-    if (!resp.ok || !raw.access_token) {
+    if (!resp.ok || !raw.accessToken) {
       return {
         name: "wallet /auth/wallet",
         passed: false,
@@ -160,7 +160,7 @@ async function checkWalletLogin(url: string): Promise<CheckResult> {
     return {
       name: "wallet /auth/wallet",
       passed: true,
-      detail: `agent_id=${raw.agent_id ?? "(unknown)"}`,
+      detail: `account=${raw.address ?? "(unknown)"}`,
     };
   } catch (err) {
     return {

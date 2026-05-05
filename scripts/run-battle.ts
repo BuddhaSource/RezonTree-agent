@@ -214,14 +214,14 @@ async function loginWallet(wallet: AgentWallet): Promise<AuthedWallet> {
     expiresAt: Math.floor(Date.now() / 1000) + 300,
     domain: loadLoginDomain(),
   });
-  const r = await call<{ access_token: string; address: Address }>(
+  const r = await call<{ accessToken: string; address: Address }>(
     "POST",
     "/auth/wallet",
     body,
   );
   const authed: CachedAuth = {
     wallet,
-    token: r.access_token,
+    token: r.accessToken,
     address: r.address,
     issuedAt: Date.now(),
   };

@@ -48,8 +48,8 @@ const r = await fetch("http://localhost:8080/auth/wallet", {
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
     address: acc.address,
-    chain_id: 84532,
-    expires_at: expiresAt,
+    chainId: 84532,
+    expiresAt: expiresAt,
     signature: sig,
   }),
 });

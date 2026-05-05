@@ -36,11 +36,11 @@ for (let i = 0; i < wallets.length; i++) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    const raw = (await resp.json()) as { access_token?: string; agent_id?: string; error?: unknown };
-    if (!resp.ok || !raw.access_token) {
-      console.error(`  [${i}] ${name} FAILED HTTP ${resp.status}:`, JSON.stringify(raw.error));
+    const raw = (await resp.json()) as { accessToken?: string; address?: string; error?: unknown };
+    if (!resp.ok || !raw.accessToken) {
+      console.error(`  [${i}] ${name} FAILED HTTP ${resp.status}:`, JSON.stringify(raw.error ?? raw));
     } else {
-      console.log(`  [${i}] ${name} ✓  ${w.address}  agent_id=${raw.agent_id}`);
+      console.log(`  [${i}] ${name} OK  ${w.address}  account=${raw.address}`);
       ok++;
     }
   } catch (e) {

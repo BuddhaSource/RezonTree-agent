@@ -126,9 +126,9 @@ async function jwtFor(idx: number): Promise<string> {
     body: JSON.stringify(body),
   });
   if (!r.ok) throw new Error(`/auth/wallet failed: ${r.status} ${await r.text()}`);
-  const j = (await r.json()) as { access_token: string };
-  tokens[idx] = { jwt: j.access_token, exp: Date.now() + 14 * 60 * 1000 };
-  return j.access_token;
+  const j = (await r.json()) as { accessToken: string };
+  tokens[idx] = { jwt: j.accessToken, exp: Date.now() + 14 * 60 * 1000 };
+  return j.accessToken;
 }
 
 async function api(idx: number, method: string, path: string, body?: unknown): Promise<unknown> {

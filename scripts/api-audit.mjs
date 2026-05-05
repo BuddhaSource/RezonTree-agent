@@ -53,16 +53,16 @@ const domain = loadLoginDomain();
 const wallet0 = deriveAgentWallet(MNEMONIC, 0, domain.chainId);
 const loginBody0 = await signWalletLoginIntent({ wallet: wallet0, issuedAt: Math.floor(Date.now() / 1000), domain });
 const authRes = await req('wallet-auth-agent-0', 'POST', '/auth/wallet', loginBody0);
-const agentJWT = authRes.body?.access_token;
-const agentID = authRes.body?.agent_id;
+const agentJWT = authRes.body?.accessToken;
+const agentID = authRes.body?.address;
 if (!agentJWT) { console.error('FATAL: could not get agent JWT'); process.exit(1); }
 
 // Derive a second agent for cross-agent tests
 const wallet1 = deriveAgentWallet(MNEMONIC, 1, domain.chainId);
 const loginBody1 = await signWalletLoginIntent({ wallet: wallet1, issuedAt: Math.floor(Date.now() / 1000), domain });
 const authRes1 = await req('wallet-auth-agent-1', 'POST', '/auth/wallet', loginBody1);
-const agent1JWT = authRes1.body?.access_token;
-const agent1ID = authRes1.body?.agent_id;
+const agent1JWT = authRes1.body?.accessToken;
+const agent1ID = authRes1.body?.address;
 
 // Test bad wallet auth
 await req('wallet-auth-missing-fields', 'POST', '/auth/wallet', { evm_address: '0xBAD' });
@@ -74,14 +74,14 @@ await req('register-user', 'POST', '/auth/register', {
   email, password: 'Audit1234!', name: 'Audit User',
 });
 const loginRes = await req('login-user', 'POST', '/auth/login', { email, password: 'Audit1234!' });
-const userJWT = loginRes.body?.access_token;
-const refreshToken = loginRes.body?.refresh_token;
+const userJWT = loginRes.body?.accessToken;
+const refreshToken = loginRes.body?.refreshToken;
 
 // Refresh token
 if (refreshToken) {
-  await req('refresh-token', 'POST', '/auth/refresh', { refresh_token: refreshToken });
+  await req('refresh-token', 'POST', '/auth/refresh', { refreshToken: refreshToken });
 }
-await req('refresh-token-invalid', 'POST', '/auth/refresh', { refresh_token: 'bad_token' });
+await req('refresh-token-invalid', 'POST', '/auth/refresh', { refreshToken: 'bad_token' });
 
 // client_credentials token (legacy)
 await req('auth-token-missing-fields', 'POST', '/auth/token', {
@@ -192,14 +192,14 @@ let solutionID;
 if (problemID) {
   // Validate first
   const validateBody = {
-    summary: 'Audit validation test — checking fee estimate.',
-    reasoning_tree: [{ because: 'The API contract requires a reasoning tree', therefore: 'We include one here.' }],
+    body: 'Audit validation test — checking fee estimate.',
+    reasoningTree: [{ because: 'The API contract requires a reasoning tree', therefore: 'We include one here.' }],
     claims: [
       {
-        criterion_id: createRes.body?.success_criteria?.[0]?.id ?? 'crt_test',
+        criterionId: createRes.body?.successCriteria?.[0]?.id ?? 'crt_test',
         value: true,
         argument: 'All endpoints were called and responses recorded.',
-        falsifiable_by: 'Any endpoint returning an unexpected shape would disprove this.',
+        falsifiableBy: 'Any endpoint returning an unexpected shape would disprove this.',
       },
     ],
   };
@@ -210,15 +210,15 @@ if (problemID) {
   solutionID = submitRes.body?.id;
 
   // Validation errors
-  await authedReq('submit-solution-missing-summary', 'POST', `/v1/problems/${problemID}/solutions`, {
-    reasoning_tree: [{ because: 'test', therefore: 'test' }],
+  await authedReq('submit-solution-missing-body', 'POST', `/v1/problems/${problemID}/solutions`, {
+    reasoningTree: [{ because: 'test', therefore: 'test' }],
     claims: [],
   }, agentJWT);
 
   await authedReq('submit-solution-bad-reasoning', 'POST', `/v1/problems/${problemID}/solutions`, {
-    summary: 'test',
-    reasoning_tree: [{ step: 'wrong shape' }],
-    claims: [{ criterion_id: 'crt_x', value: true, argument: 'x', falsifiable_by: 'y' }],
+    body: 'test',
+    reasoningTree: [{ step: 'wrong shape' }],
+    claims: [{ criterionId: 'crt_x', value: true, argument: 'x', falsifiableBy: 'y' }],
   }, agentJWT);
 
   // List solutions

@@ -275,11 +275,11 @@ async function getAgentToken(): Promise<string> {
       `Wallet auth failed: ${resp.status} ${err.error?.code} — ${err.error?.message}\nAction: ${err.error?.action}`,
     );
   }
-  const data = raw as { access_token: string; agent_id?: string };
+  const data = raw as { accessToken: string; address?: string };
   cachedToken = {
-    jwt: data.access_token,
+    jwt: data.accessToken,
     expiresAt: Date.now() + JWT_TTL_MS,
-    agentId: data.agent_id,
+    agentId: data.address,
   };
   return cachedToken.jwt;
 }
@@ -1061,17 +1061,17 @@ server.tool(
   "View your protocol-internal wallet activity (contributions, commits, votes, refunds, claims). This reflects funds that have moved through RezonForge only — NOT your raw on-chain USDC balance. Use get_usdc_balance to check spendable tokens before funding.",
   {
     limit: z.number().optional().describe("Max entries (default 20)"),
-    before_block: z.number().optional().describe("Pagination: block number cursor"),
-    before_log_index: z.number().optional().describe("Pagination: log index cursor (pair with before_block)"),
-    chain_id: z.number().optional().describe("Filter by chain ID"),
+    beforeBlock: z.number().optional().describe("Pagination: block number cursor"),
+    beforeLogIndex: z.number().optional().describe("Pagination: log index cursor (pair with beforeBlock)"),
+    chainId: z.number().optional().describe("Filter by chain ID"),
   },
   async (params) => {
     const { address } = getClients();
     const query = new URLSearchParams();
     if (params.limit) query.set("limit", String(params.limit));
-    if (params.before_block) query.set("before_block", String(params.before_block));
-    if (params.before_log_index) query.set("before_log_index", String(params.before_log_index));
-    if (params.chain_id) query.set("chain_id", String(params.chain_id));
+    if (params.beforeBlock) query.set("beforeBlock", String(params.beforeBlock));
+    if (params.beforeLogIndex) query.set("beforeLogIndex", String(params.beforeLogIndex));
+    if (params.chainId) query.set("chainId", String(params.chainId));
     const qs = query.toString();
     const result = await apiCall(
       "GET",

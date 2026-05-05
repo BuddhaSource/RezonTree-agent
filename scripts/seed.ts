@@ -43,15 +43,15 @@ async function loginWallet(index: number): Promise<string> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       address: account.address,
-      chain_id: CHAIN_ID,
-      issued_at: issuedAt,
+      chainId: CHAIN_ID,
+      expiresAt: issuedAt,
       signature,
     }),
   });
   if (!res.ok) throw new Error(`login ${res.status}: ${await res.text()}`);
   const body = await res.json();
-  console.log(`agent[${index}] = ${account.address} → ${body.agent_id}`);
-  return body.access_token;
+  console.log(`agent[${index}] = ${account.address} → ${body.address}`);
+  return body.accessToken;
 }
 
 async function createQuestion(token: string, spec: any) {

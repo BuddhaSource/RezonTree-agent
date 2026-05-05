@@ -22,7 +22,11 @@
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_LOGIN_DOMAIN } from "./domain.js";
-import { HARDHAT_TEST_MNEMONIC, deriveAgentWallet } from "./derive.js";
+import {
+  HARDHAT_TEST_MNEMONIC,
+  deriveAgentWallet,
+  deriveAgentWallets,
+} from "./derive.js";
 import { signWalletLoginIntent, verifySignedLoginIntent } from "./signer.js";
 
 const HARDHAT_ACCOUNT_0 =
@@ -80,8 +84,8 @@ describe("signWalletLoginIntent — EIP-712 round-trip", () => {
       expiresAt: EXPIRES_AT,
     });
     expect(body.address.toLowerCase()).toBe(HARDHAT_ACCOUNT_0);
-    expect(body.chain_id).toBe(84532);
-    expect(body.expires_at).toBe(EXPIRES_AT);
+    expect(body.chainId).toBe(84532);
+    expect(body.expiresAt).toBe(EXPIRES_AT);
     expect(body.signature).toMatch(/^0x[0-9a-f]{130}$/); // 65 bytes
 
     // Round-trip: the signature verifies against the signer.
@@ -124,8 +128,8 @@ describe("signWalletLoginIntent — EIP-712 round-trip", () => {
       expiresAt: EXPIRES_AT,
     });
 
-    // Tamper with expires_at — verification should reject.
-    const tamperedExpiresAt = { ...body, expires_at: EXPIRES_AT + 1 };
+    // Tamper with expiresAt — verification should reject.
+    const tamperedExpiresAt = { ...body, expiresAt: EXPIRES_AT + 1 };
     expect(await verifySignedLoginIntent(tamperedExpiresAt)).toBe(false);
 
     // Tamper with claimed address — verification should reject.
@@ -134,6 +138,37 @@ describe("signWalletLoginIntent — EIP-712 round-trip", () => {
       address: HARDHAT_ACCOUNT_1 as `0x${string}`,
     };
     expect(await verifySignedLoginIntent(tamperedAddress)).toBe(false);
+  });
+});
+
+// Regression guard for the HD-derive ↔ signature-recovery invariant.
+//
+// History: a hypothesized viem-upgrade bug (`getHdKey().privateKey`
+// returning the parent extended key instead of the leaf signing key)
+// would surface as backend `/auth/wallet` 401s of the form
+// "signature recovered 0xAAA, expected 0xBBB" for *every* derived
+// wallet. The class of bug is silent at unit level if you only test
+// agentIndex=0 (which is the master derivation in some shapes), so
+// this loopback drives the same path the harness takes — multiple
+// indexes, full sign-then-recover round-trip — and asserts that
+// `body.address === recoveredSigner` for each.
+//
+// If this test ever flips to FAIL, the fix is in `derive.ts`: do
+// not extract privateKey from the HDKey wrapper; either return the
+// HDAccount directly to callers (Option A) or derive the leaf via
+// `@scure/bip32` HDKey directly (Option B). See task notes for
+// loop covering the bug.
+describe("HD derive ↔ EIP-712 sign-and-recover loopback (regression)", () => {
+  it("each of 6 sequential agents produces a signature recoverable to its declared address", async () => {
+    const wallets = deriveAgentWallets(HARDHAT_TEST_MNEMONIC, 6, 84532);
+    expect(wallets).toHaveLength(6);
+    const expiresAt = 1_700_000_000;
+    for (const w of wallets) {
+      const body = await signWalletLoginIntent({ wallet: w, expiresAt });
+      expect(body.address).toBe(w.address);
+      const ok = await verifySignedLoginIntent(body);
+      expect(ok, `agentIndex=${w.agentIndex} (${w.address}) sign+recover MUST round-trip — HD-derive vs sign-key drift`).toBe(true);
+    }
   });
 });
 

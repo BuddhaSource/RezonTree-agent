@@ -94,7 +94,7 @@ describe("runPreflight — exit codes", () => {
       }
       if (s.endsWith("/auth/wallet")) {
         return new Response(
-          JSON.stringify({ access_token: "jwt.mock", agent_id: "agt_mock" }),
+          JSON.stringify({ accessToken: "jwt.mock", address: "agt_mock" }),
           { status: 200 },
         );
       }

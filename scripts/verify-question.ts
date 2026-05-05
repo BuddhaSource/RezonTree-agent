@@ -187,17 +187,17 @@ async function main() {
   const qDetail = await fetch(`${BACKEND}/v1/questions/${qidArg}`).then((r) =>
     r.ok ? r.json() : null,
   ) as null | {
-    chain_stake_floor?: string;
-    chain_stake_basis_points?: number;
-    chain_vote_fee?: string;
-    chain_funding_deadline?: number;
-    chain_total_claimable?: string;
+    chainStakeFloor?: string;
+    chainStakeBasisPoints?: number;
+    chainVoteFee?: string;
+    chainFundingDeadline?: number;
+    chainTotalClaimable?: string;
     sponsors?: unknown[];
   };
   const chainMirrorPresent =
-    !!qDetail?.chain_stake_floor ||
-    !!qDetail?.chain_funding_deadline ||
-    qDetail?.chain_stake_basis_points !== undefined;
+    !!qDetail?.chainStakeFloor ||
+    !!qDetail?.chainFundingDeadline ||
+    qDetail?.chainStakeBasisPoints !== undefined;
   console.log(
     `[chain_* mirrors]   ${chainMirrorPresent ? "✅ populated" : "❌ ABSENT — projector gap on chain_* columns"}`,
   );

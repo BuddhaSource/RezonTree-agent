@@ -87,8 +87,8 @@ export async function signWalletLoginIntent(
 
   return {
     address: input.wallet.address,
-    chain_id: domain.chainId,
-    expires_at: input.expiresAt,
+    chainId: domain.chainId,
+    expiresAt: input.expiresAt,
     signature,
   };
 }
@@ -104,11 +104,11 @@ export async function verifySignedLoginIntent(
   body: SignedWalletLoginIntent,
   domain: LoginDomain = DEFAULT_LOGIN_DOMAIN,
 ): Promise<boolean> {
-  if (body.chain_id !== domain.chainId) return false;
+  if (body.chainId !== domain.chainId) return false;
   const message: WalletLoginIntent = {
     ethAddress: body.address as Address,
-    chainId: BigInt(body.chain_id),
-    expiresAt: BigInt(body.expires_at),
+    chainId: BigInt(body.chainId),
+    expiresAt: BigInt(body.expiresAt),
   };
   return verifyTypedData({
     address: body.address as Address,

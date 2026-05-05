@@ -57,8 +57,8 @@ function makeFakeFetch(backend: FakeBackend): typeof fetch {
     if (status === 201) {
       return new Response(
         JSON.stringify({
-          access_token: "mock.jwt",
-          agent_id: `agt_${body.address.slice(2, 10)}`,
+          accessToken: "mock.jwt",
+          address: `agt_${body.address.slice(2, 10)}`,
         }),
         { status },
       );

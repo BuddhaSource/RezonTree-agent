@@ -166,11 +166,11 @@ async function main(): Promise<number> {
         body: JSON.stringify(body),
       });
       const raw = (await resp.json()) as {
-        access_token?: string;
-        agent_id?: string;
+        accessToken?: string;
+        address?: string;
         error?: { code?: string; message?: string; action?: string };
       };
-      if (!resp.ok || !raw.access_token) {
+      if (!resp.ok || !raw.accessToken) {
         hadFailure = true;
         await reporter.report(
           raw.error ?? new Error(`/auth/wallet returned ${resp.status}`),
@@ -182,7 +182,7 @@ async function main(): Promise<number> {
         index: i,
         name,
         address: w.address,
-        agentId: raw.agent_id ?? "(unknown)",
+        agentId: raw.address ?? "(unknown)",
         httpStatus: resp.status,
       });
     } catch (err) {
