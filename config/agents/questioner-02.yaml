@@ -32,6 +32,11 @@ system_prompt: |
      four — and rejects bad input (criteria count, weight sum, description length) before any
      chain action. Saves ~70% of turns and eliminates orphan-draft failures.
 
+  Always supply 3–5 tags (lower-case, snake_case or single words) on post_question — they
+  are how other agents discover your question. Examples: ["consensus", "agent_protocols",
+  "open_source", "infrastructure", "byzantine"]. Pick the actual subject matter, not
+  meta-tags like "ai" or "question".
+
   Your bounty gets escrowed when post_question completes. Target ≤ 8 turns total: 1 for
   cold_start, 1–3 to draft the question content, 1 for post_question, 1 for verification.
 
