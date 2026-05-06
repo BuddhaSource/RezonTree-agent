@@ -1098,6 +1098,328 @@ server.tool(
   },
 );
 
+// ─────────────────────────────────────────────────────────────────────
+// COMPOSITE TOOLS — `rt` namespace simplification (#372)
+//
+// These wrap the existing primitives into single-call workflows so
+// agents don't have to orchestrate create_question + fund_question
+// (and risk leaving an orphaned draft when the second leg fails).
+// Each composite injects the relevant advisory prompt scaffold so
+// the agent has guidance baked in.
+// ─────────────────────────────────────────────────────────────────────
+
+import { bundlePrompts, loadPrompt } from "../../src/prompts/index.js";
+import {
+  ETH_FAUCETS,
+  ethFaucetMessage,
+  requestUSDC,
+} from "../../src/faucet/circle.js";
+
+// ── me — composite "what is my situation" ────────────────────────────
+
+server.tool(
+  "me",
+  "Composite orientation tool. Returns wallet address, USDC + ETH balance, your authored questions, your active solutions/votes, and pending claims. Call this first when you start a session — saves 3+ low-level lookups.",
+  {},
+  async () => {
+    const { address } = getClients();
+    const [profile, balance, participating] = await Promise.all([
+      apiCall("GET", `/v1/accounts/${address}/profile`).catch(() => null),
+      apiCall("GET", "/v1/wallet/balance").catch(() => null),
+      apiCall(
+        "GET",
+        `/v1/accounts/${address}/participating-questions`,
+      ).catch(() => null),
+    ]);
+    const summary = {
+      address,
+      profile,
+      balance,
+      participating,
+      hint: "Authored, solved, voted, claimable rolled up. To take action, call post_question / submit_solution / vote_workflow / claim.",
+    };
+    return {
+      content: [{ type: "text", text: JSON.stringify(summary, null, 2) }],
+    };
+  },
+);
+
+// ── post_question — atomic create + sponsor ──────────────────────────
+
+server.tool(
+  "post_question",
+  "Composite: scaffolds + creates + sponsors a question on-chain in one call. Replaces the create_question → fund_question 2-step that risked leaving orphaned drafts. Injects the post_question_scaffold + weight_guidance advisory prompts.",
+  {
+    title: z.string().describe("≤ 100 chars. Decision being made, not just topic."),
+    description: z.string().describe("≥ 1000 chars. See post_question_scaffold.md."),
+    bounty_usd: z
+      .string()
+      .describe("USDC bounty (e.g. '5.00'). Min 1.00 for sponsor."),
+    voting_deadline: z
+      .string()
+      .describe("ISO 8601, default 48h from now."),
+    success_criteria: z
+      .array(
+        z.object({
+          name: z.string(),
+          type: z.enum(["numeric", "boolean", "checklist"]),
+          target: z.string(),
+          weight: z.number(),
+          unit: z.string().optional(),
+        }),
+      )
+      .describe("Exactly 3, weights sum to 100. See weight_guidance.md."),
+    assumptions: z
+      .array(
+        z.object({
+          claim: z.string(),
+          status: z.enum(["fixed", "challengeable"]),
+        }),
+      )
+      .optional(),
+    context: z.string().optional(),
+    example: z.string().optional(),
+    scope: z.string().optional(),
+    tags: z.array(z.string()).optional(),
+  },
+  async (params) => {
+    const env = requireRouterEnv();
+    const { walletClient, publicClient, privateKey, address } = getClients();
+
+    return withIdempotency(
+      "post_question",
+      { addr: address, title: params.title, bounty: params.bounty_usd },
+      async () => {
+        // Step 1 — create question (off-chain row, status=draft).
+        const created = (await apiCall("POST", "/v1/questions", {
+          title: params.title,
+          description: params.description,
+          bountyAmount: params.bounty_usd,
+          bountyCurrency: "USD",
+          votingDeadline: params.voting_deadline,
+          successCriteria: params.success_criteria,
+          assumptions: params.assumptions ?? [],
+          context: params.context,
+          example: params.example,
+          scope: params.scope,
+          tags: params.tags ?? [],
+        })) as { id: string; qid: string };
+
+        // Step 2 — sponsor preflight.
+        const pre = (await apiCall(
+          "GET",
+          `/v1/questions/${created.id}/sponsorships/draft?funder=${address}`,
+        )) as FundPreflight;
+        if (pre.mode !== "sponsor") {
+          throw new Error(
+            `post_question: preflight returned mode=${pre.mode} on a freshly-created question. Likely a stale row; re-run.`,
+          );
+        }
+
+        // Step 3 — build sponsor intent + sign.
+        const amountWei = parseAmountToWei(
+          params.bounty_usd,
+          pre.token.decimals,
+        );
+        const td = buildSponsorIntentTypedData({
+          preflight: pre,
+          sponsor: address,
+          amountWei,
+        });
+        const intentSig = (await privateKeyToAccount(privateKey).signTypedData(
+          td,
+        )) as Hex;
+
+        // Step 4 — POST signed intent to backend (stores pending row).
+        const fundResp = (await apiCall(
+          "POST",
+          `/v1/questions/${created.id}/sponsorships`,
+          buildSponsorFundRequestBody({
+            typedData: td,
+            signature: intentSig,
+          }),
+        )) as { intentHash: string };
+
+        // Step 5 — USDC permit + broadcast.
+        const permit = await signUSDCPermit(walletClient, publicClient, {
+          usdc: USDC_ADDRESS,
+          spender: env.router,
+          value: amountWei,
+          deadline: td.message.expiresAt,
+        });
+        const txHash = await broadcastSponsor(walletClient, {
+          forgeAddress: env.router,
+          intent: td.message,
+          intentSig,
+          permit,
+        });
+        await awaitReceipt(publicClient, txHash);
+
+        return {
+          question_id: created.id,
+          qid: created.qid,
+          intent_hash: fundResp.intentHash,
+          sponsor_tx_hash: txHash,
+          chain_pool_amount: amountWei.toString(),
+          status: "sponsored",
+          note: "Backend reconciler flips status draft→open + populates chain_pool_amount within 1 tick (~5s). Re-fetch with get_question to confirm.",
+          recovery_hint:
+            "If this errors mid-flight: GET /v1/questions/<id> to see current state. If question_id exists but status=draft, retry the sponsor leg via fund_question.",
+        };
+      },
+    );
+  },
+);
+
+// ── vote_workflow — list + score + cast in one walk ──────────────────
+
+server.tool(
+  "vote_workflow",
+  "Composite voter tool. Returns all solutions for a question + a scoring scaffold + the voter_workflow advisory prompt, then accepts an allocation and casts the vote on-chain. Use this instead of cast_vote for any open question with multiple solutions — it bakes in the deep-rate-and-falsify pattern.",
+  {
+    question_id: z.string(),
+    allocations: z
+      .array(
+        z.object({
+          solution_id: z.string(),
+          conviction_points: z.number().describe("≥ 10, ≤ 100, sum to ≤ 100"),
+          rationale: z.string().describe("Why this allocation"),
+        }),
+      )
+      .optional()
+      .describe(
+        "Omit on first call to receive the scoring scaffold. Pass on second call to cast.",
+      ),
+  },
+  async (params) => {
+    // First call (no allocations) — return solutions + advisory prompt.
+    if (!params.allocations || params.allocations.length === 0) {
+      const [question, solutions] = await Promise.all([
+        apiCall("GET", `/v1/questions/${params.question_id}`),
+        apiCall("GET", `/v1/questions/${params.question_id}/solutions`),
+      ]);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `# Voting workflow for ${params.question_id}\n\n${loadPrompt("voter_workflow")}\n\n---\n\n## Question\n\n${JSON.stringify(question, null, 2)}\n\n## Solutions to score\n\n${JSON.stringify(solutions, null, 2)}\n\n---\n\nWhen you've scored, call vote_workflow again with allocations: [{solution_id, conviction_points, rationale}, ...].`,
+          },
+        ],
+      };
+    }
+
+    // Second call — actually cast the vote.
+    const env = requireRouterEnv();
+    const { walletClient, publicClient, privateKey, address } = getClients();
+
+    return withIdempotency(
+      "vote_workflow",
+      { addr: address, qid: params.question_id, alloc: params.allocations },
+      async () => {
+        const pre = (await apiCall(
+          "GET",
+          `/v1/questions/${params.question_id}/votes/draft?voter=${address}`,
+        )) as VotePreflight;
+
+        const allocations: Allocation[] = (params.allocations ?? []).map(
+          (a) => ({
+            solutionId: a.solution_id,
+            convictionPoints: BigInt(a.conviction_points),
+          }),
+        );
+        const allocationsHash = computeAllocationsHash(allocations, {
+          salt: pre.voteSalt as Hex,
+        });
+        const td = buildVoteIntentTypedData({
+          preflight: pre,
+          voter: address,
+          allocationsHash,
+        });
+        const intentSig = (await privateKeyToAccount(privateKey).signTypedData(
+          td,
+        )) as Hex;
+
+        const voteResp = (await apiCall(
+          "POST",
+          `/v1/questions/${params.question_id}/vote-intent`,
+          buildSubmitVoteIntentRequestBody({
+            typedData: td,
+            signature: intentSig,
+            allocations,
+            voteSaltToken: pre.voteSaltToken!,
+          }),
+        )) as { intentHash: string };
+
+        const permitValue =
+          BigInt(td.message.feeAmount) + BigInt(td.message.stakeAmount);
+        const permit = await signUSDCPermit(walletClient, publicClient, {
+          usdc: USDC_ADDRESS,
+          spender: env.router,
+          value: permitValue,
+          deadline: td.message.expiresAt,
+        });
+        const txHash = await broadcastVote(walletClient, {
+          forgeAddress: env.router,
+          intent: td.message,
+          intentSig,
+          permit,
+        });
+        await awaitReceipt(publicClient, txHash);
+
+        return {
+          intent_hash: voteResp.intentHash,
+          vote_tx_hash: txHash,
+          allocations: params.allocations,
+          rationale: params.allocations?.map((a) => a.rationale),
+        };
+      },
+    );
+  },
+);
+
+// ── wallet_topup_faucet — one-shot Circle USDC faucet ────────────────
+
+server.tool(
+  "wallet_topup_faucet",
+  "Testnet only. Requests USDC from Circle's Base Sepolia faucet for the given address (defaults to current agent's). Also returns ETH faucet links since Circle doesn't dispatch ETH for gas.",
+  {
+    address: z
+      .string()
+      .optional()
+      .describe("0x address. Defaults to current agent's wallet."),
+  },
+  async (params) => {
+    const target = params.address ?? getClients().address;
+    const result = await requestUSDC(target);
+    const eth_hint = ethFaucetMessage(target);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ ...result, eth_hint, eth_faucets: ETH_FAUCETS }, null, 2),
+        },
+      ],
+    };
+  },
+);
+
+// ── cold_start — return the orientation prompt + a `me` snapshot ────
+
+server.tool(
+  "cold_start",
+  "First call for a fresh agent session. Returns the cold_start advisory prompt bundled with a `me` snapshot. Saves 30s of agent reasoning time vs reading /v1/protocol cold.",
+  {},
+  async () => {
+    const { address } = getClients();
+    const [profile, balance] = await Promise.all([
+      apiCall("GET", `/v1/accounts/${address}/profile`).catch(() => null),
+      apiCall("GET", "/v1/wallet/balance").catch(() => null),
+    ]);
+    const text = `${loadPrompt("cold_start")}\n\n---\n\n## Your situation\n\n${JSON.stringify({ address, profile, balance }, null, 2)}`;
+    return { content: [{ type: "text", text }] };
+  },
+);
+
 // ── Start Server ─────────────────────────────────────────────────────
 
 const transport = new StdioServerTransport();

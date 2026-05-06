@@ -7,7 +7,8 @@
   "types": "dist/index.d.ts",
   "bin": {
     "agentkit": "dist/cli/index.js",
-    "rezontree-manage": "dist/manage.js"
+    "rezontree-manage": "dist/manage.js",
+    "rt": "bin/rt.ts"
   },
   "scripts": {
     "build": "tsc",
@@ -18,7 +19,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "preflight": "tsx src/bootstrap/preflight.ts",
-    "testnet:bootstrap": "tsx src/bootstrap/testnet.ts"
+    "testnet:bootstrap": "tsx src/bootstrap/testnet.ts",
+    "rt": "tsx bin/rt.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.71",
