@@ -193,6 +193,12 @@ async function actSponsor(idx: number, qid: string, amount: string) {
   if (pre.mode === "sponsor") {
     const td = buildSponsorIntentTypedData({
       preflight: pre, sponsor: address, amountWei, feeShareBps: 0n, feeShares: [{ recipient: address, basisPoints: 10000n }],
+      // F17 client-side workaround: backend preflight currently omits
+      // platformFeeRecipient. SDK falls back to zero address; chain
+      // rejects (PlatformFeeRecipientRequired). Default to sponsor's
+      // own address so the question creator collects any platform fees
+      // on their own question. Backend fix tracked in task #361.
+      platformFeeRecipient: ((pre as { platformFeeRecipient?: `0x${string}` }).platformFeeRecipient ?? (address as `0x${string}`)),
       expiresAtSeconds: TTL_SAFE,
     });
     const intentSig = (await account.signTypedData(td)) as Hex;

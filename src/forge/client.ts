@@ -105,6 +105,10 @@ export async function broadcastSponsor(
         feeShareBps: params.intent.feeShareBps,
         platformFeeRecipient: params.intent.platformFeeRecipient,
         abandonmentGracePeriod: params.intent.abandonmentGracePeriod,
+        // v2.10 (C03): fundingDeadline added between abandonmentGracePeriod
+        // and sponsor in the contract struct; mirrored here so positional
+        // ABI encoding matches Solidity SponsorIntent layout.
+        fundingDeadline: params.intent.fundingDeadline,
         sponsor: params.intent.sponsor,
         amount: params.intent.amount,
         feeShares: params.intent.feeShares.map((s) => ({

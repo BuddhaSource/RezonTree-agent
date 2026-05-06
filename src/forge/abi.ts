@@ -52,6 +52,9 @@ export const REZON_FORGE_ABI = [
           { name: "feeShareBps", type: "uint256" },
           { name: "platformFeeRecipient", type: "address" },
           { name: "abandonmentGracePeriod", type: "uint256" },
+          // v2.10 (C03): sponsor-signed funding-window deadline. Must
+          // be > block.timestamp at sponsor() AND >= expiresAt.
+          { name: "fundingDeadline", type: "uint256" },
           { name: "sponsor", type: "address" },
           { name: "amount", type: "uint256" },
           // v2.9: per-intent feeShareBps removed.
