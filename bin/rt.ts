@@ -269,6 +269,74 @@ program.command("status").description("Status overview: all agents + funding").a
   console.log(`\nTotal: ${totalUsdc.toFixed(4)} USDC, ${totalEth.toFixed(4)} ETH`);
 });
 
+// rt solution submit — wraps agent.ts commit
+program
+  .command("solution")
+  .description("Solution lifecycle")
+  .command("submit")
+  .option("-i, --idx <n>", "agent HD index", "0")
+  .option("-q, --qid <id>", "question_id (qst_…)")
+  .option("-f, --file <path>", "JSON file with {body, reasoning_tree, claims}")
+  .description("Submit a signed CommitIntent + content + chain broadcast in one call")
+  .action((opts) => {
+    if (!opts.qid || !opts.file) {
+      console.error("--qid and --file are required");
+      process.exit(1);
+    }
+    delegateToAgent(["commit", "--idx", opts.idx, "--qid", opts.qid, "--solution-file", opts.file]);
+  });
+
+// rt vote cast — wraps agent.ts vote
+program
+  .command("vote")
+  .description("Vote lifecycle")
+  .command("cast")
+  .option("-i, --idx <n>", "agent HD index", "0")
+  .option("-q, --qid <id>", "question_id (qst_…)")
+  .option("-f, --file <path>", "JSON file with {allocations:[{solution_id,conviction_points}]}")
+  .description("Cast a signed VoteIntent + chain broadcast in one call")
+  .action((opts) => {
+    if (!opts.qid || !opts.file) {
+      console.error("--qid and --file are required");
+      process.exit(1);
+    }
+    delegateToAgent(["vote", "--idx", opts.idx, "--qid", opts.qid, "--vote-file", opts.file]);
+  });
+
+// rt claim — wraps agent.ts claim
+program
+  .command("claim")
+  .description("Claim winnings + stake refunds for a settled question")
+  .option("-i, --idx <n>", "agent HD index", "0")
+  .requiredOption("-q, --qid <id>", "question_id (qst_…)")
+  .action((opts) => {
+    delegateToAgent(["claim", "--idx", opts.idx, "--qid", opts.qid]);
+  });
+
+// rt auth — get a JWT for one agent
+program
+  .command("auth")
+  .description("Login an agent (sign WalletLoginIntent → JWT)")
+  .option("-i, --idx <n>", "agent HD index", "0")
+  .action((opts) => {
+    delegateToAgent(["auth", opts.idx]);
+  });
+
+// rt agent register — register all 10 HD wallets with the backend (idempotent)
+program
+  .command("agent")
+  .description("Agent management (multi-wallet ops)")
+  .command("register")
+  .description("Register all 10 HD-derived wallets with the backend (idempotent)")
+  .action(() => {
+    const child = spawn(
+      "tsx",
+      [resolve(__dirname, "../scripts/register-all.ts")],
+      { stdio: "inherit", env: process.env },
+    );
+    child.on("exit", (code) => process.exit(code ?? 0));
+  });
+
 // rt round demo — run the 6-agent canonical round
 program
   .command("round")
@@ -284,6 +352,19 @@ program
     });
     child.on("exit", (code) => process.exit(code ?? 0));
   });
+
+/** Delegate to scripts/agent.ts. The agent.ts script holds the
+ *  hardened implementation of sponsor/commit/vote/claim/settle and is
+ *  the single source of truth for protocol broadcast logic; rt is
+ *  the user-facing namespace. */
+function delegateToAgent(args: string[]): void {
+  const child = spawn(
+    "tsx",
+    [resolve(__dirname, "../scripts/agent.ts"), ...args],
+    { stdio: "inherit", env: process.env },
+  );
+  child.on("exit", (code) => process.exit(code ?? 0));
+}
 
 // rt faucets — print all known faucets
 program.command("faucets").description("Print all testnet faucet URLs").action(() => {
