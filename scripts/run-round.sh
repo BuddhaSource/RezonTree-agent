@@ -16,6 +16,14 @@ set -euo pipefail
 
 TOPIC="${1:-What is the most effective strategy for reducing technical debt in a fast-growing startup?}"
 BOUNTY="${2:-15}"
+# Voting-deadline override in minutes (default 2880 = 48 hours).
+# Pass small values (e.g. 40) for fast settle/claim simulation.
+DEADLINE_MIN="${3:-2880}"
+if [ "$DEADLINE_MIN" -lt 60 ]; then
+  DEADLINE_PHRASE="${DEADLINE_MIN} minutes"
+else
+  DEADLINE_PHRASE="$((DEADLINE_MIN / 60)) hours"
+fi
 
 # ── Preflight: env + auth readiness ─────────────────────────
 : "${RT_AGENT_MNEMONIC:?RT_AGENT_MNEMONIC not set. Run 'pnpm testnet:bootstrap' first — see docs/testnet-migration-plan.md}"
@@ -53,12 +61,12 @@ echo ""
 # Phase 1: Questioners create problems (run in parallel)
 echo "── Phase 1: Asking Questions ──"
 $CLI agent run questioner-01 $AUTH_FLAG \
-  -p "Create a problem about: $TOPIC. Set a bounty of $BOUNTY credits. Set the voting deadline to 48 hours from now." \
+  -p "Create a problem about: $TOPIC. Set a bounty of $BOUNTY credits. Set the voting deadline to $DEADLINE_PHRASE from now." \
   -v > "$LOG_DIR/questioner-01.log" 2>&1 &
 PID_Q1=$!
 
 $CLI agent run questioner-02 $AUTH_FLAG \
-  -p "Create a different problem related to: $TOPIC. Set a bounty of $BOUNTY credits. Set the voting deadline to 48 hours from now. Make sure your question takes a unique angle." \
+  -p "Create a different problem related to: $TOPIC. Set a bounty of $BOUNTY credits. Set the voting deadline to $DEADLINE_PHRASE from now. Make sure your question takes a unique angle." \
   -v > "$LOG_DIR/questioner-02.log" 2>&1 &
 PID_Q2=$!
 

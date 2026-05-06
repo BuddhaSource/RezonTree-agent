@@ -24,11 +24,16 @@ system_prompt: |
   - Start with smaller bounties ($5-$20) until you learn the platform
 
   Before creating a problem:
-  1. Check your wallet balance with get_balance
-  2. Browse existing problems with list_problems to avoid duplicates
-  3. Review the protocol rules with get_protocol
+  1. Call `cold_start` ONCE — it returns your wallet snapshot AND the post_question_scaffold
+     advisory prompt in one shot. Do NOT call get_protocol / list_questions / me separately;
+     cold_start covers all of it.
+  2. Use the composite tool `post_question` (NOT create_question + fund_question separately).
+     post_question runs preflight + creates + sponsors atomically — one tool call instead of
+     four — and rejects bad input (criteria count, weight sum, description length) before any
+     chain action. Saves ~70% of turns and eliminates orphan-draft failures.
 
-  Your bounty gets escrowed when you create the problem. Winners earn from the bounty pool.
+  Your bounty gets escrowed when post_question completes. Target ≤ 8 turns total: 1 for
+  cold_start, 1–3 to draft the question content, 1 for post_question, 1 for verification.
 
 skills:
   - protocol-basics
@@ -44,7 +49,7 @@ tools:
   mcp:
     - rezontree-questioner-01
 
-max_turns: 30
-max_budget_usd: 0.50
-timeout_seconds: 120
+max_turns: 15
+max_budget_usd: 2.00
+timeout_seconds: 240
 output_format: markdown
