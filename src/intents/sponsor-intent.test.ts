@@ -52,7 +52,8 @@ function sponsorPreflight(
     commitFee: "0",
     noSolutionGracePeriod: String(MIN_NO_SOLUTION_GRACE),
     feeShareBps: "0",
-    platformFeeRecipient: "0x0000000000000000000000000000000000000000",
+    // Non-zero PFR — the builder fences on zero (ForgePlatformRecipientRequired).
+    platformFeeRecipient: "0x000000000000000000000000000000000000bEEF",
     abandonmentGracePeriod: "86400",
     sponsorFundingDeadline: "9999999999", // far-future for tests
     _actions: [],
@@ -164,7 +165,7 @@ describe("buildSponsorIntentTypedData", () => {
     expect(td.message.abandonmentGracePeriod).toBe(BigInt("86400"));
   });
 
-  it("carries fee-share policy into the message", () => {
+  it("carries fee-share policy into the message + auto-injects platformFeeRecipient", () => {
     const td = buildSponsorIntentTypedData({
       preflight: sponsorPreflight(),
       sponsor: SPONSOR,
@@ -174,8 +175,15 @@ describe("buildSponsorIntentTypedData", () => {
       nowSeconds: NOW,
     });
     expect(td.message.feeShareBps).toBe(BigInt(1));
+    // Builder rebalances 90/10 to keep total = 10000 while ensuring the
+    // platform fee recipient appears (chain rule per
+    // _validateFeeShareInvariants).
     expect(td.message.feeShares).toEqual([
-      { recipient: SPONSOR, basisPoints: BigInt(10000) },
+      { recipient: SPONSOR, basisPoints: BigInt(9000) },
+      {
+        recipient: "0x000000000000000000000000000000000000bEEF",
+        basisPoints: BigInt(1000),
+      },
     ]);
   });
 
@@ -279,8 +287,13 @@ describe("buildSponsorFundRequestBody", () => {
     // v2.9: feeShareBps is now Q-level (was platformFeeBps in v2.8).
     // Comes from preflight default ("0" in this fixture).
     expect(body.feeShareBps).toBe("0");
+    // Builder rebalances default (self at 10000) when PFR != self.
     expect(body.feeShares).toEqual([
-      { recipient: SPONSOR, basisPoints: "10000" },
+      { recipient: SPONSOR, basisPoints: "9000" },
+      {
+        recipient: "0x000000000000000000000000000000000000bEEF",
+        basisPoints: "1000",
+      },
     ]);
     expect(body.signature).toBe("0xbeef");
     // v2.10 (C03): fundingDeadline carried into wire body.

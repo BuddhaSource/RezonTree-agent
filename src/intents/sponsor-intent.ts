@@ -50,7 +50,11 @@ import {
   buildForgeDomain,
   type ForgeIntentDomain,
 } from "./forge-domain.js";
-import { defaultFeeSharePolicy, type FeeShare } from "./fee-share.js";
+import {
+  defaultFeeSharePolicy,
+  ensurePlatformFeeInShares,
+  type FeeShare,
+} from "./fee-share.js";
 import type { FundPreflight } from "./preflight-types.js";
 
 // ── Typed-data primitives ────────────────────────────────────────
@@ -246,6 +250,25 @@ export function buildSponsorIntentTypedData(params: {
       `sponsor intent: noSolutionGracePeriod ${noSolutionGracePeriod} outside [${MIN_NO_SOLUTION_GRACE}, ${MAX_NO_SOLUTION_GRACE}]`,
     );
   }
+  // R-CLIENT-IS-TRUST-ORIGIN: refuse to sign if the platform fee
+  // recipient is missing — chain reverts ForgePlatformRecipientRequired
+  // and silent zero-address signing is a R-CHAIN-VERIFIES-INTENT trap.
+  if (
+    platformFeeRecipient.toLowerCase() ===
+    "0x0000000000000000000000000000000000000000"
+  ) {
+    throw new Error(
+      "sponsor intent: platformFeeRecipient missing. Backend preflight must advertise FORGE_DEFAULT_PLATFORM_FEE_RECIPIENT or pass an explicit value.",
+    );
+  }
+  // _validateFeeShareInvariants requires platformFeeRecipient to appear
+  // in feeShares[]. Insert at 10% bps if absent (rebalances the rest).
+  const baseShares =
+    params.feeShares ?? defaultFeeSharePolicy(params.sponsor).shares;
+  const feeShares = ensurePlatformFeeInShares(
+    baseShares,
+    platformFeeRecipient,
+  );
 
   return {
     domain: buildForgeDomain({
@@ -270,10 +293,7 @@ export function buildSponsorIntentTypedData(params: {
       fundingDeadline,
       sponsor: params.sponsor,
       amount: params.amountWei,
-      // Chain rejects empty feeShares unconditionally. Auto-default to a
-      // single self-recipient at 100% bps (matches commit/vote builders).
-      feeShares:
-        params.feeShares ?? defaultFeeSharePolicy(params.sponsor).shares,
+      feeShares,
       nonce,
       chainId: BigInt(params.preflight.chainId),
       expiresAt: BigInt(expiresAt),

@@ -80,6 +80,9 @@ export interface CommitPreflight {
   chainId: number;
   nonceNext: string;
   submissionDeadline?: number;
+  // Required to satisfy _validateFeeShareInvariants — the chain rejects
+  // a commit whose feeShares[] omits q.platformFeeRecipient.
+  platformFeeRecipient?: string;
   _actions: HypermediaAction[];
 }
 
@@ -92,6 +95,9 @@ export interface VotePreflight {
   chainId: number;
   nonceNext: string;
   voteDeadline?: number;
+  // Required to satisfy _validateFeeShareInvariants — the chain rejects
+  // a vote whose feeShares[] omits q.platformFeeRecipient.
+  platformFeeRecipient?: string;
   // voteSalt + voteSaltToken are server-issued at preflight and
   // echoed verbatim in the submit body; the salt is mixed into
   // allocationsHash to defeat on-chain rainbow-table enumeration.

@@ -18,7 +18,11 @@ import {
   buildForgeDomain,
   type ForgeIntentDomain,
 } from "./forge-domain.js";
-import { defaultFeeSharePolicy, type FeeShare } from "./fee-share.js";
+import {
+  defaultFeeSharePolicy,
+  ensurePlatformFeeInShares,
+  type FeeShare,
+} from "./fee-share.js";
 import type { FundPreflight } from "./preflight-types.js";
 
 // ── Typed-data primitives ────────────────────────────────────────
@@ -77,6 +81,15 @@ export function buildCosponsorIntentTypedData(params: {
     params.expiresAtSeconds ?? now + DEFAULT_COSPONSOR_TTL_SECONDS;
   const nonce = params.nonce ?? BigInt(params.preflight.nonceNext);
 
+  // _validateFeeShareInvariants requires q.platformFeeRecipient to
+  // appear in feeShares[]. Cosponsor preflight advertises the value.
+  const baseShares =
+    params.feeShares ?? defaultFeeSharePolicy(params.sponsor).shares;
+  const pfr = params.preflight.platformFeeRecipient as
+    | `0x${string}`
+    | undefined;
+  const feeShares = pfr ? ensurePlatformFeeInShares(baseShares, pfr) : baseShares;
+
   return {
     domain: buildForgeDomain({
       chainId: params.preflight.chainId,
@@ -88,10 +101,7 @@ export function buildCosponsorIntentTypedData(params: {
       questionId: params.preflight.qid as `0x${string}`,
       sponsor: params.sponsor,
       amount: params.amountWei,
-      // Chain rejects empty feeShares unconditionally. Auto-default to a
-      // single self-recipient at 100% bps (matches sponsor/commit/vote).
-      feeShares:
-        params.feeShares ?? defaultFeeSharePolicy(params.sponsor).shares,
+      feeShares,
       nonce,
       chainId: BigInt(params.preflight.chainId),
       expiresAt: BigInt(expiresAt),

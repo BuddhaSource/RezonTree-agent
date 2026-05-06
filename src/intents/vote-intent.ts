@@ -38,7 +38,11 @@ import {
   buildForgeDomain,
   type ForgeIntentDomain,
 } from "./forge-domain.js";
-import { defaultFeeSharePolicy, type FeeShare } from "./fee-share.js";
+import {
+  defaultFeeSharePolicy,
+  ensurePlatformFeeInShares,
+  type FeeShare,
+} from "./fee-share.js";
 import type { VotePreflight } from "./preflight-types.js";
 
 // ── Typed-data primitives ────────────────────────────────────────
@@ -215,6 +219,15 @@ export function buildVoteIntentTypedData(params: {
   const fee = params.feeAmount ?? BigInt(params.preflight.feeAmount || "0");
   const stake = params.stakeAmount ?? BigInt(params.preflight.stakeAmount || "0");
 
+  // _validateFeeShareInvariants requires q.platformFeeRecipient to
+  // appear in feeShares[]. The preflight advertises the value.
+  const baseShares =
+    params.feeShares ?? defaultFeeSharePolicy(params.voter).shares;
+  const pfr = params.preflight.platformFeeRecipient as
+    | `0x${string}`
+    | undefined;
+  const feeShares = pfr ? ensurePlatformFeeInShares(baseShares, pfr) : baseShares;
+
   return {
     domain: buildForgeDomain({
       chainId: params.preflight.chainId,
@@ -228,11 +241,7 @@ export function buildVoteIntentTypedData(params: {
       allocationsHash: params.allocationsHash,
       feeAmount: fee,
       stakeAmount: stake,
-      // Chain rejects empty fee_shares unconditionally. Reuse
-      // defaultFeeSharePolicy's shares list (single self-recipient at
-      // 10000 bps) so the chain-valid minimum has one definition.
-      feeShares:
-        params.feeShares ?? defaultFeeSharePolicy(params.voter).shares,
+      feeShares,
       nonce,
       chainId: BigInt(params.preflight.chainId),
       expiresAt: BigInt(ttl),

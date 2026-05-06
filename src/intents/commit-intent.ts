@@ -22,7 +22,11 @@ import {
   buildForgeDomain,
   type ForgeIntentDomain,
 } from "./forge-domain.js";
-import { defaultFeeSharePolicy, type FeeShare } from "./fee-share.js";
+import {
+  defaultFeeSharePolicy,
+  ensurePlatformFeeInShares,
+  type FeeShare,
+} from "./fee-share.js";
 import type { CommitPreflight } from "./preflight-types.js";
 
 // ── Typed-data primitives ────────────────────────────────────────
@@ -174,6 +178,17 @@ export function buildCommitIntentTypedData(params: {
   const fee = params.feeAmount ?? BigInt(params.preflight.feeAmount || "0");
   const stake = params.stakeAmount ?? BigInt(params.preflight.stakeAmount || "0");
 
+  // _validateFeeShareInvariants requires q.platformFeeRecipient to
+  // appear in feeShares[]. Insert if absent (rebalances 90/10 by default).
+  // The preflight advertises the value; refusing to sign without it
+  // upholds R-CLIENT-IS-TRUST-ORIGIN.
+  const baseShares =
+    params.feeShares ?? defaultFeeSharePolicy(params.submitter).shares;
+  const pfr = params.preflight.platformFeeRecipient as
+    | `0x${string}`
+    | undefined;
+  const feeShares = pfr ? ensurePlatformFeeInShares(baseShares, pfr) : baseShares;
+
   return {
     domain: buildForgeDomain({
       chainId: params.preflight.chainId,
@@ -187,11 +202,7 @@ export function buildCommitIntentTypedData(params: {
       contentHash: params.contentHash,
       feeAmount: fee,
       stakeAmount: stake,
-      // Chain rejects empty fee_shares unconditionally. Reuse
-      // defaultFeeSharePolicy's shares list (single self-recipient at
-      // 10000 bps) so the chain-valid minimum has one definition.
-      feeShares:
-        params.feeShares ?? defaultFeeSharePolicy(params.submitter).shares,
+      feeShares,
       nonce,
       chainId: BigInt(params.preflight.chainId),
       expiresAt: BigInt(ttl),
