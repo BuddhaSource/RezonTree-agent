@@ -1191,10 +1191,15 @@ server.tool(
       { addr: address, title: params.title, bounty: params.bounty_usd },
       async () => {
         // Step 1 — create question (off-chain row, status=draft).
+        // Wire field is `initialBounty` in token base units (NOT `bountyAmount`,
+        // and NOT a USD float). USDC has 6 decimals so $5 = "5000000".
+        const decimals = 6; // USDC; preflight will return real decimals on step 2
+        const initialBountyBase =
+          parseAmountToWei(params.bounty_usd, decimals).toString();
         const created = (await apiCall("POST", "/v1/questions", {
           title: params.title,
           description: params.description,
-          bountyAmount: params.bounty_usd,
+          initialBounty: initialBountyBase,
           bountyCurrency: "USD",
           votingDeadline: params.voting_deadline,
           successCriteria: params.success_criteria,
