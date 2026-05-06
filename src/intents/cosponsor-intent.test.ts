@@ -45,7 +45,7 @@ function preflight(overrides: Partial<FundPreflight> = {}): FundPreflight {
 }
 
 describe("COSPONSOR_INTENT_TYPES field order", () => {
-  it("matches RezonForge v2.9 typehash byte-for-byte (7 fields)", () => {
+  it("matches RezonForge typehash byte-for-byte (7 fields)", () => {
     expect(COSPONSOR_INTENT_TYPES.CosponsorIntent).toEqual([
       { name: "questionId", type: "bytes32" },
       { name: "sponsor", type: "address" },
@@ -57,8 +57,8 @@ describe("COSPONSOR_INTENT_TYPES field order", () => {
     ]);
   });
 
-  // v2.9 pinned typehash: 0xd9c03036...
-  it("typehash text matches the v2.9 cross-stack invariant", () => {
+  // Pinned typehash — see typehash.test.ts for the full 5-intent fence.
+  it("typehash text matches the cross-stack invariant", () => {
     const text =
       "CosponsorIntent(bytes32 questionId,address sponsor,uint256 amount,FeeShare[] feeShares,uint256 nonce,uint256 chainId,uint256 expiresAt)" +
       "FeeShare(address recipient,uint256 basisPoints)";

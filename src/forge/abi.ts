@@ -1,16 +1,6 @@
-// abi.ts — RezonForge v2.9 function ABI. Hand-written from
-// contracts/src/RezonForge.sol.
-//
-// v2.9 deltas vs v2.8:
-//   * SponsorIntent struct: platformFeeBps replaced by Q-level
-//     feeShareBps; per-intent feeShareBps after `amount` removed.
-//   * CosponsorIntent / CommitIntent / VoteIntent: feeShareBps
-//     dropped (rate is Q-level only).
-//   * QuestionState public-mapping getter: platformFeeBps renamed
-//     to feeShareBps.
-//   * Claim functions take an explicit `recipient` argument so a
-//     third-party executor can pay gas while funds flow to the
-//     on-chain-recorded payee.
+// abi.ts — RezonForge function ABI. Hand-written from
+// contracts/src/RezonForge.sol; the abi.test.ts pin enforces field
+// order against drift.
 //
 // Includes the entry points agents call (sponsor, cosponsor,
 // commitSolution, castVote, claim, claim{Solution,Vote}Stake),
@@ -28,8 +18,10 @@ import type { Abi } from "viem";
 export const REZON_FORGE_ABI = [
   // ── sponsor(SponsorIntent intent, bytes intentSig, uint8 permitV,
   //    bytes32 permitR, bytes32 permitS) ─────────────────────────
-  // RezonForge v2.7: first sponsor binds all per-Q parameters including
-  // commitFee, noSolutionGracePeriod, platformFeeBps, platformFeeRecipient.
+  // First sponsor binds all per-Q parameters: oracle, token, floors,
+  // voteFee, commitFee, noSolutionGracePeriod, feeShareBps,
+  // platformFeeRecipient, abandonmentGracePeriod, fundingDeadline,
+  // and the sponsor's feeShares allocation.
   {
     type: "function",
     name: "sponsor",
@@ -48,16 +40,17 @@ export const REZON_FORGE_ABI = [
           { name: "voteFee", type: "uint256" },
           { name: "commitFee", type: "uint256" },
           { name: "noSolutionGracePeriod", type: "uint256" },
-          // v2.9: Q-level feeShareBps (was platformFeeBps in v2.8).
+          // Q-level feeShareBps — frozen at sponsor() for the question's
+          // lifetime. Applied to every contribution. Must be ≤ 5000 (50%).
           { name: "feeShareBps", type: "uint256" },
           { name: "platformFeeRecipient", type: "address" },
           { name: "abandonmentGracePeriod", type: "uint256" },
-          // v2.10 (C03): sponsor-signed funding-window deadline. Must
-          // be > block.timestamp at sponsor() AND >= expiresAt.
+          // Sponsor-signed funding-window deadline. Must be >
+          // block.timestamp at sponsor() AND >= expiresAt; cosponsor /
+          // commit / vote revert ForgeFundingDeadlinePassed past it.
           { name: "fundingDeadline", type: "uint256" },
           { name: "sponsor", type: "address" },
           { name: "amount", type: "uint256" },
-          // v2.9: per-intent feeShareBps removed.
           {
             name: "feeShares",
             type: "tuple[]",
@@ -80,8 +73,8 @@ export const REZON_FORGE_ABI = [
   },
 
   // ── cosponsor(CosponsorIntent intent, ...) ─────────────────────
-  // RezonForge v2.5: subsequent contributors inherit per-Q params
-  // from chain state.
+  // Subsequent contributors to an OPEN question inherit per-Q params
+  // (oracle, token, floors, fees, grace, feeShareBps) from chain state.
   {
     type: "function",
     name: "cosponsor",
@@ -94,7 +87,6 @@ export const REZON_FORGE_ABI = [
           { name: "questionId", type: "bytes32" },
           { name: "sponsor", type: "address" },
           { name: "amount", type: "uint256" },
-          // v2.9: per-intent feeShareBps removed (Q-level only).
           {
             name: "feeShares",
             type: "tuple[]",
@@ -117,7 +109,7 @@ export const REZON_FORGE_ABI = [
   },
 
   // ── commitSolution(CommitIntent, bytes intentSig, permit V/R/S) ──
-  // v2.5: 10-field intent with feeShareBps + feeShares.
+  // Submitter signs over `contentHash` (keccak256 of canonical body).
   {
     type: "function",
     name: "commitSolution",
@@ -132,7 +124,6 @@ export const REZON_FORGE_ABI = [
           { name: "contentHash", type: "bytes32" },
           { name: "feeAmount", type: "uint256" },
           { name: "stakeAmount", type: "uint256" },
-          // v2.9: per-intent feeShareBps removed (Q-level only).
           {
             name: "feeShares",
             type: "tuple[]",
@@ -155,7 +146,8 @@ export const REZON_FORGE_ABI = [
   },
 
   // ── castVote(VoteIntent, bytes intentSig, permit V/R/S) ────
-  // v2.5: 10-field intent with feeShareBps + feeShares.
+  // Voter signs over `allocationsHash` — keccak256(canonical
+  // allocations || serverSalt). Salt comes from vote-preflight.
   {
     type: "function",
     name: "castVote",
@@ -170,7 +162,6 @@ export const REZON_FORGE_ABI = [
           { name: "allocationsHash", type: "bytes32" },
           { name: "feeAmount", type: "uint256" },
           { name: "stakeAmount", type: "uint256" },
-          // v2.9: per-intent feeShareBps removed (Q-level only).
           {
             name: "feeShares",
             type: "tuple[]",
@@ -193,7 +184,7 @@ export const REZON_FORGE_ABI = [
   },
 
   // ── claim(bytes32 qid, address recipient, uint256 amount, bytes32[] proof) ────
-  // v2.9 EXECUTOR-CALLABLE: msg.sender pays gas, recipient receives funds.
+  // EXECUTOR-CALLABLE: msg.sender pays gas, recipient receives funds.
   // Recipient is bound by the merkle leaf at settlement time, so the
   // call reverts if you pass a recipient the oracle did not author.
   {
@@ -210,7 +201,7 @@ export const REZON_FORGE_ABI = [
   },
 
   // ── claimAllForQuestion(qid, recipient, poolAmount, poolProof, solHash, voteHash) ──
-  // v2.9 EXECUTOR-CALLABLE: pool funds → recipient (merkle-bound);
+  // EXECUTOR-CALLABLE: pool funds → recipient (merkle-bound);
   // stake funds → chain-recorded solutionStakeOwner / voteStakeOwner.
   {
     type: "function",
@@ -228,7 +219,7 @@ export const REZON_FORGE_ABI = [
   },
 
   // ── claimPendingShares(address recipient, address token, uint256 amount) ──
-  // v2.9 EXECUTOR-CALLABLE: pulls from pendingShares[recipient][token]
+  // EXECUTOR-CALLABLE: pulls from pendingShares[recipient][token]
   // and transfers to `recipient`. Anyone can call (msg.sender pays gas).
   {
     type: "function",
@@ -294,7 +285,6 @@ export const REZON_FORGE_ABI = [
       { name: "voteFee", type: "uint256" },
       { name: "commitFee", type: "uint256" },
       { name: "noSolutionGracePeriod", type: "uint256" },
-      // v2.9: feeShareBps replaces v2.8 platformFeeBps.
       { name: "feeShareBps", type: "uint256" },
       { name: "platformFeeRecipient", type: "address" },
       { name: "abandonmentGracePeriod", type: "uint256" },

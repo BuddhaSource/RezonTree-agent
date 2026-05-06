@@ -58,7 +58,7 @@ function preflight(overrides: Partial<VotePreflight> = {}): VotePreflight {
 }
 
 describe("VOTE_INTENT_TYPES field order", () => {
-  it("matches v2.9 typehash order + types (9 fields)", () => {
+  it("matches typehash order + types (9 fields)", () => {
     expect(VOTE_INTENT_TYPES.VoteIntent).toEqual([
       { name: "questionId", type: "bytes32" },
       { name: "voter", type: "address" },
@@ -72,7 +72,7 @@ describe("VOTE_INTENT_TYPES field order", () => {
     ]);
   });
 
-  it("typehash text matches the v2.9 cross-stack invariant", () => {
+  it("typehash text matches the cross-stack invariant", () => {
     const text =
       "VoteIntent(bytes32 questionId,address voter,bytes32 allocationsHash,uint256 feeAmount,uint256 stakeAmount,FeeShare[] feeShares,uint256 nonce,uint256 chainId,uint256 expiresAt)" +
       "FeeShare(address recipient,uint256 basisPoints)";

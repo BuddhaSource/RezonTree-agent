@@ -62,6 +62,11 @@ export interface SnapshotInput {
   voteIntentHashes: Hex[];
 }
 
+// `questions(bytes32)` getter returns the full QuestionState tuple.
+// Field order MUST match RezonForge.QuestionState declaration
+// byte-for-byte; truncating mis-aligns viem's tuple decoder and
+// silently corrupts every downstream read (`q[3]` would no longer
+// be poolAmount).
 const routerReadAbi = [
   {
     type: "function",
@@ -70,10 +75,23 @@ const routerReadAbi = [
     inputs: [{ name: "", type: "bytes32" }],
     outputs: [
       { name: "status", type: "uint8" },
-      { name: "tokenAddr", type: "address" },
+      { name: "token", type: "address" },
+      { name: "oracle", type: "address" },
+      { name: "sponsor", type: "address" },
+      { name: "stakeFloor", type: "uint256" },
+      { name: "stakeBasisPoints", type: "uint256" },
+      { name: "sponsorshipFloor", type: "uint256" },
+      { name: "voteFee", type: "uint256" },
+      { name: "commitFee", type: "uint256" },
+      { name: "noSolutionGracePeriod", type: "uint256" },
+      { name: "feeShareBps", type: "uint256" },
+      { name: "platformFeeRecipient", type: "address" },
+      { name: "abandonmentGracePeriod", type: "uint256" },
       { name: "solutionCount", type: "uint32" },
+      { name: "totalSponsorship", type: "uint256" },
       { name: "poolAmount", type: "uint256" },
       { name: "fundingDeadline", type: "uint256" },
+      { name: "totalClaimable", type: "uint256" },
     ],
   },
   {
@@ -115,13 +133,34 @@ export async function snapshot(input: SnapshotInput): Promise<BalanceSnapshot> {
 
   const pools: Record<Hex, bigint> = {};
   for (const qid of input.qids) {
+    // QuestionState tuple layout — see routerReadAbi above. Fields 0..17;
+    // poolAmount sits at index 15 (after solutionCount + totalSponsorship).
     const q = (await input.publicClient.readContract({
       address: input.router,
       abi: routerReadAbi,
       functionName: "questions",
       args: [qid],
-    })) as [number, Address, number, bigint, bigint];
-    pools[qid] = q[3];
+    })) as readonly [
+      number,    // 0  status
+      Address,   // 1  token
+      Address,   // 2  oracle
+      Address,   // 3  sponsor
+      bigint,    // 4  stakeFloor
+      bigint,    // 5  stakeBasisPoints
+      bigint,    // 6  sponsorshipFloor
+      bigint,    // 7  voteFee
+      bigint,    // 8  commitFee
+      bigint,    // 9  noSolutionGracePeriod
+      bigint,    // 10 feeShareBps
+      Address,   // 11 platformFeeRecipient
+      bigint,    // 12 abandonmentGracePeriod
+      number,    // 13 solutionCount
+      bigint,    // 14 totalSponsorship
+      bigint,    // 15 poolAmount
+      bigint,    // 16 fundingDeadline
+      bigint,    // 17 totalClaimable
+    ];
+    pools[qid] = q[15];
   }
 
   const solutionStakes: Record<Hex, bigint> = {};

@@ -1,20 +1,13 @@
 // vote-intent.ts — VoteIntent EIP-712 typed-data + POST body
-// builders for RezonForge v2.9.
+// builders.
 //
-// v2.9 change: per-intent feeShareBps REMOVED — the rate is Q-level
-// on the question state, frozen by the first sponsor.
+// The fee rate is Q-level (signed by the first sponsor, frozen for
+// the question's lifetime); intents carry only the per-contribution
+// `feeShares[]` recipient distribution, not the rate.
 //
-// Pinned typehash (v2.9):
-//   VoteIntent(bytes32 questionId,address voter,bytes32 allocationsHash,
-//     uint256 feeAmount,uint256 stakeAmount,
-//     FeeShare[] feeShares,uint256 nonce,uint256 chainId,
-//     uint256 expiresAt)
-//   FeeShare(address recipient,uint256 basisPoints)
-//   → 0xce846377b54778704a6c695296cc69e3ebdfc08f87a6ef80f5fa07c7db946e2a
-//
-// Mirrors contracts/src/RezonForge.sol's VOTE_INTENT_TYPEHASH +
-// internal/signer/vote_intent.go +
-// RezonTree-UI/lib/intents/vote-intent.ts byte-for-byte.
+// 3-stack fence: contracts/src/RezonForge.sol's VOTE_INTENT_TYPEHASH ↔
+// internal/signer/vote_intent.go ↔ this file. typehash.test.ts pins
+// the literal hex against drift.
 //
 // ─── ALLOCATIONS CANONICAL ENCODING ─────────────────────────────
 //
@@ -61,7 +54,6 @@ export const VOTE_INTENT_TYPES = {
     { name: "allocationsHash", type: "bytes32" },
     { name: "feeAmount", type: "uint256" },
     { name: "stakeAmount", type: "uint256" },
-    // v2.9: per-intent feeShareBps REMOVED (Q-level only).
     { name: "feeShares", type: "FeeShare[]" },
     { name: "nonce", type: "uint256" },
     { name: "chainId", type: "uint256" },

@@ -50,7 +50,7 @@ function preflight(overrides: Partial<CommitPreflight> = {}): CommitPreflight {
 }
 
 describe("COMMIT_INTENT_TYPES field order", () => {
-  it("matches v2.9 typehash order + types (9 fields)", () => {
+  it("matches typehash order + types (9 fields)", () => {
     expect(COMMIT_INTENT_TYPES.CommitIntent).toEqual([
       { name: "questionId", type: "bytes32" },
       { name: "submitter", type: "address" },
@@ -64,7 +64,7 @@ describe("COMMIT_INTENT_TYPES field order", () => {
     ]);
   });
 
-  it("typehash text matches the v2.9 cross-stack invariant", () => {
+  it("typehash text matches the cross-stack invariant", () => {
     const text =
       "CommitIntent(bytes32 questionId,address submitter,bytes32 contentHash,uint256 feeAmount,uint256 stakeAmount,FeeShare[] feeShares,uint256 nonce,uint256 chainId,uint256 expiresAt)" +
       "FeeShare(address recipient,uint256 basisPoints)";

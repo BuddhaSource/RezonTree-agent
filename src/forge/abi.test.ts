@@ -1,7 +1,7 @@
-// abi.test.ts — pins the RezonForge v2.7 ABI shape as a
-// cross-language contract. Any rename / reorder on RezonForge.sol
-// must mirror here; the test catches drift at SDK-test time
-// instead of at on-chain-revert time.
+// abi.test.ts — pins the RezonForge ABI shape as a cross-language
+// contract. Any rename / reorder on RezonForge.sol must mirror here;
+// the test catches drift at SDK-test time instead of at
+// on-chain-revert time.
 
 import { describe, expect, it } from "vitest";
 import {
@@ -16,8 +16,8 @@ function findFunction(name: string) {
   );
 }
 
-describe("REZON_FORGE_ABI shape (v2.9)", () => {
-  it("exports the v2.9 agent-writable functions", () => {
+describe("REZON_FORGE_ABI shape", () => {
+  it("exports the agent-writable functions", () => {
     expect(FORGE_WRITE_FUNCTIONS).toEqual([
       "sponsor",
       "cosponsor",
@@ -27,7 +27,7 @@ describe("REZON_FORGE_ABI shape (v2.9)", () => {
     ]);
   });
 
-  it("sponsor tuple matches v2.9 SponsorIntent struct (18 fields in typehash order)", () => {
+  it("sponsor tuple matches SponsorIntent struct (19 fields in typehash order)", () => {
     const fn = findFunction("sponsor");
     expect(fn).toBeDefined();
     const intentInput = fn!.inputs[0] as {
@@ -45,13 +45,14 @@ describe("REZON_FORGE_ABI shape (v2.9)", () => {
       "voteFee",
       "commitFee",
       "noSolutionGracePeriod",
-      // v2.9: feeShareBps replaces v2.8 platformFeeBps at this slot.
       "feeShareBps",
       "platformFeeRecipient",
       "abandonmentGracePeriod",
+      // sponsor-signed funding-window deadline; sits between
+      // abandonmentGracePeriod and sponsor in the contract struct.
+      "fundingDeadline",
       "sponsor",
       "amount",
-      // v2.9: per-intent feeShareBps removed (Q-level only).
       "feeShares",
       "nonce",
       "chainId",
@@ -59,7 +60,7 @@ describe("REZON_FORGE_ABI shape (v2.9)", () => {
     ]);
   });
 
-  it("cosponsor tuple matches v2.9 CosponsorIntent struct (7 fields)", () => {
+  it("cosponsor tuple matches CosponsorIntent struct (7 fields)", () => {
     const fn = findFunction("cosponsor");
     expect(fn).toBeDefined();
     const intentInput = fn!.inputs[0] as {
@@ -79,7 +80,7 @@ describe("REZON_FORGE_ABI shape (v2.9)", () => {
     ]);
   });
 
-  it("commitSolution tuple matches v2.9 CommitIntent struct (9 fields)", () => {
+  it("commitSolution tuple matches CommitIntent struct (9 fields)", () => {
     const fn = findFunction("commitSolution");
     const intentInput = fn!.inputs[0] as {
       components: { name: string; type: string }[];
@@ -98,7 +99,7 @@ describe("REZON_FORGE_ABI shape (v2.9)", () => {
     ]);
   });
 
-  it("castVote tuple matches v2.9 VoteIntent struct (9 fields)", () => {
+  it("castVote tuple matches VoteIntent struct (9 fields)", () => {
     const fn = findFunction("castVote");
     const intentInput = fn!.inputs[0] as {
       components: { name: string; type: string }[];

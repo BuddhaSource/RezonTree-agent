@@ -1,25 +1,18 @@
 // commit-intent.ts — CommitIntent EIP-712 typed-data + POST body
-// builders for RezonForge v2.9.
+// builders.
 //
 // CommitIntent signs over a `contentHash`, NOT the content body.
 // The body is POSTed separately to /v1/questions/:id/solutions; the
 // backend asserts `keccak256(content) == intent.contentHash` to
 // bind body to signature.
 //
-// v2.9 change: per-intent feeShareBps REMOVED — the rate is Q-level
-// on the question state, frozen by the first sponsor.
+// The fee rate is Q-level (signed by the first sponsor, frozen for
+// the question's lifetime); intents carry only the per-contribution
+// `feeShares[]` recipient distribution, not the rate.
 //
-// Pinned typehash (v2.9):
-//   CommitIntent(bytes32 questionId,address submitter,bytes32 contentHash,
-//     uint256 feeAmount,uint256 stakeAmount,
-//     FeeShare[] feeShares,uint256 nonce,uint256 chainId,
-//     uint256 expiresAt)
-//   FeeShare(address recipient,uint256 basisPoints)
-//   → 0x6c9a41343766487b62acf6bde0a8c4100342465502c5fe1cf72f3a36114a84a9
-//
-// Mirrors contracts/src/RezonForge.sol's COMMIT_INTENT_TYPEHASH +
-// internal/signer/commit_intent.go +
-// RezonTree-UI/lib/intents/commit-intent.ts byte-for-byte.
+// 3-stack fence: contracts/src/RezonForge.sol's COMMIT_INTENT_TYPEHASH
+// ↔ internal/signer/commit_intent.go ↔ this file. typehash.test.ts
+// pins the literal hex against drift.
 //
 // R-CHAIN-VERIFIES-INTENT — RezonForge verifies this signature.
 // R-INTENT-CARRIES-EXPIRY — ExpiresAt mandatory + short.
@@ -45,7 +38,6 @@ export const COMMIT_INTENT_TYPES = {
     { name: "contentHash", type: "bytes32" },
     { name: "feeAmount", type: "uint256" },
     { name: "stakeAmount", type: "uint256" },
-    // v2.9: per-intent feeShareBps REMOVED (Q-level only).
     { name: "feeShares", type: "FeeShare[]" },
     { name: "nonce", type: "uint256" },
     { name: "chainId", type: "uint256" },

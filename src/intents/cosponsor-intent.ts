@@ -1,25 +1,15 @@
-// cosponsor-intent.ts — CosponsorIntent EIP-712 builders for
-// RezonForge v2.9.
+// cosponsor-intent.ts — CosponsorIntent EIP-712 builders.
 //
 // Signed by SUBSEQUENT contributors to an OPEN question. Per-Q
 // parameters (oracle / token / floors / voteFee / feeShareBps /
-// abandonmentGracePeriod) are inherited from chain state — the
-// cosponsor doesn't re-state them. They DO sign their own per-
-// contribution share array (each contributor independently chooses
-// how to split their own share reserve).
+// abandonmentGracePeriod / fundingDeadline) are inherited from chain
+// state — the cosponsor doesn't re-state them. They DO sign their
+// own per-contribution share array (each contributor independently
+// chooses how to split their own share reserve).
 //
-// v2.9 change: per-intent feeShareBps REMOVED — the rate is now
-// Q-level on the question state, frozen by the first sponsor.
-//
-// Pinned typehash (v2.9):
-//   CosponsorIntent(bytes32 questionId,address sponsor,uint256 amount,
-//     FeeShare[] feeShares,uint256 nonce,uint256 chainId,uint256 expiresAt)
-//   FeeShare(address recipient,uint256 basisPoints)
-//   → 0xd9c03036132b2691bcf944f8964155d518856f9766727315bba50e72a9769dd4
-//
-// Mirrors contracts/src/RezonForge.sol's COSPONSOR_INTENT_TYPEHASH +
-// internal/signer/cosponsor_intent.go +
-// RezonTree-UI/lib/intents/cosponsor-intent.ts byte-for-byte.
+// 3-stack fence: contracts/src/RezonForge.sol's COSPONSOR_INTENT_TYPEHASH
+// ↔ internal/signer/cosponsor_intent.go ↔ this file. typehash.test.ts
+// pins the literal hex against drift.
 //
 // R-CHAIN-VERIFIES-INTENT — the signature is verified on-chain.
 // R-INTENT-CARRIES-EXPIRY — ExpiresAt mandatory.
@@ -42,7 +32,6 @@ export const COSPONSOR_INTENT_TYPES = {
     { name: "questionId", type: "bytes32" },
     { name: "sponsor", type: "address" },
     { name: "amount", type: "uint256" },
-    // v2.9: per-intent feeShareBps REMOVED (Q-level only).
     { name: "feeShares", type: "FeeShare[]" },
     { name: "nonce", type: "uint256" },
     { name: "chainId", type: "uint256" },

@@ -1,6 +1,6 @@
-// client.ts — RezonForge v2.7 write client. Wraps viem's
-// writeContract for the agent-facing entry points (sponsor,
-// cosponsor, commitSolution, castVote, claim, publishSettlement).
+// client.ts — RezonForge write client. Wraps viem's writeContract
+// for the agent-facing entry points (sponsor, cosponsor,
+// commitSolution, castVote, claim, publishSettlement).
 //
 // Scope: calldata + broadcast + receipt wait. Intent signing lives
 // in src/intents/*; USDC permit signing lives in ./permit.ts. This
@@ -89,6 +89,8 @@ export async function broadcastSponsor(
     functionName: "sponsor",
     args: [
       {
+        // Field order MUST match the Solidity SponsorIntent struct
+        // byte-for-byte — viem ABI-encodes positionally.
         questionId: params.intent.questionId,
         oracle: params.intent.oracle,
         token: params.intent.token,
@@ -96,18 +98,11 @@ export async function broadcastSponsor(
         stakeBasisPoints: params.intent.stakeBasisPoints,
         sponsorshipFloor: params.intent.sponsorshipFloor,
         voteFee: params.intent.voteFee,
-        // v2.9 fields — must match the Solidity struct field order
-        // (ABI-encoding is positional). feeShareBps replaced platformFeeBps
-        // at the Q-level slot; the per-intent feeShareBps after `amount`
-        // was removed.
         commitFee: params.intent.commitFee,
         noSolutionGracePeriod: params.intent.noSolutionGracePeriod,
         feeShareBps: params.intent.feeShareBps,
         platformFeeRecipient: params.intent.platformFeeRecipient,
         abandonmentGracePeriod: params.intent.abandonmentGracePeriod,
-        // v2.10 (C03): fundingDeadline added between abandonmentGracePeriod
-        // and sponsor in the contract struct; mirrored here so positional
-        // ABI encoding matches Solidity SponsorIntent layout.
         fundingDeadline: params.intent.fundingDeadline,
         sponsor: params.intent.sponsor,
         amount: params.intent.amount,
@@ -154,7 +149,6 @@ export async function broadcastCosponsor(
         questionId: params.intent.questionId,
         sponsor: params.intent.sponsor,
         amount: params.intent.amount,
-        // v2.9: per-intent feeShareBps removed (Q-level only).
         feeShares: params.intent.feeShares.map((s) => ({
           recipient: s.recipient,
           basisPoints: s.basisPoints,
@@ -199,7 +193,6 @@ export async function broadcastCommit(
         contentHash: params.intent.contentHash,
         feeAmount: params.intent.feeAmount,
         stakeAmount: params.intent.stakeAmount,
-        // v2.9: per-intent feeShareBps removed (Q-level only).
         feeShares: params.intent.feeShares.map((s) => ({
           recipient: s.recipient,
           basisPoints: s.basisPoints,
@@ -244,7 +237,6 @@ export async function broadcastVote(
         allocationsHash: params.intent.allocationsHash,
         feeAmount: params.intent.feeAmount,
         stakeAmount: params.intent.stakeAmount,
-        // v2.9: per-intent feeShareBps removed (Q-level only).
         feeShares: params.intent.feeShares.map((s) => ({
           recipient: s.recipient,
           basisPoints: s.basisPoints,
@@ -266,7 +258,7 @@ export async function broadcastVote(
 
 // ─── claim() ───────────────────────────────────────────────────
 //
-// v2.9 EXECUTOR-CALLABLE: msg.sender (the wallet) pays gas; the
+// EXECUTOR-CALLABLE: msg.sender (the wallet) pays gas; the
 // merkle-bound `recipient` receives the funds. Pass your own address
 // as recipient to claim normally; pass another participant's address
 // (only useful when you hold their proof) to act as a relayer.
@@ -274,7 +266,7 @@ export async function broadcastVote(
 export interface BroadcastClaimParams {
   forgeAddress: Address;
   questionId: Hex;
-  // v2.9: explicit recipient. The merkle leaf was authored as
+  // Explicit recipient. The merkle leaf was authored as
   // keccak256(qid, recipient, amount); supplying any other address
   // makes the proof check fail.
   recipient: Address;
