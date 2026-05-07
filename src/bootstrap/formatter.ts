@@ -1,4 +1,4 @@
-// Bootstrap output formatters — cartridge loop 0065.
+// Bootstrap output formatters.
 //
 // Pure string builders for the testnet-bootstrap script. Kept
 // separate so they're unit-testable without actually hitting

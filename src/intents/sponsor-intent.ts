@@ -1,46 +1,31 @@
-// sponsor-intent.ts — SponsorIntent EIP-712 builders for RezonForge v2.10.
-//
-// v2.10 changes vs v2.9:
-//   - C01: at least one of commitFee, stakeFloor, or stakeBasisPoints
-//     must be > 0. voteFee alone is no longer sufficient — it doesn't
-//     gate commits, so vote-fee-only questions allow free commits.
-//     Chain reverts ForgeZeroCommitCost.
-//   - C03: NEW fundingDeadline field (uint256 unix seconds), placed
-//     after abandonmentGracePeriod. Sponsor signs an explicit
-//     funding-window deadline; chain enforces > now AND >= expiresAt.
-//     cosponsor/commit/vote revert past it.
-//   - Pinned typehash bumps to:
-//     0xdd1eeb78695cb1f2fa6ed144a6389e1dc134d00f3a3e6fe895a4a04afea8faf3
+// sponsor-intent.ts — SponsorIntent EIP-712 builders.
 //
 // Signed by the FIRST sponsor of a question. Carries the full per-Q
 // parameter set (oracle / token / floors / voteFee / commitFee /
 // noSolutionGracePeriod / feeShareBps / platformFeeRecipient /
-// abandonmentGrace) that the chain pins on first contact; subsequent
-// contributors use CosponsorIntent (cosponsor-intent.ts) and inherit
-// those params from chain state.
+// abandonmentGracePeriod / fundingDeadline) that the chain pins on
+// first contact; subsequent contributors use CosponsorIntent
+// (cosponsor-intent.ts) and inherit those params from chain state.
+// The Q-level feeShareBps applies to every contribution (sponsor +
+// cosponsor + commit fee + vote fee); intents do not carry a
+// per-contribution rate.
+//
+// Chain-side fences relevant to construction:
+//   - sponsorshipFloor must be > 0 (ForgeZeroSponsorshipFloor).
+//   - At least one of commitFee, stakeFloor, or stakeBasisPoints
+//     must be > 0; voteFee alone doesn't gate commits
+//     (ForgeZeroCommitCost).
+//   - fundingDeadline (sponsor-signed funding-window deadline) must
+//     be > now AND >= expiresAt; cosponsor/commit/vote revert past
+//     it (ForgeFundingDeadlinePassed).
+//   - stakeBasisPoints capped at MAX_STAKE_BASIS_POINTS.
+//   - feeShareBps capped at MAX_FEE_SHARE_BPS.
 //
 // 3-stack fence: Solidity (contracts/src/RezonForge.sol) ↔ Go
 // (internal/signer/sponsor_intent.go) ↔ TS (this file +
 // RezonTree-UI/lib/intents/sponsor-intent.ts). Any drift surfaces as
-// a bad-signer revert on chain.
-//
-// v2.9 changes vs v2.8:
-//   - feeShareBps is now Q-LEVEL (replaces v2.8's platformFeeBps in
-//     the typehash position). Frozen at sponsor() for the question.
-//   - per-intent feeShareBps (was after `amount` in v2.8) REMOVED;
-//     all contributions inherit the Q-level rate.
-//   - platformFeeBps field REMOVED entirely (single mechanism).
-//
-// Pinned typehash (v2.9):
-//   SponsorIntent(bytes32 questionId,address oracle,address token,
-//     uint256 stakeFloor,uint256 stakeBasisPoints,uint256 sponsorshipFloor,
-//     uint256 voteFee,uint256 commitFee,uint256 noSolutionGracePeriod,
-//     uint256 feeShareBps,address platformFeeRecipient,
-//     uint256 abandonmentGracePeriod,address sponsor,
-//     uint256 amount,FeeShare[] feeShares,
-//     uint256 nonce,uint256 chainId,uint256 expiresAt)
-//   FeeShare(address recipient,uint256 basisPoints)
-//   → 0x71c90b9b33809d1ec50ea3fa001e78e1188077ce8ed2258392b9f6d468d85344
+// a bad-signer revert on chain. typehash.test.ts pins the literal
+// hex against drift.
 //
 // R-CHAIN-VERIFIES-INTENT — the signature is verified on-chain.
 // R-CLIENT-IS-TRUST-ORIGIN — client constructs from advertised params.
@@ -74,17 +59,16 @@ export const SPONSOR_INTENT_TYPES = {
     { name: "voteFee", type: "uint256" },
     { name: "commitFee", type: "uint256" },
     { name: "noSolutionGracePeriod", type: "uint256" },
-    // v2.9: Q-level feeShareBps (was platformFeeBps in v2.8). Frozen
-    // for the question's lifetime — applies to every contribution
-    // (sponsor + cosponsor + commit fee + vote fee).
+    // Q-level feeShareBps; frozen at sponsor() for the question's
+    // lifetime — applies to every contribution (sponsor + cosponsor
+    // + commit fee + vote fee).
     { name: "feeShareBps", type: "uint256" },
     { name: "platformFeeRecipient", type: "address" },
     { name: "abandonmentGracePeriod", type: "uint256" },
-    // v2.10 (C03): sponsor-signed funding-window deadline.
+    // Sponsor-signed funding-window deadline.
     { name: "fundingDeadline", type: "uint256" },
     { name: "sponsor", type: "address" },
     { name: "amount", type: "uint256" },
-    // per-intent feeShareBps REMOVED in v2.9; rate is Q-level.
     { name: "feeShares", type: "FeeShare[]" },
     { name: "nonce", type: "uint256" },
     { name: "chainId", type: "uint256" },
@@ -102,11 +86,11 @@ export interface SponsorIntentMessage {
   voteFee: bigint;
   commitFee: bigint;
   noSolutionGracePeriod: bigint;
-  // v2.9: Q-level fee rate (was platformFeeBps in v2.8).
+  // Q-level fee rate.
   feeShareBps: bigint;
   platformFeeRecipient: `0x${string}`;
   abandonmentGracePeriod: bigint;
-  // v2.10 (C03): sponsor-signed funding-window deadline.
+  // Sponsor-signed funding-window deadline.
   fundingDeadline: bigint;
   sponsor: `0x${string}`;
   amount: bigint;
@@ -135,7 +119,7 @@ export const MAX_STAKE_BASIS_POINTS = 5000n;
 
 export const MIN_NO_SOLUTION_GRACE = 1800n;  // 30 minutes
 export const MAX_NO_SOLUTION_GRACE = 86400n; // 24 hours
-// v2.9: cap for the Q-level feeShareBps. Mirrors RezonForge.MAX_FEE_SHARE_BPS.
+// Cap for the Q-level feeShareBps. Mirrors RezonForge.MAX_FEE_SHARE_BPS.
 export const MAX_FEE_SHARE_BPS = 5000n;       // 50%
 
 export function buildSponsorIntentTypedData(params: {
@@ -151,12 +135,12 @@ export function buildSponsorIntentTypedData(params: {
   voteFee?: bigint;
   commitFee?: bigint;
   noSolutionGracePeriod?: bigint;
-  // v2.9 Q-level fee rate; replaces v2.8 platformFeeBps.
+  // Q-level fee rate.
   feeShareBps?: bigint;
   platformFeeRecipient?: `0x${string}`;
   abandonmentGracePeriod?: bigint;
-  // v2.10 (C03): sponsor-signed funding-window deadline (unix seconds).
-  // Defaults to preflight.sponsorFundingDeadline (advertised by backend).
+  // Sponsor-signed funding-window deadline (unix seconds).
+  // Defaults to preflight.recommendedFundingDeadline (advertised by backend).
   fundingDeadline?: bigint;
   expiresAtSeconds?: number;
   nonce?: bigint;
@@ -170,7 +154,7 @@ export function buildSponsorIntentTypedData(params: {
   const now = params.nowSeconds ?? Math.floor(Date.now() / 1000);
   const expiresAt =
     params.expiresAtSeconds ?? now + DEFAULT_SPONSOR_TTL_SECONDS;
-  const nonce = params.nonce ?? BigInt(params.preflight.nonceNext);
+  const nonce = params.nonce ?? BigInt(params.preflight.nonce);
   const oracle =
     params.oracle ?? (params.preflight.oracle as `0x${string}`);
   const token =
@@ -191,8 +175,8 @@ export function buildSponsorIntentTypedData(params: {
   const noSolutionGracePeriod =
     params.noSolutionGracePeriod ??
     BigInt(params.preflight.noSolutionGracePeriod ?? String(MIN_NO_SOLUTION_GRACE));
-  // v2.9: prefer explicit param, fall back to preflight.feeShareBps,
-  // then preflight.platformFeeBps for legacy backends still on v2.8 wire.
+  // Prefer explicit param, fall back to preflight.feeShareBps,
+  // then preflight.platformFeeBps for legacy backends.
   const feeShareBps =
     params.feeShareBps ??
     BigInt(
@@ -207,14 +191,14 @@ export function buildSponsorIntentTypedData(params: {
   const abandonmentGracePeriod =
     params.abandonmentGracePeriod ??
     BigInt(params.preflight.abandonmentGracePeriod ?? "0");
-  // v2.10 (C03): fundingDeadline. Prefer explicit param, then
-  // preflight.sponsorFundingDeadline. Fall back to expiresAt as a
+  // fundingDeadline. Prefer explicit param, then
+  // preflight.recommendedFundingDeadline. Fall back to expiresAt as a
   // last resort so calls don't break before backends advertise the
-  // new field — but the chain may revert if it equals expiresAt and
+  // field — but the chain may revert if it equals expiresAt and
   // expiresAt < now by then.
   const fundingDeadline =
     params.fundingDeadline ??
-    BigInt(params.preflight.sponsorFundingDeadline ?? expiresAt.toString());
+    BigInt(params.preflight.recommendedFundingDeadline ?? expiresAt.toString());
 
   // ─── Contract-mirroring fence ────────────────────────────────
   if (sponsorshipFloor <= 0n) {
@@ -222,17 +206,17 @@ export function buildSponsorIntentTypedData(params: {
       "sponsor intent: sponsorshipFloor must be > 0 (chain reverts ForgeZeroSponsorshipFloor per R2-EB-1)",
     );
   }
-  // v2.10 (C01): vote-fee alone is no longer sufficient — must have
-  // a COMMIT-side cost (commitFee | stakeFloor | stakeBasisPoints).
+  // Vote-fee alone is not sufficient — must have a COMMIT-side cost
+  // (commitFee | stakeFloor | stakeBasisPoints).
   if (commitFee === 0n && stakeFloor === 0n && stakeBasisPoints === 0n) {
     throw new Error(
-      "sponsor intent: at least one of commitFee, stakeFloor, or stakeBasisPoints must be > 0 (chain reverts ForgeZeroCommitCost per C01)",
+      "sponsor intent: at least one of commitFee, stakeFloor, or stakeBasisPoints must be > 0 (chain reverts ForgeZeroCommitCost)",
     );
   }
-  // v2.10 (C03): fundingDeadline must outlast the broadcast window.
+  // fundingDeadline must outlast the broadcast window.
   if (fundingDeadline < BigInt(expiresAt)) {
     throw new Error(
-      `sponsor intent: fundingDeadline ${fundingDeadline} must be >= expiresAt ${expiresAt} (chain reverts ForgeFundingDeadlinePassed per C03)`,
+      `sponsor intent: fundingDeadline ${fundingDeadline} must be >= expiresAt ${expiresAt} (chain reverts ForgeFundingDeadlinePassed)`,
     );
   }
   if (stakeBasisPoints > MAX_STAKE_BASIS_POINTS) {
@@ -321,11 +305,11 @@ export interface SponsorFundRequestBody {
   voteFee: string;
   commitFee: string;
   noSolutionGracePeriod: string;
-  // v2.9: Q-level fee rate (was platformFeeBps in v2.8 wire).
+  // Q-level fee rate.
   feeShareBps: string;
   platformFeeRecipient: string;
   abandonmentGracePeriod: string;
-  // v2.10 (C03): sponsor-signed funding-window deadline (unix seconds).
+  // Sponsor-signed funding-window deadline (unix seconds).
   fundingDeadline: string;
 }
 

@@ -1,4 +1,4 @@
-// Reporter + classifier coverage — cartridge loop 0064.
+// Reporter + classifier coverage.
 //
 // The reporting pipe is the "monitor + fix" loop the user
 // requested. Tests pin:

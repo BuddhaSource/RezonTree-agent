@@ -215,7 +215,7 @@ export function buildVoteIntentTypedData(params: {
 }): VoteIntentTypedData {
   const now = params.nowSeconds ?? Math.floor(Date.now() / 1000);
   const ttl = params.expiresAtSeconds ?? now + DEFAULT_VOTE_TTL_SECONDS;
-  const nonce = params.nonce ?? BigInt(params.preflight.nonceNext);
+  const nonce = params.nonce ?? BigInt(params.preflight.nonce);
   const fee = params.feeAmount ?? BigInt(params.preflight.feeAmount || "0");
   const stake = params.stakeAmount ?? BigInt(params.preflight.stakeAmount || "0");
 
@@ -252,11 +252,10 @@ export function buildVoteIntentTypedData(params: {
 // ── POST body shape ──────────────────────────────────────────────
 // Matches backend handler.SubmitVoteIntentRequest.
 //
-// Loop 0072 (decision 0005 §C): the `allocations` array rides
-// alongside the `allocations_hash`. The backend recomputes the
-// canonical-form hash from `allocations` and rejects on mismatch,
-// preventing the sign-hash-but-display-different-data class of
-// attack.
+// The `allocations` array rides alongside the `allocations_hash`
+// (decision 0005 §C). The backend recomputes the canonical-form
+// hash from `allocations` and rejects on mismatch, preventing the
+// sign-hash-but-display-different-data class of attack.
 
 export interface SubmitVoteIntentRequestBody {
   questionId: string;

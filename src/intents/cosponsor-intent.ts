@@ -79,7 +79,7 @@ export function buildCosponsorIntentTypedData(params: {
   const now = params.nowSeconds ?? Math.floor(Date.now() / 1000);
   const expiresAt =
     params.expiresAtSeconds ?? now + DEFAULT_COSPONSOR_TTL_SECONDS;
-  const nonce = params.nonce ?? BigInt(params.preflight.nonceNext);
+  const nonce = params.nonce ?? BigInt(params.preflight.nonce);
 
   // _validateFeeShareInvariants requires q.platformFeeRecipient to
   // appear in feeShares[]. Cosponsor preflight advertises the value.

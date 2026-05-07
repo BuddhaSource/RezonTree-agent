@@ -1,9 +1,9 @@
 // fee-share.ts — shared FeeShare type + chain-valid default policy
-// for sponsor / cosponsor / commit / vote intents (RezonForge v2.5).
+// for sponsor / cosponsor / commit / vote intents.
 //
 // Why a default exists at all: RezonForge.sol's
-// _validateFeeSharePolicy rejects empty FeeShares unconditionally
-// (loop 0129). Even when a contributor wants "all to pool" semantics,
+// _validateFeeSharePolicy rejects empty FeeShares unconditionally.
+// Even when a contributor wants "all to pool" semantics,
 // the chain insists on a token recipient. 1 bps + a single self-
 // recipient at 10000 bps is the smallest chain-valid configuration:
 // 99.99% of the contribution flows through normal pool accounting;
@@ -47,8 +47,8 @@ const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
 
 /**
  * Returns `shares` with `platformFeeRecipient` guaranteed to appear, and
- * the basisPoints total preserved at 10000. RezonForge v2.9+
- * (_validateFeeShareInvariants) rejects any sponsor / cosponsor / commit
+ * the basisPoints total preserved at 10000. RezonForge's
+ * _validateFeeShareInvariants rejects any sponsor / cosponsor / commit
  * / vote intent whose feeShares[] omits the platform fee recipient;
  * passing the existing default through this fn is the contract-safe way
  * to satisfy the rule.

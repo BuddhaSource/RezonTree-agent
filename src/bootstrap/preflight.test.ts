@@ -1,4 +1,4 @@
-// Preflight coverage — cartridge loop 0067.
+// Preflight coverage.
 //
 // Unit tests exercise the pure-function surface
 // (formatPreflightReport) + the end-to-end runPreflight

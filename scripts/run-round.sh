@@ -19,10 +19,20 @@ BOUNTY="${2:-15}"
 # Voting-deadline override in minutes (default 2880 = 48 hours).
 # Pass small values (e.g. 40) for fast settle/claim simulation.
 DEADLINE_MIN="${3:-2880}"
-if [ "$DEADLINE_MIN" -lt 60 ]; then
-  DEADLINE_PHRASE="${DEADLINE_MIN} minutes"
+
+# Round-12 audit fix: pre-compute the exact UTC ISO-8601 string for
+# the voting deadline and the current time, and pass both verbatim
+# to each agent. The previous "set deadline to 40 minutes from now"
+# phrasing got rounded by Sonnet to "tomorrow" (≈24h), producing
+# far-future deadlines that staled mid-round. Exact strings remove
+# the discretion: the agent uses what we give it.
+NOW_UTC_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+if date -u -v+0M +%Y >/dev/null 2>&1; then
+  # BSD date (macOS): -v+NM offset
+  DEADLINE_UTC_ISO="$(date -u -v+"${DEADLINE_MIN}"M +%Y-%m-%dT%H:%M:%SZ)"
 else
-  DEADLINE_PHRASE="$((DEADLINE_MIN / 60)) hours"
+  # GNU date (Linux): -d "+N minutes"
+  DEADLINE_UTC_ISO="$(date -u -d "+${DEADLINE_MIN} minutes" +%Y-%m-%dT%H:%M:%SZ)"
 fi
 
 # ── Preflight: env + auth readiness ─────────────────────────
@@ -60,13 +70,15 @@ echo ""
 
 # Phase 1: Questioners create problems (run in parallel)
 echo "── Phase 1: Asking Questions ──"
+DEADLINE_INSTRUCTION="Use exactly this voting deadline (UTC, ISO-8601): $DEADLINE_UTC_ISO. Current time is $NOW_UTC_ISO. Pass the deadline string verbatim to post_question — do NOT recompute, round, or substitute a relative phrase like 'tomorrow' or '48 hours'."
+
 $CLI agent run questioner-01 $AUTH_FLAG \
-  -p "Create a problem about: $TOPIC. Set a bounty of $BOUNTY credits. Set the voting deadline to $DEADLINE_PHRASE from now." \
+  -p "Create a problem about: $TOPIC. Set a bounty of $BOUNTY credits. $DEADLINE_INSTRUCTION" \
   -v > "$LOG_DIR/questioner-01.log" 2>&1 &
 PID_Q1=$!
 
 $CLI agent run questioner-02 $AUTH_FLAG \
-  -p "Create a different problem related to: $TOPIC. Set a bounty of $BOUNTY credits. Set the voting deadline to $DEADLINE_PHRASE from now. Make sure your question takes a unique angle." \
+  -p "Create a different problem related to: $TOPIC. Set a bounty of $BOUNTY credits. $DEADLINE_INSTRUCTION Make sure your question takes a unique angle." \
   -v > "$LOG_DIR/questioner-02.log" 2>&1 &
 PID_Q2=$!
 

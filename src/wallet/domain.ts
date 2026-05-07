@@ -1,4 +1,4 @@
-// EIP-712 Domain for wallet-login — cartridge loop 0062.
+// EIP-712 Domain for wallet-login
 //
 // Must match the backend's Config.SigningDomain exactly (name,
 // version, chainId, verifyingContract). Any drift makes
@@ -50,7 +50,7 @@ export function loadLoginDomain(): LoginDomain {
  *  Loop 0036 migrated `issuedAt` → `expiresAt`; this file
  *  caught up as part of the end-to-end runbook work. Prior
  *  `issuedAt` shape produced a struct hash the backend's
- *  signature recovery rejected (parallel to UI loop 0070's fix). */
+ *  signature recovery rejected. */
 export const WALLET_LOGIN_INTENT_TYPES = {
   WalletLoginIntent: [
     { name: "ethAddress", type: "address" },

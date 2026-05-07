@@ -1,4 +1,4 @@
-// Stderr sink — cartridge loop 0064.
+// Stderr sink.
 //
 // Writes a single human-readable line per ErrorReport to
 // process.stderr. Default-on in dev; disable via Reporter

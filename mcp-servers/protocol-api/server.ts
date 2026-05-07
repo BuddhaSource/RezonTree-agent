@@ -112,6 +112,90 @@ function getAgentWallet() {
   return deriveAgentWallet(AGENT_MNEMONIC, AGENT_INDEX, CHAIN_ID);
 }
 
+const USDC_ERC20_ABI = [
+  {
+    name: "balanceOf",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
+// Pre-flight balance gate.
+//
+// Authoritative path: the backend's preflight response carries a
+// `caller` block (address + balance + required + sufficient). When
+// present, we trust it — the backend already did the eth_call and
+// computed the comparison. R-CLIENT-IS-TRUST-ORIGIN holds because
+// we still reject before signing, and the wallet would display the
+// permit struct anyway.
+//
+// Fallback path: when the backend lacks a balance reader (no RPC in
+// dev, or older deployments), `caller` is null. Read balanceOf
+// ourselves so the gate still fires. One eth_call (~20ms) + we never
+// sign a transfer the chain will reject.
+async function assertSpendableUSDC(
+  // biome-ignore lint/suspicious/noExplicitAny: viem PublicClient type
+  publicClient: any,
+  address: Address,
+  requiredWei: bigint,
+  action: string,
+  callerFromPreflight?: {
+    sufficient: boolean;
+    balanceRaw: string;
+    balanceFormatted: string;
+    requiredRaw: string;
+    requiredFormatted: string;
+    shortfallRaw: string;
+    shortfallFormatted: string;
+    topupHint?: string;
+    token: { contractAddress: string; decimals: number; symbol: string; chainId: number };
+  } | null,
+): Promise<void> {
+  const fmt = (v: bigint) => (Number(v) / 1e6).toFixed(6);
+
+  if (callerFromPreflight) {
+    if (callerFromPreflight.sufficient) return;
+    throw new Error(
+      JSON.stringify({
+        code: "INSUFFICIENT_BALANCE",
+        action: `${action}: ${callerFromPreflight.topupHint ?? "Top up the wallet via wallet_topup_faucet (testnet) or transfer the missing amount to this address."} Balance ${callerFromPreflight.balanceFormatted} < required ${callerFromPreflight.requiredFormatted}. No intent was signed.`,
+        balance: callerFromPreflight.balanceFormatted,
+        required: callerFromPreflight.requiredFormatted,
+        shortfall: callerFromPreflight.shortfallFormatted,
+        balanceRaw: callerFromPreflight.balanceRaw,
+        requiredRaw: callerFromPreflight.requiredRaw,
+        shortfallRaw: callerFromPreflight.shortfallRaw,
+        token: callerFromPreflight.token,
+        address,
+        source: "preflight",
+      }),
+    );
+  }
+
+  const balance = (await publicClient.readContract({
+    address: USDC_ADDRESS,
+    abi: USDC_ERC20_ABI,
+    functionName: "balanceOf",
+    args: [address],
+  })) as bigint;
+  if (balance >= requiredWei) return;
+  const shortfall = requiredWei - balance;
+  throw new Error(
+    JSON.stringify({
+      code: "INSUFFICIENT_BALANCE",
+      action: `${action}: on-chain USDC balance ${fmt(balance)} < required ${fmt(requiredWei)} (short ${fmt(shortfall)}). Call wallet_topup_faucet for ${address} (testnet) or transfer USDC to this address before retrying. No intent was signed; no chain action taken.`,
+      currentBalanceUsdc: fmt(balance),
+      requiredUsdc: fmt(requiredWei),
+      shortfallUsdc: fmt(shortfall),
+      address,
+      token: USDC_ADDRESS,
+      source: "fallback",
+    }),
+  );
+}
+
 // ─── Idempotency cache ─────────────────────────────────────
 //
 // Multi-step tool flows (submit_solution, cast_vote, fund_question,
@@ -511,6 +595,14 @@ server.tool(
           "GET",
           `/v1/questions/${params.question_id}/solutions/draft?submitter=${address}`,
         )) as CommitPreflight;
+
+        await assertSpendableUSDC(
+          publicClient,
+          address,
+          BigInt(pre.feeAmount) + BigInt(pre.stakeAmount),
+          "submit_solution",
+          pre.caller ?? null,
+        );
 
         // Backend hashes the FULL solution body ({body, reasoningTree,
         // claims}) into intent.contentHash via canonicalStringify; the
@@ -1196,6 +1288,16 @@ server.tool(
         const decimals = 6; // USDC; preflight will return real decimals on step 2
         const initialBountyBase =
           parseAmountToWei(params.bounty_usd, decimals).toString();
+
+        // Pre-flight balance check happens BEFORE creating the draft row so a
+        // short wallet doesn't leave an orphan draft behind.
+        await assertSpendableUSDC(
+          publicClient,
+          address,
+          BigInt(initialBountyBase),
+          "post_question",
+        );
+
         const created = (await apiCall("POST", "/v1/questions", {
           title: params.title,
           description: params.description,
@@ -1226,6 +1328,14 @@ server.tool(
           params.bounty_usd,
           pre.token.decimals,
         );
+
+        await assertSpendableUSDC(
+          publicClient,
+          address,
+          amountWei,
+          "post_question",
+        );
+
         const td = buildSponsorIntentTypedData({
           preflight: pre,
           sponsor: address,
@@ -1326,6 +1436,14 @@ server.tool(
           `/v1/questions/${params.question_id}/votes/draft?voter=${address}`,
         )) as VotePreflight;
 
+        await assertSpendableUSDC(
+          publicClient,
+          address,
+          BigInt(pre.feeAmount) + BigInt(pre.stakeAmount),
+          "vote_workflow",
+          pre.caller ?? null,
+        );
+
         const allocations: Allocation[] = (params.allocations ?? []).map(
           (a) => ({
             solutionId: a.solution_id,
@@ -1420,7 +1538,14 @@ server.tool(
       apiCall("GET", `/v1/accounts/${address}/profile`).catch(() => null),
       apiCall("GET", "/v1/wallet/balance").catch(() => null),
     ]);
-    const text = `${loadPrompt("cold_start")}\n\n---\n\n## Your situation\n\n${JSON.stringify({ address, profile, balance }, null, 2)}`;
+    const now = new Date();
+    const currentUtcIso = now.toISOString();
+    const currentEpochSec = Math.floor(now.getTime() / 1000);
+    const text = `${loadPrompt("cold_start")}\n\n---\n\n## Your situation\n\n${JSON.stringify(
+      { address, currentUtcIso, currentEpochSec, profile, balance },
+      null,
+      2,
+    )}`;
     return { content: [{ type: "text", text }] };
   },
 );

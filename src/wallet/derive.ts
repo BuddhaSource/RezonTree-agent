@@ -1,4 +1,4 @@
-// HD wallet derivation — cartridge loop 0062.
+// HD wallet derivation
 //
 // One BIP-39 mnemonic → N agent wallets via BIP-44 path
 // m/44'/60'/0'/0/<agentIndex>. Single backup phrase, N

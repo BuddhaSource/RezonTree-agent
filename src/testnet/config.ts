@@ -1,6 +1,5 @@
-// Testnet config — cartridge loop 0061. Source-of-truth for
-// everything Base-Sepolia-specific that the wallet + MCP + bootstrap
-// code paths need.
+// Testnet config — source-of-truth for everything Base-Sepolia-specific
+// that the wallet + MCP + bootstrap code paths need.
 //
 // Keeping this in one file (rather than reading from YAML) so that
 // type-safety travels with the values. YAML-based overrides land

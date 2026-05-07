@@ -166,7 +166,7 @@ export class Executor {
         // Fan-out to configured sinks (file always; stderr
         // unless disabled; webhook if RT_AGENT_ERROR_WEBHOOK_URL
         // set). Classification determines which sinks receive
-        // the report. Cartridge loop 0064. Await so the error
+        // the report. Await so the error
         // is durable before we return — a fire-and-forget here
         // risks losing the record when the process exits right
         // after.

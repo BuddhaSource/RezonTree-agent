@@ -9,11 +9,10 @@
 // preflight shapes (/sponsorships/draft, /solutions/draft,
 // /votes/draft) that the intent builders consume.
 //
-// v2.5: FundPreflight discriminates `sponsor` vs `cosponsor` mode
-// (replacing v2.4's `init` / `join`). Sponsor-mode preflights
-// advertise the full per-Q parameter set the first sponsor binds
-// on-chain; cosponsor-mode preflights are minimal — per-Q params
-// are inherited from chain state.
+// FundPreflight discriminates `sponsor` vs `cosponsor` mode.
+// Sponsor-mode preflights advertise the full per-Q parameter set the
+// first sponsor binds on-chain; cosponsor-mode preflights are
+// minimal — per-Q params are inherited from chain state.
 //
 // R-NAME-MATCHES-CHAIN — wire fields are camelCase, mirroring the
 // backend's JSON tags. No snake_case, no short aliases.
@@ -32,20 +31,49 @@ export interface HypermediaAction {
   desc?: string;
 }
 
-// RezonForge v2.5 fund preflight: `mode` discriminates sponsor vs
-// cosponsor. When mode === "sponsor", the sponsor-only fields
-// (oracle, stakeFloor, stakeBasisPoints, sponsorshipFloor,
-// voteFee, abandonmentGracePeriod) are populated with backend-
-// suggested defaults the sponsor can override before signing.
+// Fund preflight: `mode` discriminates sponsor vs cosponsor. When
+// mode === "sponsor", the sponsor-only fields (oracle, stakeFloor,
+// stakeBasisPoints, sponsorshipFloor, voteFee,
+// abandonmentGracePeriod) are populated with backend-suggested
+// defaults the sponsor can override before signing.
+// CallerStatus is the optional balance gate the backend tacks onto a
+// preflight when the caller-address query param is supplied. Composite
+// tools read `sufficient` and short-circuit before signing.
+//
+// Carries its own `token` reference + decimal-aware `*Formatted`
+// strings so logs and error displays don't have to back-reference the
+// parent preflight's token block (Aave/Uniswap pattern).
+export interface CallerStatus {
+  address: string;
+  token: TokenPreflight;
+  balanceRaw: string;
+  balanceFormatted: string;
+  requiredRaw: string;
+  requiredFormatted: string;
+  shortfallRaw: string;
+  shortfallFormatted: string;
+  sufficient: boolean;
+  topupHint?: string;
+}
+
 export interface FundPreflight {
   mode: "sponsor" | "cosponsor";
   qid: string;
-  recommendedAmountFloor: string;
+  recommendedSponsorshipFloor: string;
   token: TokenPreflight;
   forgeAddress: string;
   chainId: number;
-  nonceNext: string;
-  fundingDeadline?: number;
+  nonce: string;
+  // Server-recommended absolute unix-second timestamp the client
+  // SHOULD use as `expiresAt` when signing — matches the chain field
+  // shape (absolute, not a relative duration) so the value passes
+  // through unchanged.
+  recommendedExpiresAt?: number;
+  // Active round's coordination deadline (off-chain — populated in
+  // cosponsor mode when a round is open). Named `roundFundingDeadline`
+  // to avoid collision with the chain's per-question fundingDeadline
+  // field on SponsorIntent.
+  roundFundingDeadline?: number;
 
   // Sponsor-only suggested defaults.
   oracle?: string;
@@ -53,21 +81,21 @@ export interface FundPreflight {
   stakeBasisPoints?: string;
   sponsorshipFloor?: string;
   voteFee?: string;
-  // v2.7 sponsor-only fields.
   commitFee?: string;
   noSolutionGracePeriod?: string;
-  // v2.9: feeShareBps is the new Q-level fee rate (replaces v2.8 platformFeeBps).
-  // platformFeeBps retained as a deprecated field for transition; new backends
+  // feeShareBps is the Q-level fee rate. platformFeeBps retained as a
+  // deprecated field for transition with legacy backends; new backends
   // emit feeShareBps.
   platformFeeBps?: string;
   feeShareBps?: string;
   platformFeeRecipient?: string;
   abandonmentGracePeriod?: string;
-  // v2.10 (C03): recommended sponsor-signed fundingDeadline (unix seconds).
+  // Recommended sponsor-signed fundingDeadline (unix seconds).
   // Distinct from `fundingDeadline` above (which is the active round's
   // coordination deadline). Populated only in sponsor mode.
-  sponsorFundingDeadline?: string;
+  recommendedFundingDeadline?: string;
 
+  caller?: CallerStatus;
   _actions: HypermediaAction[];
 }
 
@@ -78,11 +106,13 @@ export interface CommitPreflight {
   token: TokenPreflight;
   forgeAddress: string;
   chainId: number;
-  nonceNext: string;
+  nonce: string;
+  recommendedExpiresAt?: number;
   submissionDeadline?: number;
   // Required to satisfy _validateFeeShareInvariants — the chain rejects
   // a commit whose feeShares[] omits q.platformFeeRecipient.
   platformFeeRecipient?: string;
+  caller?: CallerStatus;
   _actions: HypermediaAction[];
 }
 
@@ -93,7 +123,8 @@ export interface VotePreflight {
   token: TokenPreflight;
   forgeAddress: string;
   chainId: number;
-  nonceNext: string;
+  nonce: string;
+  recommendedExpiresAt?: number;
   voteDeadline?: number;
   // Required to satisfy _validateFeeShareInvariants — the chain rejects
   // a vote whose feeShares[] omits q.platformFeeRecipient.
@@ -106,5 +137,6 @@ export interface VotePreflight {
   voteSalt?: string;
   voteSaltToken?: string;
   voteSaltExpiresAt?: number;
+  caller?: CallerStatus;
   _actions: HypermediaAction[];
 }

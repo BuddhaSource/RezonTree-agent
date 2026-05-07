@@ -1,9 +1,9 @@
 // rpc-fallback.ts — RPC + HTTP retry/failover for the Phase D battle
 // harness.
 //
-// During the 50-question battle (loop 0136+) sepolia.base.org returned
-// 502 from a Cloudflare upstream mid-broadcast and the entire scenario
-// crashed. Industry pattern (viem v2 ships fallback transports;
+// During a 50-question battle run, sepolia.base.org returned 502 from
+// a Cloudflare upstream mid-broadcast and the entire scenario crashed.
+// Industry pattern (viem v2 ships fallback transports;
 // ethers's FallbackProvider; alchemy SDK's retry-on-5xx) is to wrap
 // the RPC client in a multi-endpoint failover and retry transient
 // 5xx/network errors with exponential backoff.

@@ -1,4 +1,4 @@
-// Pure-function coverage for the v2.5 VoteIntent builders.
+// Pure-function coverage for the VoteIntent builders.
 //
 // Field order + types here MUST match
 // contracts/src/RezonForge.sol's VOTE_INTENT_TYPEHASH +
@@ -51,7 +51,7 @@ function preflight(overrides: Partial<VotePreflight> = {}): VotePreflight {
     },
     forgeAddress: ROUTER,
     chainId: 84532,
-    nonceNext: "3",
+    nonce: "3",
     _actions: [],
     ...overrides,
   };
@@ -220,7 +220,7 @@ describe("buildVoteIntentTypedData", () => {
     "0x5cbf670de3ba3eaf83b9f1c947eebe3eaa632f5cf32c2d76ecc8eb8bfb59993c" as const;
   const policy = defaultFeeSharePolicy(VOTER);
 
-  it("composes the v2.5 EIP-712 domain from preflight", () => {
+  it("composes the EIP-712 domain from preflight", () => {
     const td = buildVoteIntentTypedData({
       preflight: preflight(),
       voter: VOTER,
@@ -270,7 +270,7 @@ describe("buildVoteIntentTypedData", () => {
       feeShares: [{ recipient: VOTER, basisPoints: BigInt(10000) }],
       nowSeconds: NOW,
     });
-    // v2.9: per-intent feeShareBps removed (Q-level only).
+    // Per-intent feeShareBps is not part of the message (Q-level only).
     expect("feeShareBps" in td.message).toBe(false);
     expect(td.message.feeShares).toEqual([
       { recipient: VOTER, basisPoints: BigInt(10000) },
@@ -315,7 +315,7 @@ describe("buildSubmitVoteIntentRequestBody", () => {
     expect(body.voter).toBe(VOTER);
     expect(body.feeAmount).toBe("100000");
     expect(body.stakeAmount).toBe("1000000");
-    // v2.9: per-intent feeShareBps removed.
+    // Per-intent feeShareBps is not part of the wire body.
     expect("feeShareBps" in body).toBe(false);
     expect(body.feeShares).toEqual([
       { recipient: VOTER, basisPoints: "10000" },

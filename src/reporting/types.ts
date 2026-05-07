@@ -1,4 +1,4 @@
-// Error reporting types — cartridge loop 0064.
+// Error reporting types.
 //
 // Taxonomy + shape. Sink implementations consume these; the
 // Reporter classifies raw Errors into the severity-tagged

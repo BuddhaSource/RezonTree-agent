@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-// Preflight health check — cartridge loop 0067.
+// Preflight health check.
 //
 // Fast, read-only sanity check the operator runs BEFORE a full
 // `pnpm run-round`. Verifies the end-to-end pipe without

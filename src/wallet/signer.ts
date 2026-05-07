@@ -1,4 +1,4 @@
-// WalletLoginIntent signer — cartridge loop 0062.
+// WalletLoginIntent signer
 //
 // Signs the EIP-712 payload the backend's /auth/wallet expects.
 // Backend recovers the signer's address and compares to the

@@ -1,4 +1,4 @@
-// Balance queries — cartridge loop 0062.
+// Balance queries
 //
 // Native ETH balance (for gas) + USDC balance (for L2
 // participation) from the configured testnet RPC. Used by the

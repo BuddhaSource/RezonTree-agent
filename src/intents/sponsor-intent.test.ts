@@ -1,4 +1,4 @@
-// Pure-function coverage for the SponsorIntent (v2.7) builders.
+// Pure-function coverage for the SponsorIntent builders.
 // 3-stack fence: field order + types here MUST match
 // contracts/src/RezonForge.sol's SPONSOR_INTENT_TYPEHASH +
 // internal/signer/sponsor_intent.go +
@@ -34,7 +34,7 @@ function sponsorPreflight(
   return {
     mode: "sponsor",
     qid: QID,
-    recommendedAmountFloor: "1000000",
+    recommendedSponsorshipFloor: "1000000",
     token: {
       contractAddress: TOKEN,
       decimals: 6,
@@ -43,7 +43,7 @@ function sponsorPreflight(
     },
     forgeAddress: ROUTER,
     chainId: 84532,
-    nonceNext: "7",
+    nonce: "7",
     oracle: ORACLE,
     stakeFloor: "1000000",
     stakeBasisPoints: "1000",
@@ -55,7 +55,7 @@ function sponsorPreflight(
     // Non-zero PFR — the builder fences on zero (ForgePlatformRecipientRequired).
     platformFeeRecipient: "0x000000000000000000000000000000000000bEEF",
     abandonmentGracePeriod: "86400",
-    sponsorFundingDeadline: "9999999999", // far-future for tests
+    recommendedFundingDeadline: "9999999999", // far-future for tests
     _actions: [],
     ...overrides,
   };
@@ -67,7 +67,7 @@ function cosponsorPreflight(
   return {
     mode: "cosponsor",
     qid: QID,
-    recommendedAmountFloor: "1000000",
+    recommendedSponsorshipFloor: "1000000",
     token: {
       contractAddress: TOKEN,
       decimals: 6,
@@ -76,14 +76,14 @@ function cosponsorPreflight(
     },
     forgeAddress: ROUTER,
     chainId: 84532,
-    nonceNext: "7",
+    nonce: "7",
     _actions: [],
     ...overrides,
   };
 }
 
 describe("SPONSOR_INTENT_TYPES field order", () => {
-  it("matches RezonForge v2.10 typehash byte-for-byte (19 fields)", () => {
+  it("matches RezonForge typehash byte-for-byte (19 fields)", () => {
     expect(SPONSOR_INTENT_TYPES.SponsorIntent).toEqual([
       { name: "questionId", type: "bytes32" },
       { name: "oracle", type: "address" },
@@ -94,11 +94,10 @@ describe("SPONSOR_INTENT_TYPES field order", () => {
       { name: "voteFee", type: "uint256" },
       { name: "commitFee", type: "uint256" },
       { name: "noSolutionGracePeriod", type: "uint256" },
-      // v2.9: feeShareBps replaces v2.8 platformFeeBps at this slot.
       { name: "feeShareBps", type: "uint256" },
       { name: "platformFeeRecipient", type: "address" },
       { name: "abandonmentGracePeriod", type: "uint256" },
-      // v2.10 (C03): sponsor-signed funding-window deadline.
+      // Sponsor-signed funding-window deadline.
       { name: "fundingDeadline", type: "uint256" },
       { name: "sponsor", type: "address" },
       { name: "amount", type: "uint256" },
@@ -113,9 +112,9 @@ describe("SPONSOR_INTENT_TYPES field order", () => {
     ]);
   });
 
-  // v2.10 pinned typehash — matches Solidity SPONSOR_INTENT_TYPEHASH
+  // Pinned typehash — matches Solidity SPONSOR_INTENT_TYPEHASH
   // and Go SPONSOR_INTENT_TYPEHASH byte-for-byte.
-  it("typehash text matches the v2.10 cross-stack invariant", () => {
+  it("typehash text matches the cross-stack invariant", () => {
     const text =
       "SponsorIntent(bytes32 questionId,address oracle,address token,uint256 stakeFloor,uint256 stakeBasisPoints,uint256 sponsorshipFloor,uint256 voteFee,uint256 commitFee,uint256 noSolutionGracePeriod,uint256 feeShareBps,address platformFeeRecipient,uint256 abandonmentGracePeriod,uint256 fundingDeadline,address sponsor,uint256 amount,FeeShare[] feeShares,uint256 nonce,uint256 chainId,uint256 expiresAt)" +
       "FeeShare(address recipient,uint256 basisPoints)";
@@ -130,7 +129,7 @@ describe("buildSponsorIntentTypedData", () => {
   const NOW = 1_714_000_000;
   const policy = defaultFeeSharePolicy(SPONSOR);
 
-  it("composes the RezonForge v2.7 EIP-712 domain", () => {
+  it("composes the RezonForge EIP-712 domain", () => {
     const td = buildSponsorIntentTypedData({
       preflight: sponsorPreflight(),
       sponsor: SPONSOR,
@@ -157,10 +156,8 @@ describe("buildSponsorIntentTypedData", () => {
     expect(td.message.stakeBasisPoints).toBe(BigInt("1000"));
     expect(td.message.sponsorshipFloor).toBe(BigInt("1000000"));
     expect(td.message.voteFee).toBe(BigInt("0"));
-    // v2.9 fields:
     expect(td.message.commitFee).toBe(BigInt("0"));
     expect(td.message.noSolutionGracePeriod).toBe(MIN_NO_SOLUTION_GRACE);
-    // v2.9: feeShareBps replaces v2.8 platformFeeBps at the Q-level slot.
     expect(td.message.feeShareBps).toBe(BigInt("0"));
     expect(td.message.abandonmentGracePeriod).toBe(BigInt("86400"));
   });
@@ -281,11 +278,9 @@ describe("buildSponsorFundRequestBody", () => {
     expect(body.stakeBasisPoints).toBe("1000");
     expect(body.sponsorshipFloor).toBe("1000000");
     expect(body.abandonmentGracePeriod).toBe("86400");
-    // v2.9 fields:
     expect(body.commitFee).toBe("0");
     expect(body.noSolutionGracePeriod).toBe(String(MIN_NO_SOLUTION_GRACE));
-    // v2.9: feeShareBps is now Q-level (was platformFeeBps in v2.8).
-    // Comes from preflight default ("0" in this fixture).
+    // feeShareBps is Q-level. Comes from preflight default ("0" in this fixture).
     expect(body.feeShareBps).toBe("0");
     // Builder rebalances default (self at 10000) when PFR != self.
     expect(body.feeShares).toEqual([
@@ -296,7 +291,7 @@ describe("buildSponsorFundRequestBody", () => {
       },
     ]);
     expect(body.signature).toBe("0xbeef");
-    // v2.10 (C03): fundingDeadline carried into wire body.
+    // fundingDeadline carried into wire body.
     expect(body.fundingDeadline).toBe("9999999999");
   });
 });

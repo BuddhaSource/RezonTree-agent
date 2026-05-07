@@ -1,5 +1,4 @@
-// Formatter coverage — cartridge loop 0065. Pure string
-// builders; no RPC, no fs, no backend.
+// Formatter coverage. Pure string builders; no RPC, no fs, no backend.
 
 import { describe, expect, it } from "vitest";
 

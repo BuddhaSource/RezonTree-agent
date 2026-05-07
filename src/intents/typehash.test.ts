@@ -6,14 +6,13 @@
 // contracts/src/RezonForge.sol (lines 238 / 246 / 250 / 254 / 260)
 // and verified via `cast keccak` against the deployed bytecode.
 //
-// Why this fence exists: pre-launch, the SDK drifted from v2.9 to
-// v2.10 typed-data without anyone rebuilding the typehash. The
-// signed intent then hashed to a value the on-chain
-// SignatureChecker could not match, surfacing as
-// `ForgeBadSigner` — an opaque revert deep in the broadcast path.
-// This single test catches that drift class instantly: it
-// recomputes the typehash from the TS schema strings and pins them
-// to known-good hex.
+// Why this fence exists: when the SDK's typed-data definition drifts
+// from the on-chain typehash (e.g. a field added or renamed without
+// rebuilding the hash), the signed intent hashes to a value the
+// on-chain SignatureChecker can't match, surfacing as `ForgeBadSigner`
+// — an opaque revert deep in the broadcast path. This single test
+// catches that drift class instantly: it recomputes the typehash
+// from the TS schema strings and pins them to known-good hex.
 //
 // 3-stack fence: Solidity (RezonForge.sol) ↔ Go (internal/signer/*) ↔
 // TS (this assertion). Update all three together when a typehash

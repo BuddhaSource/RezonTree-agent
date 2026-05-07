@@ -72,7 +72,7 @@ describe("REZON_FORGE_ABI shape", () => {
       "questionId",
       "sponsor",
       "amount",
-      // v2.9: per-intent feeShareBps removed (Q-level only).
+      // Per-intent feeShareBps is not part of the tuple (Q-level only).
       "feeShares",
       "nonce",
       "chainId",
@@ -91,7 +91,7 @@ describe("REZON_FORGE_ABI shape", () => {
       "contentHash",
       "feeAmount",
       "stakeAmount",
-      // v2.9: per-intent feeShareBps removed (Q-level only).
+      // Per-intent feeShareBps is not part of the tuple (Q-level only).
       "feeShares",
       "nonce",
       "chainId",
@@ -110,7 +110,7 @@ describe("REZON_FORGE_ABI shape", () => {
       "allocationsHash",
       "feeAmount",
       "stakeAmount",
-      // v2.9: per-intent feeShareBps removed (Q-level only).
+      // Per-intent feeShareBps is not part of the tuple (Q-level only).
       "feeShares",
       "nonce",
       "chainId",
@@ -118,7 +118,7 @@ describe("REZON_FORGE_ABI shape", () => {
     ]);
   });
 
-  it("claim takes v2.9 (qid, recipient, amount, proof) — executor-callable", () => {
+  it("claim takes (qid, recipient, amount, proof) — executor-callable", () => {
     const fn = findFunction("claim");
     expect(fn!.inputs.map((i) => i.name)).toEqual([
       "questionId",
@@ -134,7 +134,7 @@ describe("REZON_FORGE_ABI shape", () => {
     ]);
   });
 
-  it("claimAllForQuestion takes v2.9 recipient parameter", () => {
+  it("claimAllForQuestion takes a recipient parameter", () => {
     const fn = findFunction("claimAllForQuestion");
     expect(fn!.inputs.map((i) => i.name)).toEqual([
       "questionId",
@@ -146,7 +146,7 @@ describe("REZON_FORGE_ABI shape", () => {
     ]);
   });
 
-  it("claimPendingShares takes v2.9 (recipient, token, amount) — executor-callable", () => {
+  it("claimPendingShares takes (recipient, token, amount) — executor-callable", () => {
     const fn = findFunction("claimPendingShares");
     expect(fn!.inputs.map((i) => i.name)).toEqual([
       "recipient",

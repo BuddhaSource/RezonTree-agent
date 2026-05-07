@@ -1,4 +1,4 @@
-// Pure-function coverage for the v2.5 CommitIntent builders.
+// Pure-function coverage for the CommitIntent builders.
 //
 // Field order + types here MUST match
 // contracts/src/RezonForge.sol's COMMIT_INTENT_TYPEHASH +
@@ -43,7 +43,7 @@ function preflight(overrides: Partial<CommitPreflight> = {}): CommitPreflight {
     },
     forgeAddress: ROUTER,
     chainId: 84532,
-    nonceNext: "11",
+    nonce: "11",
     _actions: [],
     ...overrides,
   };
@@ -161,7 +161,7 @@ describe("buildCommitIntentTypedData", () => {
   const NOW = 1_714_000_000;
   const policy = defaultFeeSharePolicy(SUBMITTER);
 
-  it("composes the v2.5 EIP-712 domain from preflight", () => {
+  it("composes the EIP-712 domain from preflight", () => {
     const td = buildCommitIntentTypedData({
       preflight: preflight(),
       submitter: SUBMITTER,
@@ -210,7 +210,7 @@ describe("buildCommitIntentTypedData", () => {
       feeShares: [{ recipient: SUBMITTER, basisPoints: BigInt(10000) }],
       nowSeconds: NOW,
     });
-    // v2.9: per-intent feeShareBps removed (Q-level only).
+    // Per-intent feeShareBps is not part of the message (Q-level only).
     expect("feeShareBps" in td.message).toBe(false);
     expect(td.message.feeShares).toEqual([
       { recipient: SUBMITTER, basisPoints: BigInt(10000) },
@@ -248,7 +248,7 @@ describe("buildSubmitCommitRequestBody", () => {
     expect(body.contentHash).toBe(CONTENT_HASH);
     expect(body.feeAmount).toBe("500000");
     expect(body.stakeAmount).toBe("5000000");
-    // v2.9: per-intent feeShareBps removed.
+    // Per-intent feeShareBps is not part of the wire body.
     expect("feeShareBps" in body).toBe(false);
     expect(body.feeShares).toEqual([
       { recipient: SUBMITTER, basisPoints: "10000" },

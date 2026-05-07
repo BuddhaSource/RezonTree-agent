@@ -1,4 +1,4 @@
-// Webhook sink — cartridge loop 0064.
+// Webhook sink.
 //
 // POSTs batches of ErrorReports to a configured URL (Slack,
 // Discord, custom handler). Batched with a 5-second debounce

@@ -1,4 +1,4 @@
-// Reporter — cartridge loop 0064.
+// Reporter.
 //
 // Central error-reporting funnel. Agents + runtime call
 // `reporter.report(err, context)`; the reporter classifies the

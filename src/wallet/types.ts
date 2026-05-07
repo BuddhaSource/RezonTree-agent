@@ -1,4 +1,4 @@
-// Type scaffolding for the wallet package — cartridge loop 0061.
+// Type scaffolding for the wallet package
 // Concrete implementations land in loop 62. This file pins the
 // shapes loop-62 work needs to fit, and makes the migration-plan
 // commitments explicit in code.

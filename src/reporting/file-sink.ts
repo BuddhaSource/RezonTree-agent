@@ -1,4 +1,4 @@
-// File sink — cartridge loop 0064.
+// File sink.
 //
 // Appends one JSONL per ErrorReport to `logs/errors-YYYY-MM-DD.jsonl`.
 // Daily rotation keeps files bounded; ops can ship any day's

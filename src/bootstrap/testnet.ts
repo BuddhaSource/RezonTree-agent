@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-// Testnet bootstrap — cartridge loop 0065.
+// Testnet bootstrap.
 //
 // Orchestration: derive → print addresses → wait for operator
 // funding → auto-register each agent via /auth/wallet → report.
@@ -49,9 +49,9 @@ import {
   type BalanceSnapshot,
 } from "../wallet/types.js";
 
-// Canonical agent names. Order matches HD indices per the
-// mcp-servers.yaml refactor (loop 0063): 0 = questioner-01,
-// 1 = questioner-02, 2-5 = solver-02..05.
+// Canonical agent names. Order matches HD indices declared in
+// mcp-servers.yaml: 0 = questioner-01, 1 = questioner-02,
+// 2-5 = solver-02..05.
 const DEFAULT_AGENT_NAMES = [
   "questioner-01",
   "questioner-02",

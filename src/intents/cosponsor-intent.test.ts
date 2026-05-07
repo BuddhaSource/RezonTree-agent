@@ -1,4 +1,4 @@
-// Pure-function coverage for the CosponsorIntent (v2.5) builders.
+// Pure-function coverage for the CosponsorIntent builders.
 // 3-stack fence: field order + types here MUST match
 // contracts/src/RezonForge.sol's COSPONSOR_INTENT_TYPEHASH +
 // internal/signer/cosponsor_intent.go +
@@ -29,7 +29,7 @@ function preflight(overrides: Partial<FundPreflight> = {}): FundPreflight {
   return {
     mode: "cosponsor",
     qid: QID,
-    recommendedAmountFloor: "1000000",
+    recommendedSponsorshipFloor: "1000000",
     token: {
       contractAddress: TOKEN,
       decimals: 6,
@@ -38,7 +38,7 @@ function preflight(overrides: Partial<FundPreflight> = {}): FundPreflight {
     },
     forgeAddress: ROUTER,
     chainId: 84532,
-    nonceNext: "11",
+    nonce: "11",
     _actions: [],
     ...overrides,
   };
@@ -73,7 +73,7 @@ describe("buildCosponsorIntentTypedData", () => {
   const NOW = 1_714_000_000;
   const policy = defaultFeeSharePolicy(COSPONSOR);
 
-  it("composes the v2.5 EIP-712 domain from preflight", () => {
+  it("composes the EIP-712 domain from preflight", () => {
     const td = buildCosponsorIntentTypedData({
       preflight: preflight(),
       sponsor: COSPONSOR,
@@ -141,7 +141,7 @@ describe("buildCosponsorFundRequestBody", () => {
     expect("stakeFloor" in body).toBe(false);
     expect("sponsorshipFloor" in body).toBe(false);
     expect("abandonmentGracePeriod" in body).toBe(false);
-    // v2.9: per-intent feeShareBps removed — body must NOT carry it.
+    // Per-intent feeShareBps is not part of the wire — body must NOT carry it.
     expect("feeShareBps" in body).toBe(false);
     expect(body.feeShares).toEqual([
       { recipient: COSPONSOR, basisPoints: "10000" },

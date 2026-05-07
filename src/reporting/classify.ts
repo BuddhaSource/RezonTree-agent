@@ -1,4 +1,4 @@
-// Error classification — cartridge loop 0064.
+// Error classification.
 //
 // Raw Errors → ErrorClass. The Reporter uses this to decide
 // routing (which sinks to fan out to + whether to exit after).

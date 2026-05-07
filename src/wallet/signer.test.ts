@@ -1,5 +1,5 @@
 // Cross-system golden vector + unit coverage for the
-// wallet-login signer — cartridge loop 0062.
+// wallet-login signer
 //
 // The golden vector exists so a future refactor that changes
 // field order, chain-id encoding, or domain separator breaks

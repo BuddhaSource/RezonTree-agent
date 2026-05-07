@@ -359,7 +359,7 @@ program
     const pre = await callAPI<{
       qid: string; feeAmount: string; stakeAmount: string;
       token: { contractAddress: string; decimals: number; symbol: string; chainId: number };
-      forgeAddress: string; chainId: number; nonceNext: string;
+      forgeAddress: string; chainId: number; nonce: string;
       [k: string]: unknown;
     }>("GET", `/v1/questions/${qid}/solutions/draft?submitter=${me.address}`);
     // commit preflight doesn't have a mode discriminator (unlike sponsorships/draft)
@@ -436,7 +436,7 @@ program
     const pre = await callAPI<{
       qid: string; feeAmount: string; stakeAmount: string;
       token: { contractAddress: string; decimals: number; symbol: string; chainId: number };
-      forgeAddress: string; chainId: number; nonceNext: string;
+      forgeAddress: string; chainId: number; nonce: string;
       voteSalt: string; voteSaltToken: string; voteSaltExpiresAt: number;
       [k: string]: unknown;
     }>("GET", `/v1/questions/${qid}/votes/draft?voter=${me.address}`);

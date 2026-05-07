@@ -1,7 +1,7 @@
-// End-to-end smoke test for the testnet bootstrap orchestrator
-// — cartridge loop 0067. Exercises the full derive → poll →
-// register path using stubbed RPC (via setBalanceClient) and
-// stubbed fetch. No live network, no LLM calls.
+// End-to-end smoke test for the testnet bootstrap orchestrator.
+// Exercises the full derive → poll → register path using stubbed
+// RPC (via setBalanceClient) and stubbed fetch. No live network,
+// no LLM calls.
 //
 // We import the orchestrator's internal-facing pieces rather
 // than spawning the CLI. The CLI entry in `testnet.ts` has a
