@@ -38,7 +38,7 @@ function preflight(overrides: Partial<FundPreflight> = {}): FundPreflight {
     },
     forgeAddress: ROUTER,
     chainId: 84532,
-    nonce: "11",
+    nonceNext: "11",
     _actions: [],
     ...overrides,
   };

@@ -43,7 +43,7 @@ function sponsorPreflight(
     },
     forgeAddress: ROUTER,
     chainId: 84532,
-    nonce: "7",
+    nonceNext: "7",
     oracle: ORACLE,
     stakeFloor: "1000000",
     stakeBasisPoints: "1000",
@@ -76,7 +76,7 @@ function cosponsorPreflight(
     },
     forgeAddress: ROUTER,
     chainId: 84532,
-    nonce: "7",
+    nonceNext: "7",
     _actions: [],
     ...overrides,
   };

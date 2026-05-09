@@ -154,7 +154,7 @@ export function buildSponsorIntentTypedData(params: {
   const now = params.nowSeconds ?? Math.floor(Date.now() / 1000);
   const expiresAt =
     params.expiresAtSeconds ?? now + DEFAULT_SPONSOR_TTL_SECONDS;
-  const nonce = params.nonce ?? BigInt(params.preflight.nonce);
+  const nonce = params.nonce ?? BigInt(params.preflight.nonceNext);
   const oracle =
     params.oracle ?? (params.preflight.oracle as `0x${string}`);
   const token =

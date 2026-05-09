@@ -174,7 +174,7 @@ export function buildCommitIntentTypedData(params: {
 }): CommitIntentTypedData {
   const now = params.nowSeconds ?? Math.floor(Date.now() / 1000);
   const ttl = params.expiresAtSeconds ?? now + DEFAULT_COMMIT_TTL_SECONDS;
-  const nonce = params.nonce ?? BigInt(params.preflight.nonce);
+  const nonce = params.nonce ?? BigInt(params.preflight.nonceNext);
   const fee = params.feeAmount ?? BigInt(params.preflight.feeAmount || "0");
   const stake = params.stakeAmount ?? BigInt(params.preflight.stakeAmount || "0");
 

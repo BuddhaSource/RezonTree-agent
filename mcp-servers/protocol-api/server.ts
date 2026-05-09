@@ -1444,19 +1444,27 @@ server.tool(
           pre.caller ?? null,
         );
 
+        if (!pre.voteSalt || !pre.voteSaltToken) {
+          throw new Error(
+            "vote preflight missing voteSalt/voteSaltToken; backend requires both for privacy",
+          );
+        }
         const allocations: Allocation[] = (params.allocations ?? []).map(
           (a) => ({
             solutionId: a.solution_id,
-            convictionPoints: BigInt(a.conviction_points),
+            points: a.conviction_points,
           }),
         );
-        const allocationsHash = computeAllocationsHash(allocations, {
-          salt: pre.voteSalt as Hex,
-        });
+        const voteSalt = pre.voteSalt as `0x${string}`;
+        const voteSaltToken = pre.voteSaltToken as `0x${string}`;
+        const allocationsHash = computeAllocationsHash(allocations, voteSalt);
+        // Salt-bound expiresAt: HMAC over (voter, salt, expiresAt) won't
+        // verify if we drift here. Same pattern as cast_vote.
         const td = buildVoteIntentTypedData({
           preflight: pre,
           voter: address,
           allocationsHash,
+          expiresAtSeconds: pre.voteSaltExpiresAt,
         });
         const intentSig = (await privateKeyToAccount(privateKey).signTypedData(
           td,
@@ -1469,7 +1477,8 @@ server.tool(
             typedData: td,
             signature: intentSig,
             allocations,
-            voteSaltToken: pre.voteSaltToken!,
+            voteSalt,
+            voteSaltToken,
           }),
         )) as { intentHash: string };
 
