@@ -185,7 +185,7 @@ async function actCreate(idx: number, payload: unknown) {
 async function actSponsor(idx: number, qid: string, amount: string) {
   const { account, publicClient, walletClient, address } = clientsFor(idx);
   const pre = (await api(
-    idx, "GET", `/v1/questions/${qid}/sponsorships/draft?funder=${address}`,
+    idx, "GET", `/v1/questions/${qid}/sponsorships/draft?sponsor=${address}`,
   )) as FundPreflight;
   const amountWei = parseAmountToWei(amount, pre.token.decimals);
   const TTL_SAFE = Math.floor(Date.now() / 1000) + 4 * 60;

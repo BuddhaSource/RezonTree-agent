@@ -63,12 +63,12 @@ export interface FundPreflight {
   token: TokenPreflight;
   forgeAddress: string;
   chainId: number;
-  nonceNext: string;
-  // Server-recommended TTL in seconds — client adds to `now` to derive
-  // the intent's `expiresAt` (which IS absolute Unix seconds, per
-  // R-WIRE-ABSOLUTE-UNIX). Relative duration is OK on the wire because
-  // it's a hint, not a timestamp.
-  recommendedExpirySeconds?: number;
+  nonce: string;
+  // Server-recommended absolute unix-second timestamp the client
+  // SHOULD use as `expiresAt` when signing — matches the chain field
+  // shape (absolute, not a relative duration) so the value passes
+  // through unchanged.
+  recommendedExpiresAt?: number;
   // Active round's coordination deadline (off-chain — populated in
   // cosponsor mode when a round is open). Named `roundFundingDeadline`
   // to avoid collision with the chain's per-question fundingDeadline
@@ -106,8 +106,8 @@ export interface CommitPreflight {
   token: TokenPreflight;
   forgeAddress: string;
   chainId: number;
-  nonceNext: string;
-  recommendedExpirySeconds?: number;
+  nonce: string;
+  recommendedExpiresAt?: number;
   submissionDeadline?: number;
   // Required to satisfy _validateFeeShareInvariants — the chain rejects
   // a commit whose feeShares[] omits q.platformFeeRecipient.
@@ -123,8 +123,8 @@ export interface VotePreflight {
   token: TokenPreflight;
   forgeAddress: string;
   chainId: number;
-  nonceNext: string;
-  recommendedExpirySeconds?: number;
+  nonce: string;
+  recommendedExpiresAt?: number;
   voteDeadline?: number;
   // Required to satisfy _validateFeeShareInvariants — the chain rejects
   // a vote whose feeShares[] omits q.platformFeeRecipient.

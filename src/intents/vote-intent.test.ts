@@ -51,7 +51,7 @@ function preflight(overrides: Partial<VotePreflight> = {}): VotePreflight {
     },
     forgeAddress: ROUTER,
     chainId: 84532,
-    nonceNext: "3",
+    nonce: "3",
     _actions: [],
     ...overrides,
   };

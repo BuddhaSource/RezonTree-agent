@@ -470,7 +470,7 @@ class BattleRunner {
     // 2) Sponsor fund.
     const sponsorPre = await call<FundPreflight>(
       "GET",
-      `/v1/questions/${question.id}/sponsorships/draft?funder=${sponsor.address}`,
+      `/v1/questions/${question.id}/sponsorships/draft?sponsor=${sponsor.address}`,
     );
     if (sponsorPre.mode !== "sponsor") {
       throw new Error(`expected mode=sponsor, got ${sponsorPre.mode}`);
@@ -523,7 +523,7 @@ class BattleRunner {
       const ca = await loginWallet(wallet);
       const cosponsorPre = await call<FundPreflight>(
         "GET",
-        `/v1/questions/${question.id}/sponsorships/draft?funder=${ca.address}`,
+        `/v1/questions/${question.id}/sponsorships/draft?sponsor=${ca.address}`,
       );
       if (cosponsorPre.mode !== "cosponsor") {
         throw new Error(`expected mode=cosponsor, got ${cosponsorPre.mode}`);
@@ -945,7 +945,7 @@ class BattleRunner {
       const question = await this.makeQuestion(sponsor, "Expired-intent test");
       const pre = await call<FundPreflight>(
         "GET",
-        `/v1/questions/${question.id}/sponsorships/draft?funder=${sponsor.address}`,
+        `/v1/questions/${question.id}/sponsorships/draft?sponsor=${sponsor.address}`,
       );
       const td = buildSponsorIntentTypedData({
         preflight: pre,
@@ -980,7 +980,7 @@ class BattleRunner {
       const question = await this.makeQuestion(sponsor, "feeshare-cap test");
       const pre = await call<FundPreflight>(
         "GET",
-        `/v1/questions/${question.id}/sponsorships/draft?funder=${sponsor.address}`,
+        `/v1/questions/${question.id}/sponsorships/draft?sponsor=${sponsor.address}`,
       );
       const td = buildSponsorIntentTypedData({
         preflight: pre,
@@ -1072,7 +1072,7 @@ class BattleRunner {
       const question = await this.makeQuestion(honest, "nonce-reuse test");
       const pre = await call<FundPreflight>(
         "GET",
-        `/v1/questions/${question.id}/sponsorships/draft?funder=${honest.address}`,
+        `/v1/questions/${question.id}/sponsorships/draft?sponsor=${honest.address}`,
       );
       const td = buildSponsorIntentTypedData({
         preflight: pre,
@@ -1198,7 +1198,7 @@ class BattleRunner {
   private async sponsorFund(authed: AuthedWallet, questionId: string, humanAmount: string): Promise<void> {
     const pre = await call<FundPreflight>(
       "GET",
-      `/v1/questions/${questionId}/sponsorships/draft?funder=${authed.address}`,
+      `/v1/questions/${questionId}/sponsorships/draft?sponsor=${authed.address}`,
     );
     const amountWei = parseAmountToWei(humanAmount, pre.token.decimals);
     const td = buildSponsorIntentTypedData({

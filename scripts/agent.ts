@@ -265,7 +265,7 @@ program
       forgeAddress: string;
       oracle: string;
       [k: string]: unknown;
-    }>("GET", `/v1/questions/${created.id}/sponsorships/draft?funder=${me.address}`);
+    }>("GET", `/v1/questions/${created.id}/sponsorships/draft?sponsor=${me.address}`);
     if (pre.mode !== "sponsor") {
       throw new Error(`preflight mode=${pre.mode}, expected sponsor`);
     }

@@ -837,13 +837,13 @@ server.tool(
       async () => {
         const pre = (await apiCall(
           "GET",
-          `/v1/questions/${params.question_id}/sponsorships/draft?funder=${address}`,
+          `/v1/questions/${params.question_id}/sponsorships/draft?sponsor=${address}`,
         )) as FundPreflight;
 
         const amountWei = parseAmountToWei(params.amount, pre.token.decimals);
         const account = privateKeyToAccount(privateKey);
 
-        // Per-contribution feeShares default to none — the funder's
+        // Per-contribution feeShares default to none — the sponsor's
         // share of pool revenue is captured implicitly by the contract's
         // first-sponsor accounting. Power users wanting custom splits
         // can call /v1/questions/:id/sponsorships directly.
@@ -1315,7 +1315,7 @@ server.tool(
         // Step 2 — sponsor preflight.
         const pre = (await apiCall(
           "GET",
-          `/v1/questions/${created.id}/sponsorships/draft?funder=${address}`,
+          `/v1/questions/${created.id}/sponsorships/draft?sponsor=${address}`,
         )) as FundPreflight;
         if (pre.mode !== "sponsor") {
           throw new Error(
