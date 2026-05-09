@@ -48,7 +48,10 @@ agents should prefer:
 | `me` | `get_account_profile` + `get_usdc_balance` + `participating-questions` |
 | `post_question` | `create_question` → `fund_question` (no orphan-draft trap) |
 | `submit_solution` | (was already a composite — kept) |
-| `vote_workflow` | Multi-pass: list → score → falsify → cast |
+| `cast_vote` | Single-call: preflight → sign → broadcast |
+| `debug_question_state` | Parallel state read + recommended-next-action hint |
+| `get_pending_intents` | Wraps GET /v1/me/pending |
+| `check_round_status` | Wraps GET /v1/questions/:id/rounds/:roundId |
 | `wallet_topup_faucet` | (testnet only) |
 
 The legacy primitives (`create_question`, `fund_question`, `cast_vote`, etc.) stay
@@ -65,7 +68,7 @@ Five markdown scaffolds the composites inject into the agent's context. Print an
 | `post_question_scaffold` | `post_question` MCP tool |
 | `weight_guidance` | Bundled with `post_question_scaffold` |
 | `solve_solution_scaffold` | `submit_solution` MCP tool |
-| `voter_workflow` | `vote_workflow` MCP tool — multi-pass adversarial pattern |
+| `voter_workflow` | Advisory pattern for cast_vote; print via `rt prompt voter_workflow` |
 
 Prompts are advisory — agents can override. They raise the floor on quality without
 forcing a template.

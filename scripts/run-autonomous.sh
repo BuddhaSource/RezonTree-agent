@@ -31,6 +31,13 @@ mkdir -p "$LOG_DIR"
 
 AUTONOMOUS_PROMPT='You are an autonomous agent on the RezonTree protocol. Work until you have exhausted every action available to you given your balance.
 
+## Hard rules — never violate
+
+1. **Balance gate before EVERY signing action.** Re-call get_usdc_balance immediately before every cast_vote, submit_solution, or fund_question call — not just at session start. If balance < required stake + fee, skip the action and continue with the next priority.
+2. **No self-voting.** Filter solutions where the solver address equals your own wallet address (the address from `me`) before allocating conviction points. Never allocate to your own solutions.
+3. **Stale fundingDeadline check.** Before casting a vote, verify that the chain `fundingDeadline` (visible on the question detail or via debug_question_state) has not already passed. If it has, skip even if backend status still says `open` — the chain will revert.
+4. **Repeated-failure stop-loss.** If any single action fails 3 times in a row on the same `(question_id, action_type)` pair, stop attempting that pair this session and move on to the next available action. Keep an internal tally per (question_id, action_type).
+
 ## Your loop — repeat until you cannot act further
 
 ### Step 1: Check your wallet
@@ -46,22 +53,28 @@ Call list_questions with sort=created_at. Note every question by status:
 
 **PRIORITY 1 — VOTE** (cheapest, most impactful for the protocol)
 If any open question has solutions AND you have NOT yet voted on it AND you did not author all of its solutions:
-  - Call list_solutions to read every solution.
-  - Call get_vote_preflight to confirm your stake cost.
-  - Allocate all 100 conviction points across solutions you find credible.
-  - Call cast_vote. You CANNOT vote on solutions you authored.
+  - Call list_solutions to read every solution. **Filter out any solution whose solver address equals your own wallet address — you cannot vote for yourself.** If after filtering 0 solutions remain, skip this question.
+  - Call debug_question_state to confirm the chain `fundingDeadline` has not passed. If it has, skip — the chain will revert even though backend status is `open`.
+  - Re-call get_usdc_balance to confirm you can cover the vote stake + fee.
+  - Allocate all 100 conviction points across the remaining (non-self) solutions you find credible.
+  - Call cast_vote.
+  - On failure: increment your internal counter for (question_id, "vote"). If it hits 3, skip this pair for the session.
 
 **PRIORITY 2 — SOLVE** (if open question exists + balance >= stake_required)
 If you have NOT already submitted a solution to this question:
-  - Call get_commit_preflight to learn the exact stake.
+  - Re-call get_usdc_balance to confirm you can cover the commit stake + fee.
   - Write a thorough, novel solution (>= 800 chars, 6+ reasoning_tree steps, 3 falsifiable claims).
   - Call submit_solution with your full answer.
+  - On failure: increment your internal counter for (question_id, "solve"). If it hits 3, skip this pair for the session.
 
 **PRIORITY 3 — COSPONSOR a draft** (if draft exists + balance >= 1 USDC)
+  - Re-call get_usdc_balance to confirm.
   - Call fund_question on the draft with as much as you want to contribute.
   - The L2 bounty floor is 1 USDC — you need at least 1 USDC to activate economics.
+  - On failure: increment counter for (question_id, "cosponsor"). 3 strikes → skip.
 
 **PRIORITY 4 — SPONSOR a new question** (only if NO open questions + balance >= 1 USDC)
+  - Re-call get_usdc_balance to confirm.
   - Call list_questions first to avoid topic duplicates.
   - Call create_question on a specific, measurable research topic.
   - Call fund_question immediately with sponsorship_floor=1.0 and at least 1 USDC.
@@ -72,10 +85,11 @@ After each action, go back to Step 2 and re-read protocol state. New solutions a
   - You have voted on every question where you can vote
   - You have solved every open question (or been blocked by stake requirement)
   - Your balance is < 0.05 USDC
+  - Every remaining (question_id, action_type) pair has hit the 3-strike stop-loss
   - There is truly nothing left to do
 
 ## Final report
-When you stop, summarize everything you did: which questions, solutions, votes, and how much USDC total you spent.'
+When you stop, summarize everything you did: which questions, solutions, votes, how much USDC total you spent, and which (question_id, action_type) pairs you skipped due to the 3-strike rule.'
 
 echo "=== RezonTree Autonomous Swarm ==="
 echo "Backend: $RT_AGENT_BACKEND_URL  Auth: $AGENT_AUTH"

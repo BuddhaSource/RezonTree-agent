@@ -44,6 +44,11 @@ import {
   type FeeShare,
 } from "./fee-share.js";
 import type { VotePreflight } from "./preflight-types.js";
+import {
+  requireHexString,
+  requireNonZeroNumber,
+  requireString,
+} from "./preflight-guards.js";
 
 // ── Typed-data primitives ────────────────────────────────────────
 
@@ -213,6 +218,12 @@ export function buildVoteIntentTypedData(params: {
   nonce?: bigint;
   nowSeconds?: number;
 }): VoteIntentTypedData {
+  // Defensive null-checks — fail with an actionable error before
+  // BigInt()/hexToBytes() blow up deep in the builder.
+  requireHexString(params.preflight.qid, "qid");
+  requireString(params.preflight.nonce, "nonce");
+  requireNonZeroNumber(params.preflight.chainId, "chainId");
+  requireString(params.preflight.forgeAddress, "forgeAddress");
   const now = params.nowSeconds ?? Math.floor(Date.now() / 1000);
   const ttl = params.expiresAtSeconds ?? now + DEFAULT_VOTE_TTL_SECONDS;
   const nonce = params.nonce ?? BigInt(params.preflight.nonce);

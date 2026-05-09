@@ -24,6 +24,11 @@ import {
   type FeeShare,
 } from "./fee-share.js";
 import type { FundPreflight } from "./preflight-types.js";
+import {
+  requireHexString,
+  requireNonZeroNumber,
+  requireString,
+} from "./preflight-guards.js";
 
 // ── Typed-data primitives ────────────────────────────────────────
 
@@ -76,6 +81,12 @@ export function buildCosponsorIntentTypedData(params: {
   nonce?: bigint;
   nowSeconds?: number;
 }): CosponsorIntentTypedData {
+  // Defensive null-checks — fail with an actionable error before
+  // BigInt()/hexToBytes() blow up deep in the builder.
+  requireHexString(params.preflight.qid, "qid");
+  requireString(params.preflight.nonce, "nonce");
+  requireNonZeroNumber(params.preflight.chainId, "chainId");
+  requireString(params.preflight.forgeAddress, "forgeAddress");
   const now = params.nowSeconds ?? Math.floor(Date.now() / 1000);
   const expiresAt =
     params.expiresAtSeconds ?? now + DEFAULT_COSPONSOR_TTL_SECONDS;
