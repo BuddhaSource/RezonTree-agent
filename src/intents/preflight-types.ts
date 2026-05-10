@@ -64,6 +64,12 @@ export interface FundPreflight {
   forgeAddress: string;
   chainId: number;
   nonce: string;
+  // Provenance of `nonce` — "chain" when sourced from the live
+  // RezonForge contract (preferred), "db" when the chain RPC was
+  // unreachable and the backend fell back to its local nonce mirror.
+  // SDK callers can log this for race-condition diagnosis but should
+  // not branch on it; the chain re-validates regardless.
+  nonceSource?: "chain" | "db";
   // Server-recommended absolute unix-second timestamp the client
   // SHOULD use as `expiresAt` when signing — matches the chain field
   // shape (absolute, not a relative duration) so the value passes
@@ -107,6 +113,8 @@ export interface CommitPreflight {
   forgeAddress: string;
   chainId: number;
   nonce: string;
+  // See FundPreflight.nonceSource — "chain" preferred, "db" fallback.
+  nonceSource?: "chain" | "db";
   recommendedExpiresAt?: number;
   submissionDeadline?: number;
   // Required to satisfy _validateFeeShareInvariants — the chain rejects
@@ -124,6 +132,8 @@ export interface VotePreflight {
   forgeAddress: string;
   chainId: number;
   nonce: string;
+  // See FundPreflight.nonceSource — "chain" preferred, "db" fallback.
+  nonceSource?: "chain" | "db";
   recommendedExpiresAt?: number;
   voteDeadline?: number;
   // Required to satisfy _validateFeeShareInvariants — the chain rejects
