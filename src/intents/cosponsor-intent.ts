@@ -24,6 +24,11 @@ import {
   type FeeShare,
 } from "./fee-share.js";
 import type { FundPreflight } from "./preflight-types.js";
+import {
+  requireHexString,
+  requireNonZeroNumber,
+  requireString,
+} from "./preflight-guards.js";
 
 // ── Typed-data primitives ────────────────────────────────────────
 
@@ -76,10 +81,16 @@ export function buildCosponsorIntentTypedData(params: {
   nonce?: bigint;
   nowSeconds?: number;
 }): CosponsorIntentTypedData {
+  // Defensive null-checks — fail with an actionable error before
+  // BigInt()/hexToBytes() blow up deep in the builder.
+  requireHexString(params.preflight.qid, "qid");
+  requireString(params.preflight.nonce, "nonce");
+  requireNonZeroNumber(params.preflight.chainId, "chainId");
+  requireString(params.preflight.forgeAddress, "forgeAddress");
   const now = params.nowSeconds ?? Math.floor(Date.now() / 1000);
   const expiresAt =
     params.expiresAtSeconds ?? now + DEFAULT_COSPONSOR_TTL_SECONDS;
-  const nonce = params.nonce ?? BigInt(params.preflight.nonceNext);
+  const nonce = params.nonce ?? BigInt(params.preflight.nonce);
 
   // _validateFeeShareInvariants requires q.platformFeeRecipient to
   // appear in feeShares[]. Cosponsor preflight advertises the value.
@@ -117,7 +128,7 @@ export function buildCosponsorIntentTypedData(params: {
 export interface CosponsorFundRequestBody {
   mode: "cosponsor";
   questionId: string;
-  funder: string;
+  sponsor: string;
   amount: string;
   nonce: string;
   chainId: string;
@@ -134,7 +145,7 @@ export function buildCosponsorFundRequestBody(params: {
   return {
     mode: "cosponsor",
     questionId: m.questionId,
-    funder: m.sponsor,
+    sponsor: m.sponsor,
     amount: m.amount.toString(),
     nonce: m.nonce.toString(),
     chainId: m.chainId.toString(),

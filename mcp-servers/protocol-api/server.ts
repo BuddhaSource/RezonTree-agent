@@ -157,10 +157,11 @@ async function assertSpendableUSDC(
 
   if (callerFromPreflight) {
     if (callerFromPreflight.sufficient) return;
-    throw new Error(
-      JSON.stringify({
-        code: "INSUFFICIENT_BALANCE",
-        action: `${action}: ${callerFromPreflight.topupHint ?? "Top up the wallet via wallet_topup_faucet (testnet) or transfer the missing amount to this address."} Balance ${callerFromPreflight.balanceFormatted} < required ${callerFromPreflight.requiredFormatted}. No intent was signed.`,
+    throw new StructuredMCPError({
+      code: "INSUFFICIENT_BALANCE",
+      message: `${action}: balance ${callerFromPreflight.balanceFormatted} < required ${callerFromPreflight.requiredFormatted}.`,
+      action: `${callerFromPreflight.topupHint ?? "Top up the wallet via wallet_topup_faucet (testnet) or transfer the missing amount to this address."} No intent was signed.`,
+      details: {
         balance: callerFromPreflight.balanceFormatted,
         required: callerFromPreflight.requiredFormatted,
         shortfall: callerFromPreflight.shortfallFormatted,
@@ -170,8 +171,8 @@ async function assertSpendableUSDC(
         token: callerFromPreflight.token,
         address,
         source: "preflight",
-      }),
-    );
+      },
+    });
   }
 
   const balance = (await publicClient.readContract({
@@ -182,18 +183,64 @@ async function assertSpendableUSDC(
   })) as bigint;
   if (balance >= requiredWei) return;
   const shortfall = requiredWei - balance;
-  throw new Error(
-    JSON.stringify({
-      code: "INSUFFICIENT_BALANCE",
-      action: `${action}: on-chain USDC balance ${fmt(balance)} < required ${fmt(requiredWei)} (short ${fmt(shortfall)}). Call wallet_topup_faucet for ${address} (testnet) or transfer USDC to this address before retrying. No intent was signed; no chain action taken.`,
+  throw new StructuredMCPError({
+    code: "INSUFFICIENT_BALANCE",
+    message: `${action}: on-chain USDC balance ${fmt(balance)} < required ${fmt(requiredWei)} (short ${fmt(shortfall)}).`,
+    action: `Call wallet_topup_faucet for ${address} (testnet) or transfer USDC to this address before retrying. No intent was signed; no chain action taken.`,
+    details: {
       currentBalanceUsdc: fmt(balance),
       requiredUsdc: fmt(requiredWei),
       shortfallUsdc: fmt(shortfall),
       address,
       token: USDC_ADDRESS,
       source: "fallback",
-    }),
-  );
+    },
+  });
+}
+
+// ─── Structured MCP error ─────────────────────────────────
+//
+// MCP tools surface errors back to the agent as text. A bare
+// `throw new Error("...")` flattens into a single string and the agent
+// loses the {code, action, request_id} contract that the rest of the
+// protocol speaks. StructuredMCPError serializes as the same envelope
+// the backend emits — `{code, message, action, request_id}` — so an
+// agent can pattern-match on `code` and follow `action` regardless of
+// where in the stack the error originated.
+
+class StructuredMCPError extends Error {
+  readonly code: string;
+  readonly action: string;
+  readonly requestId?: string;
+  // Extra fields are preserved alongside the envelope so insufficient-
+  // balance / preflight-mismatch errors can carry their domain detail.
+  readonly details?: Record<string, unknown>;
+
+  constructor(opts: {
+    code: string;
+    message: string;
+    action: string;
+    requestId?: string;
+    details?: Record<string, unknown>;
+  }) {
+    // The Error.message is set to the JSON envelope so `throw` paths
+    // that bottom out in `.message` (legacy MCP harness) still get
+    // structured output. The MCP SDK serializes the thrown Error's
+    // message verbatim.
+    const envelope = {
+      code: opts.code,
+      message: opts.message,
+      action: opts.action,
+      request_id: opts.requestId,
+      ...(opts.details ?? {}),
+    };
+    super(JSON.stringify(envelope));
+    this.name = "StructuredMCPError";
+    this.code = opts.code;
+    this.action = opts.action;
+    this.requestId = opts.requestId;
+    this.details = opts.details;
+  }
 }
 
 // ─── Idempotency cache ─────────────────────────────────────
@@ -390,10 +437,22 @@ async function apiCall(
   const data = await resp.json();
 
   if (!resp.ok) {
-    const err = data as { error?: { code?: string; message?: string; action?: string } };
-    throw new Error(
-      `API error ${resp.status}: ${err.error?.code} — ${err.error?.message}\nAction: ${err.error?.action}`,
-    );
+    const err = data as {
+      error?: {
+        code?: string;
+        message?: string;
+        action?: string;
+        request_id?: string;
+      };
+    };
+    throw new StructuredMCPError({
+      code: err.error?.code ?? `HTTP_${resp.status}`,
+      message: err.error?.message ?? `API ${method} ${path} returned ${resp.status}`,
+      action:
+        err.error?.action ??
+        "Inspect the response body and retry. If persistent, check backend logs.",
+      requestId: err.error?.request_id,
+    });
   }
   return data;
 }
@@ -408,10 +467,22 @@ async function apiCallPublic(method: string, path: string): Promise<unknown> {
   });
   const data = await resp.json();
   if (!resp.ok) {
-    const err = data as { error?: { code?: string; message?: string; action?: string } };
-    throw new Error(
-      `API error ${resp.status}: ${err.error?.code} — ${err.error?.message}\nAction: ${err.error?.action}`,
-    );
+    const err = data as {
+      error?: {
+        code?: string;
+        message?: string;
+        action?: string;
+        request_id?: string;
+      };
+    };
+    throw new StructuredMCPError({
+      code: err.error?.code ?? `HTTP_${resp.status}`,
+      message: err.error?.message ?? `API ${method} ${path} returned ${resp.status}`,
+      action:
+        err.error?.action ??
+        "Inspect the response body and retry. If persistent, check backend logs.",
+      requestId: err.error?.request_id,
+    });
   }
   return data;
 }
@@ -748,9 +819,13 @@ server.tool(
         )) as VotePreflight;
 
         if (!pre.voteSalt || !pre.voteSaltToken) {
-          throw new Error(
-            "vote preflight missing voteSalt; backend requires it for privacy",
-          );
+          throw new StructuredMCPError({
+            code: "VOTE_SALT_MISSING",
+            message:
+              "Vote preflight did not return voteSalt + voteSaltToken; the backend requires both for privacy.",
+            action:
+              "Re-fetch /v1/questions/:id/votes/draft?voter=<addr> with a known voter address. If still missing, the backend version may not support the vote-allocation salt — upgrade the backend.",
+          });
         }
         const voteSalt = pre.voteSalt as `0x${string}`;
         const voteSaltToken = pre.voteSaltToken as `0x${string}`;
@@ -812,7 +887,7 @@ server.tool(
 
 server.tool(
   "fund_question",
-  "Fund a question via RezonForge v2.7 flow: preflight → sign Sponsor or Cosponsor intent (auto-detected from preflight.mode) → POST /sponsorships → USDC permit → broadcast sponsor()/cosponsor(). The first contributor signs SponsorIntent (binds per-Q params on-chain); subsequent contributors sign CosponsorIntent (inherits chain state). Amount is in human USDC (e.g. '1.5' = 1.5 USDC). IMPORTANT: check get_usdc_balance before calling — this pulls from your on-chain wallet. For first-sponsors, sponsorship_floor defaults to preflight.sponsorship_floor (usually 1 USDC) but can be overridden lower if your balance requires it.",
+  "Fund a question via RezonForge: preflight → sign Sponsor or Cosponsor intent (auto-detected from preflight.mode) → POST /sponsorships → USDC permit → broadcast sponsor()/cosponsor(). The first contributor signs SponsorIntent (binds per-Q params on-chain); subsequent contributors sign CosponsorIntent (inherits chain state). Amount is in human USDC (e.g. '1.5' = 1.5 USDC). IMPORTANT: check get_usdc_balance before calling — this pulls from your on-chain wallet. For first-sponsors, sponsorship_floor defaults to preflight.sponsorship_floor (usually 1 USDC) but can be overridden lower if your balance requires it.",
   {
     question_id: z.string().describe("The question ID to fund"),
     amount: z
@@ -837,13 +912,13 @@ server.tool(
       async () => {
         const pre = (await apiCall(
           "GET",
-          `/v1/questions/${params.question_id}/sponsorships/draft?funder=${address}`,
+          `/v1/questions/${params.question_id}/sponsorships/draft?sponsor=${address}`,
         )) as FundPreflight;
 
         const amountWei = parseAmountToWei(params.amount, pre.token.decimals);
         const account = privateKeyToAccount(privateKey);
 
-        // Per-contribution feeShares default to none — the funder's
+        // Per-contribution feeShares default to none — the sponsor's
         // share of pool revenue is captured implicitly by the contract's
         // first-sponsor accounting. Power users wanting custom splits
         // can call /v1/questions/:id/sponsorships directly.
@@ -1002,19 +1077,31 @@ server.tool(
       };
 
       if (!claim.qid) {
-        throw new Error(
-          `Question ${params.question_id} has no chain qid yet — round may not be funded on-chain.`,
-        );
+        throw new StructuredMCPError({
+          code: "QUESTION_NOT_ON_CHAIN",
+          message: `Question ${params.question_id} has no chain qid yet.`,
+          action:
+            "Round may not be funded on-chain. Call debug_question_state to inspect status; fund_question if a sponsor is needed.",
+          details: { questionId: params.question_id },
+        });
       }
       if (claim.role === "none") {
-        throw new Error(
-          `Address ${address} did not participate in question ${params.question_id}; nothing to claim.`,
-        );
+        throw new StructuredMCPError({
+          code: "NOT_PARTICIPANT",
+          message: `Address ${address} did not participate in question ${params.question_id}; nothing to claim.`,
+          action:
+            "Only sponsors, solvers, and voters of a settled question can claim. Check participating-questions for ones you have a role in.",
+          details: { address, questionId: params.question_id },
+        });
       }
       if (!claim.merkleRoot) {
-        throw new Error(
-          `Round for question ${params.question_id} is not yet settled on-chain — no merkleRoot persisted. Wait for SettlementPublished, then retry.`,
-        );
+        throw new StructuredMCPError({
+          code: "ROUND_NOT_SETTLED",
+          message: `Round for question ${params.question_id} is not yet settled on-chain — no merkleRoot persisted.`,
+          action:
+            "Wait for SettlementPublished, then retry claim_payout. Use check_round_status to monitor.",
+          details: { questionId: params.question_id },
+        });
       }
 
       questionId = claim.qid as Hex;
@@ -1200,7 +1287,7 @@ server.tool(
 // the agent has guidance baked in.
 // ─────────────────────────────────────────────────────────────────────
 
-import { bundlePrompts, loadPrompt } from "../../src/prompts/index.js";
+import { loadPrompt } from "../../src/prompts/index.js";
 import {
   ETH_FAUCETS,
   ethFaucetMessage,
@@ -1228,7 +1315,7 @@ server.tool(
       profile,
       balance,
       participating,
-      hint: "Authored, solved, voted, claimable rolled up. To take action, call post_question / submit_solution / vote_workflow / claim.",
+      hint: "Authored, solved, voted, claimable rolled up. To take action, call post_question / submit_solution / cast_vote / claim_payout.",
     };
     return {
       content: [{ type: "text", text: JSON.stringify(summary, null, 2) }],
@@ -1315,12 +1402,16 @@ server.tool(
         // Step 2 — sponsor preflight.
         const pre = (await apiCall(
           "GET",
-          `/v1/questions/${created.id}/sponsorships/draft?funder=${address}`,
+          `/v1/questions/${created.id}/sponsorships/draft?sponsor=${address}`,
         )) as FundPreflight;
         if (pre.mode !== "sponsor") {
-          throw new Error(
-            `post_question: preflight returned mode=${pre.mode} on a freshly-created question. Likely a stale row; re-run.`,
-          );
+          throw new StructuredMCPError({
+            code: "STALE_DRAFT_ROW",
+            message: `post_question: preflight returned mode=${pre.mode} on a freshly-created question; expected mode=sponsor.`,
+            action:
+              "Likely a stale draft row from a prior run. Re-run post_question; if persistent, file a backend bug with the question id.",
+            details: { questionId: created.id, mode: pre.mode },
+          });
         }
 
         // Step 3 — build sponsor intent + sign.
@@ -1386,126 +1477,112 @@ server.tool(
   },
 );
 
-// ── vote_workflow — list + score + cast in one walk ──────────────────
+// ── get_pending_intents — read your pending row queue ───────────────
 
 server.tool(
-  "vote_workflow",
-  "Composite voter tool. Returns all solutions for a question + a scoring scaffold + the voter_workflow advisory prompt, then accepts an allocation and casts the vote on-chain. Use this instead of cast_vote for any open question with multiple solutions — it bakes in the deep-rate-and-falsify pattern.",
+  "get_pending_intents",
+  "List signed intents you have submitted that are still awaiting on-chain confirmation. Wraps GET /v1/me/pending. Use to recover after a network blip — find intent_hashes the backend has staged but the reconciler hasn't yet confirmed.",
+  {},
+  async () => {
+    const result = await apiCall("GET", "/v1/me/pending");
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  },
+);
+
+// ── check_round_status — drill into a single round ──────────────────
+
+server.tool(
+  "check_round_status",
+  "Get the detail for a specific round on a question. Wraps GET /v1/questions/:id/rounds/:roundId. Use when debug_question_state shows multiple rounds and you need one round's funding/voting state.",
   {
-    question_id: z.string(),
-    allocations: z
-      .array(
-        z.object({
-          solution_id: z.string(),
-          conviction_points: z.number().describe("≥ 10, ≤ 100, sum to ≤ 100"),
-          rationale: z.string().describe("Why this allocation"),
-        }),
-      )
-      .optional()
-      .describe(
-        "Omit on first call to receive the scoring scaffold. Pass on second call to cast.",
-      ),
+    question_id: z.string().describe("The question ID (qst_...)."),
+    round_id: z.string().describe("The round ID (rnd_...)."),
   },
   async (params) => {
-    // First call (no allocations) — return solutions + advisory prompt.
-    if (!params.allocations || params.allocations.length === 0) {
-      const [question, solutions] = await Promise.all([
-        apiCall("GET", `/v1/questions/${params.question_id}`),
-        apiCall("GET", `/v1/questions/${params.question_id}/solutions`),
-      ]);
-      return {
-        content: [
-          {
-            type: "text",
-            text: `# Voting workflow for ${params.question_id}\n\n${loadPrompt("voter_workflow")}\n\n---\n\n## Question\n\n${JSON.stringify(question, null, 2)}\n\n## Solutions to score\n\n${JSON.stringify(solutions, null, 2)}\n\n---\n\nWhen you've scored, call vote_workflow again with allocations: [{solution_id, conviction_points, rationale}, ...].`,
-          },
-        ],
-      };
+    const result = await apiCall(
+      "GET",
+      `/v1/questions/${params.question_id}/rounds/${params.round_id}`,
+    );
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  },
+);
+
+// ── debug_question_state — consolidated chain + round + solutions ───
+
+server.tool(
+  "debug_question_state",
+  "Parallel-fetches GET /v1/questions/:id, /v1/questions/:id/rounds, /v1/questions/:id/solutions and returns the consolidated state plus a recommended next-action hint. Use when you can't tell whether a question is open for sponsorships, commits, votes, or settled.",
+  {
+    question_id: z.string().describe("The question ID (qst_...)."),
+  },
+  async (params) => {
+    const [question, rounds, solutions] = await Promise.all([
+      apiCall("GET", `/v1/questions/${params.question_id}`).catch(
+        (e) => ({ error: String(e) }),
+      ),
+      apiCall("GET", `/v1/questions/${params.question_id}/rounds`).catch(
+        (e) => ({ error: String(e) }),
+      ),
+      apiCall("GET", `/v1/questions/${params.question_id}/solutions`).catch(
+        (e) => ({ error: String(e) }),
+      ),
+    ]);
+
+    const status =
+      typeof question === "object" && question && "status" in question
+        ? (question as { status?: string }).status
+        : undefined;
+
+    let recommendedNextAction = "Inspect the response to choose an action.";
+    switch (status) {
+      case "draft":
+      case "open":
+        recommendedNextAction =
+          "POST /v1/questions/:id/sponsorships (or call fund_question) to fund — once chain pool is populated the round opens.";
+        break;
+      case "funding":
+        recommendedNextAction =
+          "Wait for the funding deadline to pass, then submit solutions via submit_solution.";
+        break;
+      case "committing":
+      case "solutions_open":
+        recommendedNextAction =
+          "POST /v1/questions/:id/solutions (or call submit_solution) before the commit window closes.";
+        break;
+      case "voting":
+        recommendedNextAction =
+          "POST /v1/questions/:id/vote-intent (or call cast_vote) to allocate conviction points.";
+        break;
+      case "settled":
+        recommendedNextAction =
+          "Call claim_payout to collect any winnings tied to your address.";
+        break;
+      case "cancelled":
+      case "abandoned":
+        recommendedNextAction =
+          "Round terminated; refunds (if any) are handled by the reconciler. No further actions needed.";
+        break;
+      default:
+        recommendedNextAction = `Status '${status ?? "unknown"}' — fetch /v1/protocol for the current state machine.`;
     }
 
-    // Second call — actually cast the vote.
-    const env = requireRouterEnv();
-    const { walletClient, publicClient, privateKey, address } = getClients();
-
-    return withIdempotency(
-      "vote_workflow",
-      { addr: address, qid: params.question_id, alloc: params.allocations },
-      async () => {
-        const pre = (await apiCall(
-          "GET",
-          `/v1/questions/${params.question_id}/votes/draft?voter=${address}`,
-        )) as VotePreflight;
-
-        await assertSpendableUSDC(
-          publicClient,
-          address,
-          BigInt(pre.feeAmount) + BigInt(pre.stakeAmount),
-          "vote_workflow",
-          pre.caller ?? null,
-        );
-
-        if (!pre.voteSalt || !pre.voteSaltToken) {
-          throw new Error(
-            "vote preflight missing voteSalt/voteSaltToken; backend requires both for privacy",
-          );
-        }
-        const allocations: Allocation[] = (params.allocations ?? []).map(
-          (a) => ({
-            solutionId: a.solution_id,
-            points: a.conviction_points,
-          }),
-        );
-        const voteSalt = pre.voteSalt as `0x${string}`;
-        const voteSaltToken = pre.voteSaltToken as `0x${string}`;
-        const allocationsHash = computeAllocationsHash(allocations, voteSalt);
-        // Salt-bound expiresAt: HMAC over (voter, salt, expiresAt) won't
-        // verify if we drift here. Same pattern as cast_vote.
-        const td = buildVoteIntentTypedData({
-          preflight: pre,
-          voter: address,
-          allocationsHash,
-          expiresAtSeconds: pre.voteSaltExpiresAt,
-        });
-        const intentSig = (await privateKeyToAccount(privateKey).signTypedData(
-          td,
-        )) as Hex;
-
-        const voteResp = (await apiCall(
-          "POST",
-          `/v1/questions/${params.question_id}/vote-intent`,
-          buildSubmitVoteIntentRequestBody({
-            typedData: td,
-            signature: intentSig,
-            allocations,
-            voteSalt,
-            voteSaltToken,
-          }),
-        )) as { intentHash: string };
-
-        const permitValue =
-          BigInt(td.message.feeAmount) + BigInt(td.message.stakeAmount);
-        const permit = await signUSDCPermit(walletClient, publicClient, {
-          usdc: USDC_ADDRESS,
-          spender: env.router,
-          value: permitValue,
-          deadline: td.message.expiresAt,
-        });
-        const txHash = await broadcastVote(walletClient, {
-          forgeAddress: env.router,
-          intent: td.message,
-          intentSig,
-          permit,
-        });
-        await awaitReceipt(publicClient, txHash);
-
-        return {
-          intent_hash: voteResp.intentHash,
-          vote_tx_hash: txHash,
-          allocations: params.allocations,
-          rationale: params.allocations?.map((a) => a.rationale),
-        };
-      },
-    );
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              question,
+              rounds,
+              solutions,
+              recommendedNextAction,
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+    };
   },
 );
 

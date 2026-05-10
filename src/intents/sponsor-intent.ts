@@ -41,6 +41,11 @@ import {
   type FeeShare,
 } from "./fee-share.js";
 import type { FundPreflight } from "./preflight-types.js";
+import {
+  requireHexString,
+  requireNonZeroNumber,
+  requireString,
+} from "./preflight-guards.js";
 
 // ── Typed-data primitives ────────────────────────────────────────
 
@@ -151,10 +156,17 @@ export function buildSponsorIntentTypedData(params: {
       "preflight.oracle is empty; cannot build SponsorIntent. Did the backend return mode=cosponsor?",
     );
   }
+  // Defensive null-checks — fail with an actionable error before
+  // BigInt()/hexToBytes() blow up deep in the builder.
+  requireHexString(params.preflight.qid, "qid");
+  requireString(params.preflight.nonce, "nonce");
+  requireNonZeroNumber(params.preflight.chainId, "chainId");
+  requireString(params.preflight.forgeAddress, "forgeAddress");
+  requireString(params.preflight.token?.contractAddress, "token.contractAddress");
   const now = params.nowSeconds ?? Math.floor(Date.now() / 1000);
   const expiresAt =
     params.expiresAtSeconds ?? now + DEFAULT_SPONSOR_TTL_SECONDS;
-  const nonce = params.nonce ?? BigInt(params.preflight.nonceNext);
+  const nonce = params.nonce ?? BigInt(params.preflight.nonce);
   const oracle =
     params.oracle ?? (params.preflight.oracle as `0x${string}`);
   const token =
@@ -290,7 +302,7 @@ export function buildSponsorIntentTypedData(params: {
 export interface SponsorFundRequestBody {
   mode: "sponsor";
   questionId: string;
-  funder: string;
+  sponsor: string;
   amount: string;
   nonce: string;
   chainId: string;
@@ -321,7 +333,7 @@ export function buildSponsorFundRequestBody(params: {
   return {
     mode: "sponsor",
     questionId: m.questionId,
-    funder: m.sponsor,
+    sponsor: m.sponsor,
     amount: m.amount.toString(),
     nonce: m.nonce.toString(),
     chainId: m.chainId.toString(),
