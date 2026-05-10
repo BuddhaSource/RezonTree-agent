@@ -205,7 +205,7 @@ export async function snapshotFinance(params: {
   for (let i = 0; i < params.qids.length; i++) {
     // poolAmount is the 12th field (0-indexed 11) of QuestionState —
     // see RezonForge.sol struct declaration. Index drift here was
-    // the loop 0137 "uint256 in safe-int range" crash.
+    // the previous "uint256 in safe-int range" crash.
     pools[params.qids[i]] = poolStates[i][11];
   }
   const solutionStakes: Record<Hex, bigint> = {};

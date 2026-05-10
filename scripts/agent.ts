@@ -670,7 +670,7 @@ program
       address: FORGE,
       abi: REZON_FORGE_ABI,
       functionName: "claimAllForQuestion",
-      // v2.9: recipient = agent's own address. Pool funds flow to this
+      // recipient = agent's own address. Pool funds flow to this
       // address via merkle leaf; stake refunds flow to the chain-recorded
       // stake owners (which are also the agent for own commits/votes).
       args: [qidHex, wallet.account!.address, poolAmount, poolProof, solHash, voteHash],

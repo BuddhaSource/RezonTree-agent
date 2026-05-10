@@ -2,7 +2,7 @@
 // run-battle.ts — Phase D end-to-end battle harness.
 //
 // Reads scripts/battle-scenarios.yaml, walks each scenario through
-// the full RezonForge v2.5 lifecycle:
+// the full RezonForge lifecycle:
 //
 //   sponsor  →  cosponsor*  →  commit*  →  vote*
 //             →  settle  →  claim*  →  stake-refund*
@@ -807,7 +807,7 @@ class BattleRunner {
       const wTx = await broadcastClaim(winnerClient, {
         forgeAddress: FORGE!,
         questionId: qid,
-        // v2.9: explicit recipient — pass winner's address. The merkle
+        // Explicit recipient — pass winner's address. The merkle
         // leaf is bound to this address; any other value fails the proof.
         recipient: winnerClient.account!.address,
         amount: winnerAmount,
@@ -1145,8 +1145,8 @@ class BattleRunner {
         await broadcastClaim(mallory, {
           forgeAddress: FORGE!,
           questionId: fakeQid,
-          // v2.9: recipient parameter; for the frontrun-claim sybil case
-          // any address fails the (nonexistent) proof check.
+          // For the frontrun-claim sybil case, any address fails the
+          // (nonexistent) proof check.
           recipient: mallory.account!.address,
           amount: parseAmountToWei("1", 6),
           proof: fakeProof,
@@ -1163,7 +1163,7 @@ class BattleRunner {
   // ─ Helpers ────────────────────────────────────────────────────
 
   private defaultFeeShares(): { recipient: `0x${string}`; basisPoints: bigint }[] {
-    // Per the v2.5 contract guard: FeeShares must be non-empty even
+    // Per the contract guard: FeeShares must be non-empty even
     // when feeShareBps=0 (sum-to-10000 is enforced; the array shape is
     // hashed into the EIP-712 digest). Smoke runs route the (zero) fee
     // bucket to the demo fee_wallet — alias for carol in the pool.

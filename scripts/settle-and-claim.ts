@@ -560,7 +560,7 @@ async function main() {
   if (payouts.length === 0) {
     throw new FatalExit(EXIT.NO_WINNERS, "no winners after conviction aggregation");
   }
-  // v2.10 (C05): defense-in-depth pre-aggregation by recipient. The
+  // C05: defense-in-depth pre-aggregation by recipient. The
   // chain dedups via claimed[qid][recipient]; duplicate leaves would
   // strand funds (only the first claim succeeds; second reverts
   // ForgeAlreadyClaimed). aggregatePayouts → mergeAndCapToPool
@@ -697,7 +697,7 @@ async function main() {
       const claimTx = await broadcastClaim(claimer, {
         forgeAddress: env.forge,
         questionId: env.qid,
-        // v2.9: explicit recipient — same as winner-wallet address.
+        // Explicit recipient — same as winner-wallet address.
         // The merkle leaf was authored against this address.
         recipient: claimer.account!.address,
         amount: leaf.amount,

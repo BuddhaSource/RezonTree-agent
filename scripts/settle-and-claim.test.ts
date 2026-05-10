@@ -1,4 +1,4 @@
-// settle-and-claim.test.ts — v2.10 (C05) regression: oracle off-chain
+// settle-and-claim.test.ts — C05 regression: oracle off-chain
 // pre-aggregation by recipient before Merkle tree build.
 //
 // Context: the chain dedups via `claimed[qid][recipient]`. Two leaves
