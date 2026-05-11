@@ -637,47 +637,67 @@ server.tool(
           buildSubmitCommitRequestBody({ typedData: td, signature: intentSig }),
         )) as { intentHash: string };
 
-        const solResp = (await apiCall(
-          "POST",
-          `/v1/questions/${params.question_id}/solutions`,
-          {
-            intentHash: commitResp.intentHash,
-            body: params.body,
-            reasoningTree: params.reasoning_tree,
-            claims: params.claims.map((c) => ({
-              criterionId: c.criterion_id,
-              value: c.value,
-              argument: c.argument,
-              falsifiableBy: c.falsifiable_by,
-            })),
-          },
-        )) as { id: string };
+        // From here on the backend holds a staged intent_signatures row.
+        // Any partial failure leaves the agent with a pending intent it
+        // can recover via rezontree_me_list_pending (hosted MCP). Surface
+        // intentHash so the agent has a recovery handle and DOES NOT
+        // re-call submit_solution (which would either conflict on the
+        // unique intent_hash or burn another nonce on a fresh intent).
+        try {
+          const solResp = (await apiCall(
+            "POST",
+            `/v1/questions/${params.question_id}/solutions`,
+            {
+              intentHash: commitResp.intentHash,
+              body: params.body,
+              reasoningTree: params.reasoning_tree,
+              claims: params.claims.map((c) => ({
+                criterionId: c.criterion_id,
+                value: c.value,
+                argument: c.argument,
+                falsifiableBy: c.falsifiable_by,
+              })),
+            },
+          )) as { id: string };
 
-        const permitValue =
-          BigInt(td.message.feeAmount) + BigInt(td.message.stakeAmount);
-        const permit = await signUSDCPermit(walletClient, publicClient, {
-          usdc: USDC_ADDRESS,
-          spender: env.router,
-          value: permitValue,
-          deadline: td.message.expiresAt,
-        });
+          const permitValue =
+            BigInt(td.message.feeAmount) + BigInt(td.message.stakeAmount);
+          const permit = await signUSDCPermit(walletClient, publicClient, {
+            usdc: USDC_ADDRESS,
+            spender: env.router,
+            value: permitValue,
+            deadline: td.message.expiresAt,
+          });
 
-        const txHash = await broadcastCommit(walletClient, {
-          forgeAddress: env.router,
-          intent: td.message,
-          intentSig,
-          permit,
-        });
-        await awaitReceipt(publicClient, txHash);
+          const txHash = await broadcastCommit(walletClient, {
+            forgeAddress: env.router,
+            intent: td.message,
+            intentSig,
+            permit,
+          });
+          await awaitReceipt(publicClient, txHash);
 
-        return {
-          solution_id: solResp.id,
-          intent_hash: commitResp.intentHash,
-          commit_tx_hash: txHash,
-          fee_paid: td.message.feeAmount.toString(),
-          stake_paid: td.message.stakeAmount.toString(),
-          note: "Backend row flips pending→confirmed within one HTTPPoller tick (~2s).",
-        };
+          return {
+            solution_id: solResp.id,
+            intent_hash: commitResp.intentHash,
+            commit_tx_hash: txHash,
+            fee_paid: td.message.feeAmount.toString(),
+            stake_paid: td.message.stakeAmount.toString(),
+            note: "Backend row flips pending→confirmed within one HTTPPoller tick (~2s).",
+          };
+        } catch (err) {
+          if (err instanceof StructuredMCPError) throw err;
+          throw new StructuredMCPError({
+            code: "SUBMIT_SOLUTION_PARTIAL_FAILURE",
+            message: `submit_solution: CommitIntent ${commitResp.intentHash} was staged on the backend, but a later step failed: ${err instanceof Error ? err.message : String(err)}`,
+            action:
+              "Your CommitIntent is staged. Call rezontree_me_list_pending (hosted MCP) to inspect — if status='pending' and the chain tx already broadcast, wait for the reconciler. If the chain tx never broadcast, the intent expires automatically (default 15 min). Do NOT re-call submit_solution; it would either duplicate the intent or burn a fresh nonce.",
+            details: {
+              intentHash: commitResp.intentHash,
+              questionId: params.question_id,
+            },
+          });
+        }
       },
     );
   },
@@ -763,28 +783,47 @@ server.tool(
           }),
         )) as { intentHash: string };
 
-        const permitValue =
-          BigInt(td.message.feeAmount) + BigInt(td.message.stakeAmount);
-        const permit = await signUSDCPermit(walletClient, publicClient, {
-          usdc: USDC_ADDRESS,
-          spender: env.router,
-          value: permitValue,
-          deadline: td.message.expiresAt,
-        });
+        // Backend now holds a staged votes row + intent_signatures row.
+        // Mid-flight failure leaves a recoverable pending intent — surface
+        // intentHash so the agent recovers via rezontree_me_list_pending
+        // (hosted MCP) instead of re-calling cast_vote (which would either
+        // conflict on intent_hash or burn a fresh nonce on duplicate work).
+        try {
+          const permitValue =
+            BigInt(td.message.feeAmount) + BigInt(td.message.stakeAmount);
+          const permit = await signUSDCPermit(walletClient, publicClient, {
+            usdc: USDC_ADDRESS,
+            spender: env.router,
+            value: permitValue,
+            deadline: td.message.expiresAt,
+          });
 
-        const txHash = await broadcastVote(walletClient, {
-          forgeAddress: env.router,
-          intent: td.message,
-          intentSig,
-          permit,
-        });
-        await awaitReceipt(publicClient, txHash);
+          const txHash = await broadcastVote(walletClient, {
+            forgeAddress: env.router,
+            intent: td.message,
+            intentSig,
+            permit,
+          });
+          await awaitReceipt(publicClient, txHash);
 
-        return {
-          intent_hash: voteResp.intentHash,
-          vote_tx_hash: txHash,
-          stake_paid: td.message.stakeAmount.toString(),
-        };
+          return {
+            intent_hash: voteResp.intentHash,
+            vote_tx_hash: txHash,
+            stake_paid: td.message.stakeAmount.toString(),
+          };
+        } catch (err) {
+          if (err instanceof StructuredMCPError) throw err;
+          throw new StructuredMCPError({
+            code: "CAST_VOTE_PARTIAL_FAILURE",
+            message: `cast_vote: VoteIntent ${voteResp.intentHash} was staged on the backend, but the chain broadcast failed: ${err instanceof Error ? err.message : String(err)}`,
+            action:
+              "Your VoteIntent is staged. Call rezontree_me_list_pending (hosted MCP) to inspect; if confirmation_status='confirmed', a tx landed and reconciliation succeeded. Otherwise the intent expires automatically (default 15 min). Do NOT re-call cast_vote.",
+            details: {
+              intentHash: voteResp.intentHash,
+              questionId: params.question_id,
+            },
+          });
+        }
       },
     );
   },
