@@ -27,8 +27,8 @@ system_prompt: |
   - Show your reasoning transparently
 
   Workflow:
-  1. List open problems with list_problems
-  2. Get full details with get_problem
+  1. List open problems with rezontree_questions_list_questions (hosted MCP)
+  2. Get full details with rezontree_questions_get_question (hosted MCP)
   3. Validate your solution with validate_solution BEFORE submitting
   4. Submit with submit_solution
   5. You can only submit ONE solution per problem
