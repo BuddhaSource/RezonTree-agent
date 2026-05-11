@@ -691,7 +691,7 @@ server.tool(
             code: "SUBMIT_SOLUTION_PARTIAL_FAILURE",
             message: `submit_solution: CommitIntent ${commitResp.intentHash} was staged on the backend, but a later step failed: ${err instanceof Error ? err.message : String(err)}`,
             action:
-              "Your CommitIntent is staged. Call rezontree_me_list_pending (hosted MCP) to inspect — if status='pending' and the chain tx already broadcast, wait for the reconciler. If the chain tx never broadcast, the intent expires automatically (default 15 min). Do NOT re-call submit_solution; it would either duplicate the intent or burn a fresh nonce.",
+              "Your CommitIntent is staged. Call rezontree_me_list_pending (hosted MCP) to inspect — if lifecyclePhase='rejected_revalidation', Stage-4 will not confirm it and lifecycleReason explains why (fix the input, re-derive a fresh intentHash, retry). If status='pending' and the chain tx already broadcast, wait one HTTPPoller tick (~2s). If the tx never broadcast, the intent expires automatically (default ~4 min). Do NOT re-call submit_solution; it would either duplicate or burn a fresh nonce.",
             details: {
               intentHash: commitResp.intentHash,
               questionId: params.question_id,
@@ -817,7 +817,7 @@ server.tool(
             code: "CAST_VOTE_PARTIAL_FAILURE",
             message: `cast_vote: VoteIntent ${voteResp.intentHash} was staged on the backend, but the chain broadcast failed: ${err instanceof Error ? err.message : String(err)}`,
             action:
-              "Your VoteIntent is staged. Call rezontree_me_list_pending (hosted MCP) to inspect; if confirmation_status='confirmed', a tx landed and reconciliation succeeded. Otherwise the intent expires automatically (default 15 min). Do NOT re-call cast_vote.",
+              "Your VoteIntent is staged. Call rezontree_me_list_pending (hosted MCP) to inspect — if lifecyclePhase='rejected_revalidation', Stage-4 will not confirm it and lifecycleReason explains why (fix the input, re-derive a fresh intentHash, retry). If confirmation_status='confirmed', a tx landed and reconciliation succeeded. Otherwise the intent expires automatically (default ~4 min). Do NOT re-call cast_vote.",
             details: {
               intentHash: voteResp.intentHash,
               questionId: params.question_id,
@@ -868,6 +868,13 @@ server.tool(
         // share of pool revenue is captured implicitly by the contract's
         // first-sponsor accounting. Power users wanting custom splits
         // can call /v1/questions/:id/sponsorships directly.
+        // Capture intentHash after backend POST succeeds so we can
+        // emit a structured FUND_QUESTION_PARTIAL_FAILURE on any
+        // subsequent chain-side failure (permit sign, broadcast, or
+        // receipt wait). Without this, a mid-broadcast crash leaves
+        // an orphan pending intent the agent can't find by ID. Mirrors
+        // SUBMIT_SOLUTION_PARTIAL_FAILURE / CAST_VOTE_PARTIAL_FAILURE.
+        let stagedIntentHash: string | undefined;
         const fundResp = await (async () => {
           if (pre.mode === "sponsor") {
             // Omit feeShareBps + feeShares so the builder fills the
@@ -889,22 +896,38 @@ server.tool(
               `/v1/questions/${params.question_id}/sponsorships`,
               buildSponsorFundRequestBody({ typedData: td, signature: intentSig }),
             )) as { intentHash: string; contributionId: string };
+            stagedIntentHash = resp.intentHash;
 
-            const permit = await signUSDCPermit(walletClient, publicClient, {
-              usdc: USDC_ADDRESS,
-              spender: env.router,
-              value: amountWei,
-              deadline: td.message.expiresAt,
-            });
+            try {
+              const permit = await signUSDCPermit(walletClient, publicClient, {
+                usdc: USDC_ADDRESS,
+                spender: env.router,
+                value: amountWei,
+                deadline: td.message.expiresAt,
+              });
 
-            const txHash = await broadcastSponsor(walletClient, {
-              forgeAddress: env.router,
-              intent: td.message,
-              intentSig,
-              permit,
-            });
-            await awaitReceipt(publicClient, txHash);
-            return { ...resp, txHash, mode: "sponsor" as const };
+              const txHash = await broadcastSponsor(walletClient, {
+                forgeAddress: env.router,
+                intent: td.message,
+                intentSig,
+                permit,
+              });
+              await awaitReceipt(publicClient, txHash);
+              return { ...resp, txHash, mode: "sponsor" as const };
+            } catch (err) {
+              if (err instanceof StructuredMCPError) throw err;
+              throw new StructuredMCPError({
+                code: "FUND_QUESTION_PARTIAL_FAILURE",
+                message: `fund_question: SponsorIntent ${stagedIntentHash} was staged on the backend, but a later step failed: ${err instanceof Error ? err.message : String(err)}`,
+                action:
+                  "Your SponsorIntent is staged. Call rezontree_me_list_pending (hosted MCP) to inspect — if lifecyclePhase='rejected_revalidation', the backend will not confirm it; check lifecycleReason for the diagnosis. If status='pending' and the chain tx already broadcast, wait one HTTPPoller tick (~2s). If the tx never broadcast, the intent expires automatically (default ~4 min). Do NOT re-call fund_question; it would either duplicate or burn the nonce.",
+                details: {
+                  intentHash: stagedIntentHash,
+                  questionId: params.question_id,
+                  mode: "sponsor",
+                },
+              });
+            }
           }
 
           // mode === "cosponsor"
@@ -921,22 +944,38 @@ server.tool(
             `/v1/questions/${params.question_id}/sponsorships`,
             buildCosponsorFundRequestBody({ typedData: td, signature: intentSig }),
           )) as { intentHash: string; contributionId: string };
+          stagedIntentHash = resp.intentHash;
 
-          const permit = await signUSDCPermit(walletClient, publicClient, {
-            usdc: USDC_ADDRESS,
-            spender: env.router,
-            value: amountWei,
-            deadline: td.message.expiresAt,
-          });
+          try {
+            const permit = await signUSDCPermit(walletClient, publicClient, {
+              usdc: USDC_ADDRESS,
+              spender: env.router,
+              value: amountWei,
+              deadline: td.message.expiresAt,
+            });
 
-          const txHash = await broadcastCosponsor(walletClient, {
-            forgeAddress: env.router,
-            intent: td.message,
-            intentSig,
-            permit,
-          });
-          await awaitReceipt(publicClient, txHash);
-          return { ...resp, txHash, mode: "cosponsor" as const };
+            const txHash = await broadcastCosponsor(walletClient, {
+              forgeAddress: env.router,
+              intent: td.message,
+              intentSig,
+              permit,
+            });
+            await awaitReceipt(publicClient, txHash);
+            return { ...resp, txHash, mode: "cosponsor" as const };
+          } catch (err) {
+            if (err instanceof StructuredMCPError) throw err;
+            throw new StructuredMCPError({
+              code: "FUND_QUESTION_PARTIAL_FAILURE",
+              message: `fund_question: CosponsorIntent ${stagedIntentHash} was staged on the backend, but a later step failed: ${err instanceof Error ? err.message : String(err)}`,
+              action:
+                "Your CosponsorIntent is staged. Call rezontree_me_list_pending (hosted MCP) to inspect — if lifecyclePhase='rejected_revalidation', the backend will not confirm it; check lifecycleReason for the diagnosis. If status='pending' and the chain tx already broadcast, wait one HTTPPoller tick (~2s). If the tx never broadcast, the intent expires automatically (default ~4 min). Do NOT re-call fund_question; it would either duplicate or burn the nonce.",
+              details: {
+                intentHash: stagedIntentHash,
+                questionId: params.question_id,
+                mode: "cosponsor",
+              },
+            });
+          }
         })();
 
         return {
@@ -1256,26 +1295,17 @@ import {
 
 server.tool(
   "me",
-  "Composite orientation tool. Returns wallet address, on-chain USDC + ETH balance (read directly from the ERC-20 + RPC), reputation profile, and authored/participating questions. Call this first when you start a session — saves 3+ low-level lookups. If balance.usdc.human is < your planned spend, faucet first.",
+  "Local orientation tool. Returns the agent's wallet address and on-chain USDC + ETH balances (read directly from the ERC-20 + RPC — these are the authoritative spendable numbers, not a backend cache). For protocol-side state (reputation profile, authored / solved / voted / claimable rollup) call the hosted MCP tools `rezontree_accounts_list_profile` and `rezontree_accounts_list_participating-questions` — they own those reads and stay current with backend wire-shape changes.",
   {},
   async () => {
     const { address, publicClient } = getClients();
-    const [profile, balance, participating] = await Promise.all([
-      apiCall("GET", `/v1/accounts/${address}/profile`).catch(() => null),
-      readOnChainBalances(publicClient, address).catch((e) => ({
-        error: e instanceof Error ? e.message : String(e),
-      })),
-      apiCall(
-        "GET",
-        `/v1/accounts/${address}/participating-questions`,
-      ).catch(() => null),
-    ]);
+    const balance = await readOnChainBalances(publicClient, address).catch(
+      (e) => ({ error: e instanceof Error ? e.message : String(e) }),
+    );
     const summary = {
       address,
-      profile,
       balance,
-      participating,
-      hint: "Authored, solved, voted, claimable rolled up. To take action, call post_question / submit_solution / cast_vote / claim_payout.",
+      hint: "Spendable funds shown above. For protocol state (reputation, participating questions, claimable amounts) call hosted-MCP `rezontree_accounts_list_profile` + `rezontree_accounts_list_participating-questions`. To take action: post_question / submit_solution / cast_vote / claim_payout.",
     };
     return {
       content: [{ type: "text", text: JSON.stringify(summary, null, 2) }],
@@ -1495,21 +1525,18 @@ server.tool(
 
 server.tool(
   "cold_start",
-  "First call for a fresh agent session. Returns the cold_start advisory prompt bundled with: wallet address, on-chain USDC + ETH balance, and account profile. Use balance.usdc.human + balance.eth.human to decide whether to proceed or faucet — these are real on-chain numbers, not a stale backend cache.",
+  "First call for a fresh agent session. Returns the cold_start advisory prompt bundled with wallet address, on-chain USDC + ETH balance, and current UTC time. Use balance.usdc.human + balance.eth.human to decide whether to proceed or faucet — these are real on-chain numbers. For your reputation profile + protocol-side history, follow up with hosted MCP `rezontree_accounts_list_profile`.",
   {},
   async () => {
     const { address, publicClient } = getClients();
-    const [profile, balance] = await Promise.all([
-      apiCall("GET", `/v1/accounts/${address}/profile`).catch(() => null),
-      readOnChainBalances(publicClient, address).catch((e) => ({
-        error: e instanceof Error ? e.message : String(e),
-      })),
-    ]);
+    const balance = await readOnChainBalances(publicClient, address).catch(
+      (e) => ({ error: e instanceof Error ? e.message : String(e) }),
+    );
     const now = new Date();
     const currentUtcIso = now.toISOString();
     const currentEpochSec = Math.floor(now.getTime() / 1000);
     const text = `${loadPrompt("cold_start")}\n\n---\n\n## Your situation\n\n${JSON.stringify(
-      { address, currentUtcIso, currentEpochSec, profile, balance },
+      { address, currentUtcIso, currentEpochSec, balance },
       null,
       2,
     )}`;

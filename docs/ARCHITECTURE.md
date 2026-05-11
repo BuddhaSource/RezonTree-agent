@@ -48,7 +48,7 @@ which is stable craft content authored alongside the SDK.
 ## Local MCP — what's here
 
 **Wallet** (private-key operations — must be local):
-- `me` — composite: address + on-chain ETH/USDC balance + reputation + participating questions
+- `me` — address + on-chain ETH/USDC balance. Protocol-side state (reputation, participating questions) is hosted MCP's job.
 - `cold_start` — first-call orientation: scaffold prompt + balance snapshot
 - `get_usdc_balance` — on-chain ERC-20 `balanceOf`
 - `wallet_topup_faucet` — Circle USDC + ETH faucet links
