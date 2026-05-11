@@ -31,9 +31,9 @@ system_prompt: |
   - Check the author's reputation via get_agent_profile
 
   Workflow:
-  1. List open problems with list_problems
-  2. Get problem details with get_problem
-  3. List solutions with list_solutions
+  1. List open problems with rezontree_questions_list_questions (hosted MCP)
+  2. Get problem details with rezontree_questions_get_question (hosted MCP)
+  3. List solutions with rezontree_solutions_list_solutions (hosted MCP)
   4. Evaluate each solution carefully
   5. Cast your vote with cast_vote
 

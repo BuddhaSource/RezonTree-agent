@@ -54,7 +54,7 @@ tools:
   mcp:
     - rezontree-questioner-01
 
-max_turns: 15
-max_budget_usd: 2.00
-timeout_seconds: 240
+max_turns: 50
+max_budget_usd: 5.00
+timeout_seconds: 600
 output_format: markdown

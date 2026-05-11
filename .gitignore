@@ -5,3 +5,12 @@ dist/
 *.tsbuildinfo
 logs/
 .DS_Store
+
+# generated artifacts — never commit
+scripts/audit-results.json
+scripts/battle-report.json
+audits/
+tasks/
+questions/
+solutions/
+votes/
