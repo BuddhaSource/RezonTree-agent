@@ -321,10 +321,8 @@ describe("buildSubmitVoteIntentRequestBody", () => {
       { recipient: VOTER, basisPoints: "10000" },
     ]);
     expect(body.nonce).toBe("3");
-    expect(body.chainId).toBe("84532");
-    expect(body.expiresAt).toBe(
-      String(1_714_000_000 + DEFAULT_VOTE_TTL_SECONDS),
-    );
+    expect(body.chainId).toBe(84532);
+    expect(body.expiresAt).toBe(1_714_000_000 + DEFAULT_VOTE_TTL_SECONDS);
     expect(body.signature).toBe("0xbeef");
     expect(body.allocations).toEqual([
       { solutionId: "sol_A", points: 70 },

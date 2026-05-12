@@ -234,8 +234,8 @@ export interface SubmitCommitRequestBody {
   stakeAmount: string;
   feeShares: { recipient: string; basisPoints: string }[];
   nonce: string;
-  chainId: string;
-  expiresAt: string;
+  chainId: number;
+  expiresAt: number;
   signature: string;
 }
 
@@ -255,8 +255,8 @@ export function buildSubmitCommitRequestBody(params: {
       basisPoints: s.basisPoints.toString(),
     })),
     nonce: m.nonce.toString(),
-    chainId: m.chainId.toString(),
-    expiresAt: m.expiresAt.toString(),
+    chainId: Number(m.chainId),
+    expiresAt: Number(m.expiresAt),
     signature: params.signature,
   };
 }
