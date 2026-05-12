@@ -25,7 +25,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import type { Address, Hex } from "viem";
-import { createPublicClient, http, parseUnits } from "viem";
+import { createPublicClient, formatUnits, http, parseUnits } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { deriveAgentWallet } from "../../src/wallet/derive.js";
 import { loadLoginDomain } from "../../src/wallet/domain.js";
@@ -361,26 +361,49 @@ const REFRESH_LEAD_MS = 30_000;
 let cachedToken: {
   jwt: string;
   expiresAt: number;
-  agentId?: string;
 } | null = null;
+
+// Promise memoization to prevent the cold-start stampede: when N tool
+// calls arrive concurrently before the first login completes, each
+// would otherwise sign its own (deterministic) WalletLoginIntent and
+// POST to /auth/wallet — backend's replay-dedup table treats all but
+// the first as a 409 conflict. By sharing one in-flight promise, every
+// concurrent caller receives the same JWT from a single login round-trip.
+let inflightLogin: Promise<string> | null = null;
 
 /**
  * Wallet auth: derive → sign WalletLoginIntent → POST /auth/wallet.
  * Backend recovers the signer's address from the signature and
  * looks up (or auto-registers) the agent by (address, chainId).
- * Tokens cached with a 30s early-refresh buffer.
+ * Tokens cached with a 30s early-refresh buffer; concurrent cold-cache
+ * callers share one in-flight login.
  */
 async function getAgentToken(): Promise<string> {
   if (cachedToken && Date.now() < cachedToken.expiresAt - REFRESH_LEAD_MS) {
     return cachedToken.jwt;
   }
+  if (inflightLogin) return inflightLogin;
+
+  inflightLogin = doLogin().finally(() => {
+    inflightLogin = null;
+  });
+  return inflightLogin;
+}
+
+async function doLogin(): Promise<string> {
   if (!AGENT_MNEMONIC) {
-    throw new Error("RT_AGENT_MNEMONIC is not set");
+    throw new StructuredMCPError({
+      code: "AUTH_CONFIG_MISSING",
+      message: "RT_AGENT_MNEMONIC is not set",
+      action: "Set RT_AGENT_MNEMONIC in your environment (see .env.example) and restart the MCP server.",
+    });
   }
   if (!Number.isInteger(AGENT_INDEX) || AGENT_INDEX < 0) {
-    throw new Error(
-      `RT_AGENT_INDEX must be a non-negative integer, got ${process.env.RT_AGENT_INDEX}`,
-    );
+    throw new StructuredMCPError({
+      code: "AUTH_CONFIG_MISSING",
+      message: `RT_AGENT_INDEX must be a non-negative integer, got ${process.env.RT_AGENT_INDEX}`,
+      action: "Set RT_AGENT_INDEX to an integer >= 1 (operator is 0, agents 1+).",
+    });
   }
 
   const domain = loadLoginDomain();
@@ -391,100 +414,105 @@ async function getAgentToken(): Promise<string> {
     domain,
   });
 
-  const resp = await fetch(`${API_URL}/auth/wallet`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  let resp: Response;
+  try {
+    resp = await fetch(`${API_URL}/auth/wallet`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    throw new StructuredMCPError({
+      code: "AUTH_TRANSPORT_FAILED",
+      message: `Could not reach backend /auth/wallet: ${e instanceof Error ? e.message : String(e)}`,
+      action: `Verify RT_AGENT_BACKEND_URL (currently ${API_URL}) is reachable and backend is healthy. Retry.`,
+    });
+  }
 
-  const raw = await resp.json();
+  let raw: unknown;
+  try {
+    raw = await resp.json();
+  } catch {
+    throw new StructuredMCPError({
+      code: "AUTH_TRANSPORT_FAILED",
+      message: `Backend /auth/wallet returned non-JSON ${resp.status}`,
+      action: "Backend likely returned a load-balancer page. Verify RT_AGENT_BACKEND_URL points at the API, not the LB root.",
+    });
+  }
   if (!resp.ok) {
     const err = raw as {
       error?: { code?: string; message?: string; action?: string };
     };
-    throw new Error(
-      `Wallet auth failed: ${resp.status} ${err.error?.code} — ${err.error?.message}\nAction: ${err.error?.action}`,
-    );
+    throw new StructuredMCPError({
+      code: err.error?.code ?? `AUTH_HTTP_${resp.status}`,
+      message: err.error?.message ?? `Wallet auth failed: HTTP ${resp.status}`,
+      action: err.error?.action ?? "Retry once. If persistent, check backend logs.",
+    });
   }
-  const data = raw as { accessToken: string; address?: string };
-  cachedToken = {
-    jwt: data.accessToken,
-    expiresAt: Date.now() + JWT_TTL_MS,
-    agentId: data.address,
-  };
+  const data = raw as { accessToken: string; expiresIn?: number };
+  // Prefer the backend's own expiresIn when available — operators can
+  // override ACCESS_TOKEN_TTL, and the local clock may be skewed against
+  // the backend clock. Fall back to JWT_TTL_MS if the field is missing.
+  const ttlMs =
+    typeof data.expiresIn === "number" && data.expiresIn > 0
+      ? data.expiresIn * 1000
+      : JWT_TTL_MS;
+  cachedToken = { jwt: data.accessToken, expiresAt: Date.now() + ttlMs };
   return cachedToken.jwt;
 }
 
 /**
- * Make an authenticated API call.
+ * Make an authenticated API call. Auto-retries once on 401 with a
+ * fresh token — covers operator ACCESS_TOKEN_TTL overrides + clock
+ * skew without surfacing transient auth failures to agents.
  */
 async function apiCall(
   method: string,
   path: string,
   body?: unknown,
 ): Promise<unknown> {
-  const token = await getAgentToken();
-  const opts: RequestInit = {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-  };
-  if (body) opts.body = JSON.stringify(body);
-
-  const resp = await fetch(`${API_URL}${path}`, opts);
-  const data = await resp.json();
-
-  if (!resp.ok) {
-    const err = data as {
-      error?: {
-        code?: string;
-        message?: string;
-        action?: string;
-        request_id?: string;
-      };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const token = await getAgentToken();
+    const opts: RequestInit = {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
     };
-    throw new StructuredMCPError({
-      code: err.error?.code ?? `HTTP_${resp.status}`,
-      message: err.error?.message ?? `API ${method} ${path} returned ${resp.status}`,
-      action:
-        err.error?.action ??
-        "Inspect the response body and retry. If persistent, check backend logs.",
-      requestId: err.error?.request_id,
-    });
-  }
-  return data;
-}
+    if (body) opts.body = JSON.stringify(body);
 
-/**
- * Make an unauthenticated API call (for public endpoints like /v1/protocol).
- */
-async function apiCallPublic(method: string, path: string): Promise<unknown> {
-  const resp = await fetch(`${API_URL}${path}`, {
-    method,
-    headers: { "Content-Type": "application/json" },
-  });
-  const data = await resp.json();
-  if (!resp.ok) {
-    const err = data as {
-      error?: {
-        code?: string;
-        message?: string;
-        action?: string;
-        request_id?: string;
+    const resp = await fetch(`${API_URL}${path}`, opts);
+    const data = await resp.json().catch(() => ({}));
+
+    if (resp.status === 401 && attempt === 0) {
+      cachedToken = null;
+      continue;
+    }
+
+    if (!resp.ok) {
+      const err = data as {
+        error?: {
+          code?: string;
+          message?: string;
+          action?: string;
+          request_id?: string;
+        };
       };
-    };
-    throw new StructuredMCPError({
-      code: err.error?.code ?? `HTTP_${resp.status}`,
-      message: err.error?.message ?? `API ${method} ${path} returned ${resp.status}`,
-      action:
-        err.error?.action ??
-        "Inspect the response body and retry. If persistent, check backend logs.",
-      requestId: err.error?.request_id,
-    });
+      throw new StructuredMCPError({
+        code: err.error?.code ?? `HTTP_${resp.status}`,
+        message:
+          err.error?.message ?? `API ${method} ${path} returned ${resp.status}`,
+        action:
+          err.error?.action ??
+          "Inspect the response body and retry. If persistent, check backend logs.",
+        requestId: err.error?.request_id,
+      });
+    }
+    return data;
   }
-  return data;
+  // Unreachable — the loop returns or throws on every iteration.
+  throw new Error("apiCall: exhausted retry attempts");
 }
 
 // ── MCP Server Setup ─────────────────────────────────────────────────
@@ -494,128 +522,30 @@ const server = new McpServer({
   version: "1.0.0",
 });
 
-// ── Protocol Discovery ───────────────────────────────────────────────
-
-server.tool(
-  "get_protocol",
-  "Get protocol version, rules, fees, field limits, error codes, and available endpoints. No auth required.",
-  {},
-  async () => {
-    const result = await apiCallPublic("GET", "/v1/protocol");
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  },
-);
-
-// ── Questions ─────────────────────────────────────────────────────────
-
-server.tool(
-  "list_questions",
-  "List open questions with optional search, status filter, and sorting",
-  {
-    status: z.string().optional().describe("Filter: open, closed, cancelled"),
-    q: z.string().optional().describe("Full-text search query"),
-    sort: z.string().optional().describe("Sort: newest, oldest, bounty_high, bounty_low"),
-    limit: z.number().optional().describe("Max results (default 20)"),
-  },
-  async (params) => {
-    const query = new URLSearchParams();
-    if (params.status) query.set("status", params.status);
-    if (params.q) query.set("q", params.q);
-    if (params.sort) query.set("sort", params.sort);
-    if (params.limit) query.set("limit", String(params.limit));
-    const qs = query.toString();
-    const result = await apiCall("GET", `/v1/questions${qs ? `?${qs}` : ""}`);
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  },
-);
-
-server.tool(
-  "get_question",
-  "Get full details of a specific question including success criteria and rules",
-  {
-    question_id: z.string().describe("The question ID"),
-  },
-  async (params) => {
-    const result = await apiCall("GET", `/v1/questions/${params.question_id}`);
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  },
-);
-
-server.tool(
-  "create_question",
-  "Create a new question with bounty escrow. Requires title, description, bounty, voting deadline, and success criteria.",
-  {
-    title: z.string().describe("Question title"),
-    description: z.string().describe("Detailed question description"),
-    bounty_amount: z.string().describe("Bounty amount (e.g. '50.00')"),
-    bounty_currency: z.string().optional().describe("Currency (default: USD)"),
-    voting_deadline: z.string().describe("ISO 8601 deadline for voting"),
-    success_criteria: z
-      .array(
-        z.object({
-          name: z.string().describe("Criterion name"),
-          type: z
-            .enum(["numeric", "boolean", "checklist"])
-            .describe("Criterion type: numeric (needs unit), boolean, or checklist"),
-          target: z.string().describe("What success looks like"),
-          weight: z.number().describe("Weight 1-100, all must sum to 100"),
-          unit: z
-            .string()
-            .optional()
-            .describe("Unit for numeric criteria (e.g. 'ms', '%', 'items')"),
-        }),
-      )
-      .describe("Success criteria (max 3, weights sum to 100)"),
-    context: z.string().optional().describe("Additional context"),
-    example: z.string().optional().describe("Example of a good answer"),
-    scope: z.string().optional().describe("Question scope"),
-    assumptions: z
-      .array(
-        z.object({
-          claim: z.string(),
-          note: z.string().optional(),
-          status: z.string().optional().describe("fixed or challengeable"),
-        }),
-      )
-      .optional()
-      .describe("Assumptions that constrain the question"),
-  },
-  async (params) => {
-    // Wire body is camelCase (R-NAME-MATCHES-CHAIN). The MCP tool
-    // params remain snake_case (MCP SDK convention) so callers don't
-    // see a contract change; map to the backend wire shape here.
-    const result = await apiCall("POST", "/v1/questions", {
-      title: params.title,
-      description: params.description,
-      initialBounty: params.bounty_amount,
-      bountyCurrency: params.bounty_currency || "USD",
-      votingDeadline: params.voting_deadline,
-      successCriteria: params.success_criteria,
-      context: params.context,
-      example: params.example,
-      scope: params.scope,
-      assumptions: params.assumptions,
-    });
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  },
-);
+// ── Backend-wire-shape tools moved to hosted MCP ─────────────────────
+//
+// The local SDK no longer wraps backend HTTP endpoints. Per the
+// hosted-MCP-first architecture, agents read these from the hosted MCP
+// at http://localhost:8080/mcp. The mapping:
+//   get_protocol            → rezontree_protocol_list_protocol
+//   list_questions          → rezontree_questions_list_questions
+//   get_question            → rezontree_questions_get_question
+//   list_solutions          → rezontree_solutions_list_solutions
+//   list_votes              → rezontree_votes_list_votes
+//   close_question          → rezontree_resolution_patch_questions
+//   get_result              → rezontree_resolution_list_result
+//   get_wallet_transactions → rezontree_accounts_list_transactions
+//   get_account_profile     → rezontree_accounts_list_profile
+//   get_pending_intents     → rezontree_me_list_pending
+//   check_round_status      → rezontree_rounds_get_round
+//   debug_question_state    → composite of hosted reads (no local wrapper)
+//
+// Keeping local wrappers means SDK schema drifts every time the backend
+// evolves. The hosted MCP is the single source of truth for backend
+// wire shapes; the SDK only exposes wallet + sign + broadcast +
+// methodology + chain-bound composites.
 
 // ── Solutions ────────────────────────────────────────────────────────
-
-server.tool(
-  "list_solutions",
-  "List solutions for a question",
-  {
-    question_id: z.string().describe("The question ID"),
-  },
-  async (params) => {
-    const result = await apiCall(
-      "GET",
-      `/v1/questions/${params.question_id}/solutions`,
-    );
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  },
-);
 
 server.tool(
   "submit_solution",
@@ -707,76 +637,73 @@ server.tool(
           buildSubmitCommitRequestBody({ typedData: td, signature: intentSig }),
         )) as { intentHash: string };
 
-        const solResp = (await apiCall(
-          "POST",
-          `/v1/questions/${params.question_id}/solutions`,
-          {
-            intentHash: commitResp.intentHash,
-            body: params.body,
-            reasoningTree: params.reasoning_tree,
-            claims: params.claims.map((c) => ({
-              criterionId: c.criterion_id,
-              value: c.value,
-              argument: c.argument,
-              falsifiableBy: c.falsifiable_by,
-            })),
-          },
-        )) as { id: string };
+        // From here on the backend holds a staged intent_signatures row.
+        // Any partial failure leaves the agent with a pending intent it
+        // can recover via rezontree_me_list_pending (hosted MCP). Surface
+        // intentHash so the agent has a recovery handle and DOES NOT
+        // re-call submit_solution (which would either conflict on the
+        // unique intent_hash or burn another nonce on a fresh intent).
+        try {
+          const solResp = (await apiCall(
+            "POST",
+            `/v1/questions/${params.question_id}/solutions`,
+            {
+              intentHash: commitResp.intentHash,
+              body: params.body,
+              reasoningTree: params.reasoning_tree,
+              claims: params.claims.map((c) => ({
+                criterionId: c.criterion_id,
+                value: c.value,
+                argument: c.argument,
+                falsifiableBy: c.falsifiable_by,
+              })),
+            },
+          )) as { id: string };
 
-        const permitValue =
-          BigInt(td.message.feeAmount) + BigInt(td.message.stakeAmount);
-        const permit = await signUSDCPermit(walletClient, publicClient, {
-          usdc: USDC_ADDRESS,
-          spender: env.router,
-          value: permitValue,
-          deadline: td.message.expiresAt,
-        });
+          const permitValue =
+            BigInt(td.message.feeAmount) + BigInt(td.message.stakeAmount);
+          const permit = await signUSDCPermit(walletClient, publicClient, {
+            usdc: USDC_ADDRESS,
+            spender: env.router,
+            value: permitValue,
+            deadline: td.message.expiresAt,
+          });
 
-        const txHash = await broadcastCommit(walletClient, {
-          forgeAddress: env.router,
-          intent: td.message,
-          intentSig,
-          permit,
-        });
-        await awaitReceipt(publicClient, txHash);
+          const txHash = await broadcastCommit(walletClient, {
+            forgeAddress: env.router,
+            intent: td.message,
+            intentSig,
+            permit,
+          });
+          await awaitReceipt(publicClient, txHash);
 
-        return {
-          solution_id: solResp.id,
-          intent_hash: commitResp.intentHash,
-          commit_tx_hash: txHash,
-          fee_paid: td.message.feeAmount.toString(),
-          stake_paid: td.message.stakeAmount.toString(),
-          note: "Backend row flips pending→confirmed within one HTTPPoller tick (~2s).",
-        };
+          return {
+            solution_id: solResp.id,
+            intent_hash: commitResp.intentHash,
+            commit_tx_hash: txHash,
+            fee_paid: td.message.feeAmount.toString(),
+            stake_paid: td.message.stakeAmount.toString(),
+            note: "Backend row flips pending→confirmed within one HTTPPoller tick (~2s).",
+          };
+        } catch (err) {
+          if (err instanceof StructuredMCPError) throw err;
+          throw new StructuredMCPError({
+            code: "SUBMIT_SOLUTION_PARTIAL_FAILURE",
+            message: `submit_solution: CommitIntent ${commitResp.intentHash} was staged on the backend, but a later step failed: ${err instanceof Error ? err.message : String(err)}`,
+            action:
+              "Your CommitIntent is staged. Call rezontree_me_list_pending (hosted MCP) to inspect — if lifecyclePhase='rejected_revalidation', Stage-4 will not confirm it and lifecycleReason explains why (fix the input, re-derive a fresh intentHash, retry). If status='pending' and the chain tx already broadcast, wait one HTTPPoller tick (~2s). If the tx never broadcast, the intent expires automatically (default ~4 min). Do NOT re-call submit_solution; it would either duplicate or burn a fresh nonce.",
+            details: {
+              intentHash: commitResp.intentHash,
+              questionId: params.question_id,
+            },
+          });
+        }
       },
     );
   },
 );
 
-// validate_solution removed (RFC 2026-05 Round A): the backend route
-// /v1/questions/:id/solutions/validate was retired some time ago; the
-// MCP tool kept advertising it and produced confusing
-// METHOD_NOT_ALLOWED errors for solver agents. Per RFC 2026-05 §1
-// (single source of truth): the POST /solutions handler does its own
-// validation and returns field_errors[] with spec on failure — that
-// is the canonical preflight. No separate validate endpoint needed.
-
 // ── Votes ────────────────────────────────────────────────────────────
-
-server.tool(
-  "list_votes",
-  "List all votes for a question",
-  {
-    question_id: z.string().describe("The question ID"),
-  },
-  async (params) => {
-    const result = await apiCall(
-      "GET",
-      `/v1/questions/${params.question_id}/votes`,
-    );
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  },
-);
 
 server.tool(
   "cast_vote",
@@ -856,28 +783,47 @@ server.tool(
           }),
         )) as { intentHash: string };
 
-        const permitValue =
-          BigInt(td.message.feeAmount) + BigInt(td.message.stakeAmount);
-        const permit = await signUSDCPermit(walletClient, publicClient, {
-          usdc: USDC_ADDRESS,
-          spender: env.router,
-          value: permitValue,
-          deadline: td.message.expiresAt,
-        });
+        // Backend now holds a staged votes row + intent_signatures row.
+        // Mid-flight failure leaves a recoverable pending intent — surface
+        // intentHash so the agent recovers via rezontree_me_list_pending
+        // (hosted MCP) instead of re-calling cast_vote (which would either
+        // conflict on intent_hash or burn a fresh nonce on duplicate work).
+        try {
+          const permitValue =
+            BigInt(td.message.feeAmount) + BigInt(td.message.stakeAmount);
+          const permit = await signUSDCPermit(walletClient, publicClient, {
+            usdc: USDC_ADDRESS,
+            spender: env.router,
+            value: permitValue,
+            deadline: td.message.expiresAt,
+          });
 
-        const txHash = await broadcastVote(walletClient, {
-          forgeAddress: env.router,
-          intent: td.message,
-          intentSig,
-          permit,
-        });
-        await awaitReceipt(publicClient, txHash);
+          const txHash = await broadcastVote(walletClient, {
+            forgeAddress: env.router,
+            intent: td.message,
+            intentSig,
+            permit,
+          });
+          await awaitReceipt(publicClient, txHash);
 
-        return {
-          intent_hash: voteResp.intentHash,
-          vote_tx_hash: txHash,
-          stake_paid: td.message.stakeAmount.toString(),
-        };
+          return {
+            intent_hash: voteResp.intentHash,
+            vote_tx_hash: txHash,
+            stake_paid: td.message.stakeAmount.toString(),
+          };
+        } catch (err) {
+          if (err instanceof StructuredMCPError) throw err;
+          throw new StructuredMCPError({
+            code: "CAST_VOTE_PARTIAL_FAILURE",
+            message: `cast_vote: VoteIntent ${voteResp.intentHash} was staged on the backend, but the chain broadcast failed: ${err instanceof Error ? err.message : String(err)}`,
+            action:
+              "Your VoteIntent is staged. Call rezontree_me_list_pending (hosted MCP) to inspect — if lifecyclePhase='rejected_revalidation', Stage-4 will not confirm it and lifecycleReason explains why (fix the input, re-derive a fresh intentHash, retry). If confirmation_status='confirmed', a tx landed and reconciliation succeeded. Otherwise the intent expires automatically (default ~4 min). Do NOT re-call cast_vote.",
+            details: {
+              intentHash: voteResp.intentHash,
+              questionId: params.question_id,
+            },
+          });
+        }
       },
     );
   },
@@ -922,6 +868,13 @@ server.tool(
         // share of pool revenue is captured implicitly by the contract's
         // first-sponsor accounting. Power users wanting custom splits
         // can call /v1/questions/:id/sponsorships directly.
+        // Capture intentHash after backend POST succeeds so we can
+        // emit a structured FUND_QUESTION_PARTIAL_FAILURE on any
+        // subsequent chain-side failure (permit sign, broadcast, or
+        // receipt wait). Without this, a mid-broadcast crash leaves
+        // an orphan pending intent the agent can't find by ID. Mirrors
+        // SUBMIT_SOLUTION_PARTIAL_FAILURE / CAST_VOTE_PARTIAL_FAILURE.
+        let stagedIntentHash: string | undefined;
         const fundResp = await (async () => {
           if (pre.mode === "sponsor") {
             // Omit feeShareBps + feeShares so the builder fills the
@@ -943,22 +896,38 @@ server.tool(
               `/v1/questions/${params.question_id}/sponsorships`,
               buildSponsorFundRequestBody({ typedData: td, signature: intentSig }),
             )) as { intentHash: string; contributionId: string };
+            stagedIntentHash = resp.intentHash;
 
-            const permit = await signUSDCPermit(walletClient, publicClient, {
-              usdc: USDC_ADDRESS,
-              spender: env.router,
-              value: amountWei,
-              deadline: td.message.expiresAt,
-            });
+            try {
+              const permit = await signUSDCPermit(walletClient, publicClient, {
+                usdc: USDC_ADDRESS,
+                spender: env.router,
+                value: amountWei,
+                deadline: td.message.expiresAt,
+              });
 
-            const txHash = await broadcastSponsor(walletClient, {
-              forgeAddress: env.router,
-              intent: td.message,
-              intentSig,
-              permit,
-            });
-            await awaitReceipt(publicClient, txHash);
-            return { ...resp, txHash, mode: "sponsor" as const };
+              const txHash = await broadcastSponsor(walletClient, {
+                forgeAddress: env.router,
+                intent: td.message,
+                intentSig,
+                permit,
+              });
+              await awaitReceipt(publicClient, txHash);
+              return { ...resp, txHash, mode: "sponsor" as const };
+            } catch (err) {
+              if (err instanceof StructuredMCPError) throw err;
+              throw new StructuredMCPError({
+                code: "FUND_QUESTION_PARTIAL_FAILURE",
+                message: `fund_question: SponsorIntent ${stagedIntentHash} was staged on the backend, but a later step failed: ${err instanceof Error ? err.message : String(err)}`,
+                action:
+                  "Your SponsorIntent is staged. Call rezontree_me_list_pending (hosted MCP) to inspect — if lifecyclePhase='rejected_revalidation', the backend will not confirm it; check lifecycleReason for the diagnosis. If status='pending' and the chain tx already broadcast, wait one HTTPPoller tick (~2s). If the tx never broadcast, the intent expires automatically (default ~4 min). Do NOT re-call fund_question; it would either duplicate or burn the nonce.",
+                details: {
+                  intentHash: stagedIntentHash,
+                  questionId: params.question_id,
+                  mode: "sponsor",
+                },
+              });
+            }
           }
 
           // mode === "cosponsor"
@@ -975,22 +944,38 @@ server.tool(
             `/v1/questions/${params.question_id}/sponsorships`,
             buildCosponsorFundRequestBody({ typedData: td, signature: intentSig }),
           )) as { intentHash: string; contributionId: string };
+          stagedIntentHash = resp.intentHash;
 
-          const permit = await signUSDCPermit(walletClient, publicClient, {
-            usdc: USDC_ADDRESS,
-            spender: env.router,
-            value: amountWei,
-            deadline: td.message.expiresAt,
-          });
+          try {
+            const permit = await signUSDCPermit(walletClient, publicClient, {
+              usdc: USDC_ADDRESS,
+              spender: env.router,
+              value: amountWei,
+              deadline: td.message.expiresAt,
+            });
 
-          const txHash = await broadcastCosponsor(walletClient, {
-            forgeAddress: env.router,
-            intent: td.message,
-            intentSig,
-            permit,
-          });
-          await awaitReceipt(publicClient, txHash);
-          return { ...resp, txHash, mode: "cosponsor" as const };
+            const txHash = await broadcastCosponsor(walletClient, {
+              forgeAddress: env.router,
+              intent: td.message,
+              intentSig,
+              permit,
+            });
+            await awaitReceipt(publicClient, txHash);
+            return { ...resp, txHash, mode: "cosponsor" as const };
+          } catch (err) {
+            if (err instanceof StructuredMCPError) throw err;
+            throw new StructuredMCPError({
+              code: "FUND_QUESTION_PARTIAL_FAILURE",
+              message: `fund_question: CosponsorIntent ${stagedIntentHash} was staged on the backend, but a later step failed: ${err instanceof Error ? err.message : String(err)}`,
+              action:
+                "Your CosponsorIntent is staged. Call rezontree_me_list_pending (hosted MCP) to inspect — if lifecyclePhase='rejected_revalidation', the backend will not confirm it; check lifecycleReason for the diagnosis. If status='pending' and the chain tx already broadcast, wait one HTTPPoller tick (~2s). If the tx never broadcast, the intent expires automatically (default ~4 min). Do NOT re-call fund_question; it would either duplicate or burn the nonce.",
+              details: {
+                intentHash: stagedIntentHash,
+                questionId: params.question_id,
+                mode: "cosponsor",
+              },
+            });
+          }
         })();
 
         return {
@@ -1081,7 +1066,7 @@ server.tool(
           code: "QUESTION_NOT_ON_CHAIN",
           message: `Question ${params.question_id} has no chain qid yet.`,
           action:
-            "Round may not be funded on-chain. Call debug_question_state to inspect status; fund_question if a sponsor is needed.",
+            "Round may not be funded on-chain. Inspect status via the hosted MCP (rezontree_questions_get_question + rezontree_rounds_list_rounds); fund_question if a sponsor is needed.",
           details: { questionId: params.question_id },
         });
       }
@@ -1099,7 +1084,7 @@ server.tool(
           code: "ROUND_NOT_SETTLED",
           message: `Round for question ${params.question_id} is not yet settled on-chain — no merkleRoot persisted.`,
           action:
-            "Wait for SettlementPublished, then retry claim_payout. Use check_round_status to monitor.",
+            "Wait for SettlementPublished, then retry claim_payout. Monitor via the hosted MCP (rezontree_rounds_get_round).",
           details: { questionId: params.question_id },
         });
       }
@@ -1140,53 +1125,61 @@ server.tool(
   },
 );
 
-// ── Resolution ───────────────────────────────────────────────────────
-
-server.tool(
-  "close_question",
-  "Close a question — resolve, cancel, or archive (owner only). Uses PATCH /v1/questions/:id with a status body.",
-  {
-    question_id: z.string().describe("The question ID"),
-    status: z
-      .enum(["resolved", "cancelled", "archived"])
-      .describe("Target status: resolved (outcome decided), cancelled (void), archived (dormant)"),
-  },
-  async (params) => {
-    const result = await apiCall(
-      "PATCH",
-      `/v1/questions/${params.question_id}`,
-      { status: params.status },
-    );
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  },
-);
-
-server.tool(
-  "get_result",
-  "View round result with rankings, payouts, and refunds",
-  {
-    question_id: z.string().describe("The question ID"),
-  },
-  async (params) => {
-    const result = await apiCall(
-      "GET",
-      `/v1/questions/${params.question_id}/result`,
-    );
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  },
-);
-
 // ── Wallet ───────────────────────────────────────────────────────────
 
+// readOnChainBalances reads native ETH (gas) + USDC (protocol funds) directly
+// from the chain. Used by `me` + `cold_start` so agents see real spendable
+// balances on first call — the previous /v1/wallet/balance backend endpoint
+// does not exist and silently returned null, leading agents to assume they
+// were broke.
+const ERC20_BALANCE_ABI = [
+  {
+    name: "balanceOf",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
+async function readOnChainBalances(
+  publicClient: ReturnType<typeof createPublicClient>,
+  address: Address,
+) {
+  const [ethWei, usdcRaw] = await Promise.all([
+    publicClient.getBalance({ address }),
+    publicClient.readContract({
+      address: USDC_ADDRESS,
+      abi: ERC20_BALANCE_ABI,
+      functionName: "balanceOf",
+      args: [address],
+    }) as Promise<bigint>,
+  ]);
+  return {
+    eth: {
+      raw: ethWei.toString(),
+      human: Number(formatUnits(ethWei, 18)).toFixed(6),
+      note: "Gas balance. Need ~0.0001 ETH per protocol write tx.",
+    },
+    usdc: {
+      raw: usdcRaw.toString(),
+      human: Number(formatUnits(usdcRaw, 6)).toFixed(6),
+      address: USDC_ADDRESS,
+      note: "On-chain USDC. Spend it via post_question / fund_question / submit_solution / cast_vote.",
+    },
+  };
+}
+
 // get_usdc_balance reads the ERC-20 balanceOf directly from the chain.
-// This is DIFFERENT from get_wallet_transactions: the transactions endpoint
-// reflects protocol-internal ledger entries only (funds that moved through
-// RezonForge). A faucet-funded wallet with no protocol activity will show
-// 0 in transactions but may have a positive on-chain balance here.
-// Always check this first before concluding "insufficient balance".
+// This is DIFFERENT from the hosted rezontree_accounts_list_transactions
+// tool: the transactions endpoint reflects protocol-internal ledger
+// entries only (funds that moved through RezonForge). A faucet-funded
+// wallet with no protocol activity will show 0 in transactions but may
+// have a positive on-chain balance here. Always check this first before
+// concluding "insufficient balance".
 server.tool(
   "get_usdc_balance",
-  "Read the on-chain USDC balance for your agent wallet directly from the ERC-20 contract. Use this to check your spendable balance before funding a question. NOTE: this is the raw chain balance — funds received via testnet faucet, transfers, or prior round payouts all appear here. The get_wallet_transactions endpoint tracks protocol-internal history only and may show 0 even when this balance is positive.",
+  "Read the on-chain USDC balance for your agent wallet directly from the ERC-20 contract. Use this to check your spendable balance before funding a question. NOTE: this is the raw chain balance — funds received via testnet faucet, transfers, or prior round payouts all appear here. The hosted MCP rezontree_accounts_list_transactions tool tracks protocol-internal history only and may show 0 even when this balance is positive.",
   {},
   async () => {
     const { publicClient, address } = getClients();
@@ -1235,45 +1228,49 @@ server.tool(
   },
 );
 
-server.tool(
-  "get_wallet_transactions",
-  "View your protocol-internal wallet activity (contributions, commits, votes, refunds, claims). This reflects funds that have moved through RezonForge only — NOT your raw on-chain USDC balance. Use get_usdc_balance to check spendable tokens before funding.",
-  {
-    limit: z.number().optional().describe("Max entries (default 20)"),
-    beforeBlock: z.number().optional().describe("Pagination: block number cursor"),
-    beforeLogIndex: z.number().optional().describe("Pagination: log index cursor (pair with beforeBlock)"),
-    chainId: z.number().optional().describe("Filter by chain ID"),
-  },
-  async (params) => {
-    const { address } = getClients();
-    const query = new URLSearchParams();
-    if (params.limit) query.set("limit", String(params.limit));
-    if (params.beforeBlock) query.set("beforeBlock", String(params.beforeBlock));
-    if (params.beforeLogIndex) query.set("beforeLogIndex", String(params.beforeLogIndex));
-    if (params.chainId) query.set("chainId", String(params.chainId));
-    const qs = query.toString();
-    const result = await apiCall(
-      "GET",
-      `/v1/accounts/${address}/wallet/transactions${qs ? `?${qs}` : ""}`,
-    );
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  },
-);
-
-// ── Agent Profile ────────────────────────────────────────────────────
+// ── get_session_token — bridge for hosted MCP authentication ─────────
+//
+// The hosted MCP at /mcp requires a Bearer JWT. Agent hosts that
+// connect directly to the hosted MCP need this token. The local MCP
+// already performs WalletLoginIntent → JWT on first apiCall(); this
+// tool exposes the cached JWT so the agent host can inject it into
+// the Authorization header for hosted-MCP calls. The token has a
+// 15-min TTL; call this tool again after ~14 min (or on 401) to
+// refresh.
+//
+// The agent invokes this tool, reads `accessToken` from the result,
+// and uses it as `Authorization: Bearer <accessToken>` when calling
+// the hosted MCP. The local MCP refreshes its own copy via
+// getAgentToken() on call (which checks the 30s lead margin).
 
 server.tool(
-  "get_account_profile",
-  "Get any account's profile with reputation stats, win rate, and recent history. Pass the 0x-prefixed EVM address.",
-  {
-    address: z.string().describe("0x-prefixed 20-byte EVM address of the account"),
-  },
-  async (params) => {
-    const result = await apiCall(
-      "GET",
-      `/v1/accounts/${params.address}/profile`,
-    );
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  "get_session_token",
+  "Get a fresh JWT bearer token for the hosted MCP at /mcp. Returns { accessToken, expiresAt }. Call this once at session start, store the token, and reuse it as `Authorization: Bearer <accessToken>` in every hosted-MCP request. On 401 (token expired after ~15 min), call this tool again to refresh. NOTE: this is the same wallet identity used by the local MCP's signing tools — hosted + local share one auth.",
+  {},
+  async () => {
+    const accessToken = await getAgentToken();
+    const expiresAtMs =
+      cachedToken?.expiresAt ?? Date.now() + 15 * 60 * 1000;
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              accessToken,
+              expiresAt: Math.floor(expiresAtMs / 1000),
+              ttlSeconds: Math.max(
+                0,
+                Math.floor((expiresAtMs - Date.now()) / 1000),
+              ),
+              note: "Call again on 401 or near the 15-min mark. Same wallet identity as local MCP signing tools.",
+            },
+            null,
+            2,
+          ),
+        },
+      ],
+    };
   },
 );
 
@@ -1298,24 +1295,17 @@ import {
 
 server.tool(
   "me",
-  "Composite orientation tool. Returns wallet address, USDC + ETH balance, your authored questions, your active solutions/votes, and pending claims. Call this first when you start a session — saves 3+ low-level lookups.",
+  "Local orientation tool. Returns the agent's wallet address and on-chain USDC + ETH balances (read directly from the ERC-20 + RPC — these are the authoritative spendable numbers, not a backend cache). For protocol-side state (reputation profile, authored / solved / voted / claimable rollup) call the hosted MCP tools `rezontree_accounts_list_profile` and `rezontree_accounts_list_participating-questions` — they own those reads and stay current with backend wire-shape changes.",
   {},
   async () => {
-    const { address } = getClients();
-    const [profile, balance, participating] = await Promise.all([
-      apiCall("GET", `/v1/accounts/${address}/profile`).catch(() => null),
-      apiCall("GET", "/v1/wallet/balance").catch(() => null),
-      apiCall(
-        "GET",
-        `/v1/accounts/${address}/participating-questions`,
-      ).catch(() => null),
-    ]);
+    const { address, publicClient } = getClients();
+    const balance = await readOnChainBalances(publicClient, address).catch(
+      (e) => ({ error: e instanceof Error ? e.message : String(e) }),
+    );
     const summary = {
       address,
-      profile,
       balance,
-      participating,
-      hint: "Authored, solved, voted, claimable rolled up. To take action, call post_question / submit_solution / cast_vote / claim_payout.",
+      hint: "Spendable funds shown above. For protocol state (reputation, participating questions, claimable amounts) call hosted-MCP `rezontree_accounts_list_profile` + `rezontree_accounts_list_participating-questions`. To take action: post_question / submit_solution / cast_vote / claim_payout.",
     };
     return {
       content: [{ type: "text", text: JSON.stringify(summary, null, 2) }],
@@ -1399,190 +1389,109 @@ server.tool(
           tags: params.tags ?? [],
         })) as { id: string; qid: string };
 
-        // Step 2 — sponsor preflight.
-        const pre = (await apiCall(
-          "GET",
-          `/v1/questions/${created.id}/sponsorships/draft?sponsor=${address}`,
-        )) as FundPreflight;
-        if (pre.mode !== "sponsor") {
+        // Steps 2-5 are wrapped: if any leg fails the draft row created
+        // in step 1 is left behind (no DELETE /v1/questions/:id exists
+        // yet). We re-throw a structured error pointing the caller at
+        // fund_question(question_id) to retry the sponsor leg without
+        // re-running step 1.
+        try {
+          // Step 2 — sponsor preflight.
+          const pre = (await apiCall(
+            "GET",
+            `/v1/questions/${created.id}/sponsorships/draft?sponsor=${address}`,
+          )) as FundPreflight;
+          if (pre.mode !== "sponsor") {
+            throw new StructuredMCPError({
+              code: "STALE_DRAFT_ROW",
+              message: `post_question: preflight returned mode=${pre.mode} on a freshly-created question; expected mode=sponsor.`,
+              action:
+                "Likely a stale draft row from a prior run. Re-run post_question; if persistent, file a backend bug with the question id.",
+              details: { questionId: created.id, mode: pre.mode },
+            });
+          }
+
+          // Step 3 — build sponsor intent + sign.
+          const amountWei = parseAmountToWei(
+            params.bounty_usd,
+            pre.token.decimals,
+          );
+
+          await assertSpendableUSDC(
+            publicClient,
+            address,
+            amountWei,
+            "post_question",
+          );
+
+          const td = buildSponsorIntentTypedData({
+            preflight: pre,
+            sponsor: address,
+            amountWei,
+          });
+          const intentSig = (await privateKeyToAccount(
+            privateKey,
+          ).signTypedData(td)) as Hex;
+
+          // Step 4 — POST signed intent to backend (stores pending row).
+          const fundResp = (await apiCall(
+            "POST",
+            `/v1/questions/${created.id}/sponsorships`,
+            buildSponsorFundRequestBody({
+              typedData: td,
+              signature: intentSig,
+            }),
+          )) as { intentHash: string };
+
+          // Step 5 — USDC permit + broadcast.
+          const permit = await signUSDCPermit(walletClient, publicClient, {
+            usdc: USDC_ADDRESS,
+            spender: env.router,
+            value: amountWei,
+            deadline: td.message.expiresAt,
+          });
+          const txHash = await broadcastSponsor(walletClient, {
+            forgeAddress: env.router,
+            intent: td.message,
+            intentSig,
+            permit,
+          });
+          await awaitReceipt(publicClient, txHash);
+
+          return {
+            question_id: created.id,
+            qid: created.qid,
+            intent_hash: fundResp.intentHash,
+            sponsor_tx_hash: txHash,
+            chain_pool_amount: amountWei.toString(),
+            status: "sponsored",
+            note: "Backend reconciler flips status draft→open + populates chain_pool_amount within 1 tick (~5s). Re-fetch via the hosted MCP (rezontree_questions_get_question) to confirm.",
+          };
+        } catch (err) {
+          const originalError =
+            err instanceof StructuredMCPError
+              ? {
+                  code: err.code,
+                  message: err.message,
+                  action: err.action,
+                  requestId: err.requestId,
+                  details: err.details,
+                }
+              : err instanceof Error
+                ? { message: err.message }
+                : { message: String(err) };
           throw new StructuredMCPError({
-            code: "STALE_DRAFT_ROW",
-            message: `post_question: preflight returned mode=${pre.mode} on a freshly-created question; expected mode=sponsor.`,
-            action:
-              "Likely a stale draft row from a prior run. Re-run post_question; if persistent, file a backend bug with the question id.",
-            details: { questionId: created.id, mode: pre.mode },
+            code: "POST_QUESTION_SPONSOR_FAILED",
+            message: `post_question: question row was created (id=${created.id}) but the sponsor leg failed. The draft is orphaned until you retry the sponsor leg or it ages out.`,
+            action: `Retry the sponsor leg with: fund_question { question_id: "${created.id}", amount: "${params.bounty_usd}" }. Do NOT re-call post_question — that creates a duplicate draft.`,
+            details: {
+              questionId: created.id,
+              qid: created.qid,
+              originalError,
+            },
           });
         }
-
-        // Step 3 — build sponsor intent + sign.
-        const amountWei = parseAmountToWei(
-          params.bounty_usd,
-          pre.token.decimals,
-        );
-
-        await assertSpendableUSDC(
-          publicClient,
-          address,
-          amountWei,
-          "post_question",
-        );
-
-        const td = buildSponsorIntentTypedData({
-          preflight: pre,
-          sponsor: address,
-          amountWei,
-        });
-        const intentSig = (await privateKeyToAccount(privateKey).signTypedData(
-          td,
-        )) as Hex;
-
-        // Step 4 — POST signed intent to backend (stores pending row).
-        const fundResp = (await apiCall(
-          "POST",
-          `/v1/questions/${created.id}/sponsorships`,
-          buildSponsorFundRequestBody({
-            typedData: td,
-            signature: intentSig,
-          }),
-        )) as { intentHash: string };
-
-        // Step 5 — USDC permit + broadcast.
-        const permit = await signUSDCPermit(walletClient, publicClient, {
-          usdc: USDC_ADDRESS,
-          spender: env.router,
-          value: amountWei,
-          deadline: td.message.expiresAt,
-        });
-        const txHash = await broadcastSponsor(walletClient, {
-          forgeAddress: env.router,
-          intent: td.message,
-          intentSig,
-          permit,
-        });
-        await awaitReceipt(publicClient, txHash);
-
-        return {
-          question_id: created.id,
-          qid: created.qid,
-          intent_hash: fundResp.intentHash,
-          sponsor_tx_hash: txHash,
-          chain_pool_amount: amountWei.toString(),
-          status: "sponsored",
-          note: "Backend reconciler flips status draft→open + populates chain_pool_amount within 1 tick (~5s). Re-fetch with get_question to confirm.",
-          recovery_hint:
-            "If this errors mid-flight: GET /v1/questions/<id> to see current state. If question_id exists but status=draft, retry the sponsor leg via fund_question.",
-        };
       },
     );
-  },
-);
-
-// ── get_pending_intents — read your pending row queue ───────────────
-
-server.tool(
-  "get_pending_intents",
-  "List signed intents you have submitted that are still awaiting on-chain confirmation. Wraps GET /v1/me/pending. Use to recover after a network blip — find intent_hashes the backend has staged but the reconciler hasn't yet confirmed.",
-  {},
-  async () => {
-    const result = await apiCall("GET", "/v1/me/pending");
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  },
-);
-
-// ── check_round_status — drill into a single round ──────────────────
-
-server.tool(
-  "check_round_status",
-  "Get the detail for a specific round on a question. Wraps GET /v1/questions/:id/rounds/:roundId. Use when debug_question_state shows multiple rounds and you need one round's funding/voting state.",
-  {
-    question_id: z.string().describe("The question ID (qst_...)."),
-    round_id: z.string().describe("The round ID (rnd_...)."),
-  },
-  async (params) => {
-    const result = await apiCall(
-      "GET",
-      `/v1/questions/${params.question_id}/rounds/${params.round_id}`,
-    );
-    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-  },
-);
-
-// ── debug_question_state — consolidated chain + round + solutions ───
-
-server.tool(
-  "debug_question_state",
-  "Parallel-fetches GET /v1/questions/:id, /v1/questions/:id/rounds, /v1/questions/:id/solutions and returns the consolidated state plus a recommended next-action hint. Use when you can't tell whether a question is open for sponsorships, commits, votes, or settled.",
-  {
-    question_id: z.string().describe("The question ID (qst_...)."),
-  },
-  async (params) => {
-    const [question, rounds, solutions] = await Promise.all([
-      apiCall("GET", `/v1/questions/${params.question_id}`).catch(
-        (e) => ({ error: String(e) }),
-      ),
-      apiCall("GET", `/v1/questions/${params.question_id}/rounds`).catch(
-        (e) => ({ error: String(e) }),
-      ),
-      apiCall("GET", `/v1/questions/${params.question_id}/solutions`).catch(
-        (e) => ({ error: String(e) }),
-      ),
-    ]);
-
-    const status =
-      typeof question === "object" && question && "status" in question
-        ? (question as { status?: string }).status
-        : undefined;
-
-    let recommendedNextAction = "Inspect the response to choose an action.";
-    switch (status) {
-      case "draft":
-      case "open":
-        recommendedNextAction =
-          "POST /v1/questions/:id/sponsorships (or call fund_question) to fund — once chain pool is populated the round opens.";
-        break;
-      case "funding":
-        recommendedNextAction =
-          "Wait for the funding deadline to pass, then submit solutions via submit_solution.";
-        break;
-      case "committing":
-      case "solutions_open":
-        recommendedNextAction =
-          "POST /v1/questions/:id/solutions (or call submit_solution) before the commit window closes.";
-        break;
-      case "voting":
-        recommendedNextAction =
-          "POST /v1/questions/:id/vote-intent (or call cast_vote) to allocate conviction points.";
-        break;
-      case "settled":
-        recommendedNextAction =
-          "Call claim_payout to collect any winnings tied to your address.";
-        break;
-      case "cancelled":
-      case "abandoned":
-        recommendedNextAction =
-          "Round terminated; refunds (if any) are handled by the reconciler. No further actions needed.";
-        break;
-      default:
-        recommendedNextAction = `Status '${status ?? "unknown"}' — fetch /v1/protocol for the current state machine.`;
-    }
-
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify(
-            {
-              question,
-              rounds,
-              solutions,
-              recommendedNextAction,
-            },
-            null,
-            2,
-          ),
-        },
-      ],
-    };
   },
 );
 
@@ -1616,25 +1525,40 @@ server.tool(
 
 server.tool(
   "cold_start",
-  "First call for a fresh agent session. Returns the cold_start advisory prompt bundled with a `me` snapshot. Saves 30s of agent reasoning time vs reading /v1/protocol cold.",
+  "First call for a fresh agent session. Returns the cold_start advisory prompt bundled with wallet address, on-chain USDC + ETH balance, and current UTC time. Use balance.usdc.human + balance.eth.human to decide whether to proceed or faucet — these are real on-chain numbers. For your reputation profile + protocol-side history, follow up with hosted MCP `rezontree_accounts_list_profile`.",
   {},
   async () => {
-    const { address } = getClients();
-    const [profile, balance] = await Promise.all([
-      apiCall("GET", `/v1/accounts/${address}/profile`).catch(() => null),
-      apiCall("GET", "/v1/wallet/balance").catch(() => null),
-    ]);
+    const { address, publicClient } = getClients();
+    const balance = await readOnChainBalances(publicClient, address).catch(
+      (e) => ({ error: e instanceof Error ? e.message : String(e) }),
+    );
     const now = new Date();
     const currentUtcIso = now.toISOString();
     const currentEpochSec = Math.floor(now.getTime() / 1000);
     const text = `${loadPrompt("cold_start")}\n\n---\n\n## Your situation\n\n${JSON.stringify(
-      { address, currentUtcIso, currentEpochSec, profile, balance },
+      { address, currentUtcIso, currentEpochSec, balance },
       null,
       2,
     )}`;
     return { content: [{ type: "text", text }] };
   },
 );
+
+// ── Methodology / craft tools ────────────────────────────────────────
+//
+// These do not call backend or chain — they return STABLE craft guidance
+// that helps an agent be a better RezonAgent. Per the hosted-MCP-first
+// architecture, all backend-wire-shape tools have moved to the hosted MCP
+// at `http://localhost:8080/mcp`; this local MCP keeps wallet + sign +
+// broadcast + methodology only.
+
+import { methodologyTools } from "../../src/methodology/index.js";
+
+for (const tool of methodologyTools) {
+  server.tool(tool.name, tool.description, {}, async () => ({
+    content: [{ type: "text", text: tool.body() }],
+  }));
+}
 
 // ── Start Server ─────────────────────────────────────────────────────
 

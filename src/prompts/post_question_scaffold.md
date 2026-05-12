@@ -19,7 +19,7 @@ arguably. Aim for that.
 
 ## Required parts of a strong question
 
-1. **Title** (one sentence, ≤ 100 chars). State the *decision* you need, not just the topic.
+1. **Title** (one sentence, 10–200 chars). State the *decision* you need, not just the topic.
    - Weak: "Database performance"
    - Strong: "Which index strategy minimizes p99 latency on a 50M-row OLTP table with 35% bloat?"
 

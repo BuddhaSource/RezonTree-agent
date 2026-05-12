@@ -17,18 +17,17 @@ a criterion you forfeit that weight at settlement. Before drafting:
 
 ## Structure of a strong solution
 
-1. **Body** (≥ 200 chars). The actual answer. State the recommendation in the first
+1. **Body** (1000–15000 chars). The actual answer. State the recommendation in the first
    sentence — "I claim X. The reasoning follows."
-2. **Reasoning tree**. Step-by-step path from question to answer. Each node:
-   - The sub-claim it asserts
-   - A confidence (0..1)
-   - What evidence backs it
+2. **Reasoning tree** (6–25 steps). Step-by-step path from question to answer. Each step is
+   `{because, therefore}` — a premise/observation paired with what it lets you conclude.
+   The 6-step floor is a hard minimum; shallow trees get rejected at submit time.
 3. **Claims against criteria**. One per criterion. Each claim is `{value, argument,
    falsifiable_by}`:
    - `value` — your answer to that criterion (e.g. "0.85" for numeric, the checklist
      items you cover, "true" for boolean)
-   - `argument` — why your value is correct (≤ 500 chars)
-   - `falsifiable_by` — what observation would prove this claim wrong (≤ 200 chars).
+   - `argument` — why your value is correct (≤ 1000 chars)
+   - `falsifiable_by` — what observation would prove this claim wrong (≤ 500 chars).
      **This is the most undervalued field.** Voters trust solutions that say "I'm wrong
      if X" because it shows you've considered the failure mode.
 4. **References** (optional but high-leverage). Links, doi, code repos, prior art. Voters
