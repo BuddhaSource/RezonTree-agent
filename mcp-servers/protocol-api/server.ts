@@ -198,50 +198,22 @@ async function assertSpendableUSDC(
   });
 }
 
-// ─── Structured MCP error ─────────────────────────────────
+// ─── Structured MCP error + backend envelope surfacing ─────
 //
 // MCP tools surface errors back to the agent as text. A bare
-// `throw new Error("...")` flattens into a single string and the agent
-// loses the {code, action, request_id} contract that the rest of the
-// protocol speaks. StructuredMCPError serializes as the same envelope
-// the backend emits — `{code, message, action, request_id}` — so an
-// agent can pattern-match on `code` and follow `action` regardless of
-// where in the stack the error originated.
-
-class StructuredMCPError extends Error {
-  readonly code: string;
-  readonly action: string;
-  readonly requestId?: string;
-  // Extra fields are preserved alongside the envelope so insufficient-
-  // balance / preflight-mismatch errors can carry their domain detail.
-  readonly details?: Record<string, unknown>;
-
-  constructor(opts: {
-    code: string;
-    message: string;
-    action: string;
-    requestId?: string;
-    details?: Record<string, unknown>;
-  }) {
-    // The Error.message is set to the JSON envelope so `throw` paths
-    // that bottom out in `.message` (legacy MCP harness) still get
-    // structured output. The MCP SDK serializes the thrown Error's
-    // message verbatim.
-    const envelope = {
-      code: opts.code,
-      message: opts.message,
-      action: opts.action,
-      request_id: opts.requestId,
-      ...(opts.details ?? {}),
-    };
-    super(JSON.stringify(envelope));
-    this.name = "StructuredMCPError";
-    this.code = opts.code;
-    this.action = opts.action;
-    this.requestId = opts.requestId;
-    this.details = opts.details;
-  }
-}
+// `throw new Error("...")` flattens into a single string and the
+// agent loses the {code, action, requestId, ...} contract the rest
+// of the protocol speaks. StructuredMCPError serializes the wire
+// envelope so an agent can pattern-match on `errorCode` and follow
+// `errorAction` regardless of where in the stack the error
+// originated. parseBackendErrorEnvelope converts the backend's
+// AppError body (non-2xx response) into StructuredMCPError args
+// while preserving every field the backend sent (SCHEMA_CHANGED's
+// diff/schema, validation fieldErrors, etc.). Both live in
+// `./errors.ts` so the unit test suite can import them without
+// paying the cost of evaluating server.ts (which binds stdio on
+// import).
+import { StructuredMCPError, parseBackendErrorEnvelope } from "./errors.js";
 
 // ─── Idempotency cache ─────────────────────────────────────
 //
@@ -429,25 +401,26 @@ async function doLogin(): Promise<string> {
     });
   }
 
-  let raw: unknown;
-  try {
-    raw = await resp.json();
-  } catch {
-    throw new StructuredMCPError({
-      code: "AUTH_TRANSPORT_FAILED",
-      message: `Backend /auth/wallet returned non-JSON ${resp.status}`,
-      action: "Backend likely returned a load-balancer page. Verify RT_AGENT_BACKEND_URL points at the API, not the LB root.",
-    });
+  const rawText = await resp.text();
+  let raw: unknown = {};
+  if (rawText.length > 0) {
+    try {
+      raw = JSON.parse(rawText);
+    } catch {
+      raw = { _rawBody: rawText };
+    }
   }
   if (!resp.ok) {
-    const err = raw as {
-      error?: { code?: string; message?: string; action?: string };
-    };
-    throw new StructuredMCPError({
-      code: err.error?.code ?? `AUTH_HTTP_${resp.status}`,
-      message: err.error?.message ?? `Wallet auth failed: HTTP ${resp.status}`,
-      action: err.error?.action ?? "Retry once. If persistent, check backend logs.",
-    });
+    throw new StructuredMCPError(
+      parseBackendErrorEnvelope({
+        data: raw,
+        rawText,
+        status: resp.status,
+        codePrefix: "AUTH_HTTP_",
+        fallbackAction:
+          "Retry once. If persistent, check backend logs.",
+      }),
+    );
   }
   const data = raw as { accessToken: string; expiresIn?: number };
   // Prefer the backend's own expiresIn when available — operators can
@@ -483,7 +456,18 @@ async function apiCall(
     if (body) opts.body = JSON.stringify(body);
 
     const resp = await fetch(`${API_URL}${path}`, opts);
-    const data = await resp.json().catch(() => ({}));
+    // Read body once as text, then try JSON-parse. This way a non-JSON
+    // upstream-proxy response (502 HTML, plain "Bad Gateway") still
+    // surfaces its bytes to the caller instead of an opaque "{}".
+    const rawText = await resp.text();
+    let data: unknown = {};
+    if (rawText.length > 0) {
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        data = { _rawBody: rawText };
+      }
+    }
 
     if (resp.status === 401 && attempt === 0) {
       cachedToken = null;
@@ -491,23 +475,21 @@ async function apiCall(
     }
 
     if (!resp.ok) {
-      const err = data as {
-        error?: {
-          code?: string;
-          message?: string;
-          action?: string;
-          request_id?: string;
-        };
-      };
-      throw new StructuredMCPError({
-        code: err.error?.code ?? `HTTP_${resp.status}`,
-        message:
-          err.error?.message ?? `API ${method} ${path} returned ${resp.status}`,
-        action:
-          err.error?.action ??
-          "Inspect the response body and retry. If persistent, check backend logs.",
-        requestId: err.error?.request_id,
-      });
+      // Backend envelope is `{ error: { code, message, action,
+      // requestId, details?, fieldErrors? } }` (wire field is
+      // requestId camelCase per AppError.ToResponse). Preserve every
+      // key the backend sent so SCHEMA_CHANGED's `diff`/`schema` and
+      // validation's `fieldErrors` propagate verbatim.
+      throw new StructuredMCPError(
+        parseBackendErrorEnvelope({
+          data,
+          rawText,
+          status: resp.status,
+          codePrefix: "HTTP_",
+          fallbackAction:
+            "Inspect the response body and retry. If persistent, check backend logs.",
+        }),
+      );
     }
     return data;
   }
@@ -1380,7 +1362,8 @@ server.tool(
           description: params.description,
           initialBounty: initialBountyBase,
           bountyCurrency: "USD",
-          votingDeadline: params.voting_deadline,
+          // R-WIRE-ABSOLUTE-UNIX: backend expects int64 Unix seconds, not ISO-8601.
+          votingDeadline: Math.floor(new Date(params.voting_deadline).getTime() / 1000),
           successCriteria: params.success_criteria,
           assumptions: params.assumptions ?? [],
           context: params.context,
