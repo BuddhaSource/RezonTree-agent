@@ -54,6 +54,11 @@ export async function applyReferralCode(
   args: ApplyReferralCodeArgs,
 ): Promise<ApplyReferralCodeResult> {
   const normalized = args.code.trim().toLowerCase();
+  // Client-side format gate only. The backend additionally rejects
+  // codes that match programmatic blocklist rules (all-digits, "rzn"
+  // prefix, all-same-char) plus a curated reserved list — those
+  // rejections surface as REFERRAL_CODE_RESERVED on the wire, NOT as
+  // REFERRAL_CODE_INVALID_FORMAT. The server is authoritative.
   if (!/^[a-z0-9]{5}$/.test(normalized)) {
     return {
       ok: false,
@@ -233,13 +238,20 @@ async function affiliateCodeOp(args: {
   if (!auth.ok) return auth;
   const { token, baseUrl } = auth;
 
+  // Audit-fix M6: Content-Type only on requests that ship a body.
+  // RFC 9110 discourages Content-Type on bodyless GETs and some strict
+  // proxies (or future backend middleware) reject the combination.
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+  };
+  if (args.method !== "GET") {
+    headers["Content-Type"] = "application/json";
+  }
+
   try {
     const resp = await fetch(`${baseUrl}/v1/me/referral-code`, {
       method: args.method,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
+      headers,
       body: args.body !== undefined ? JSON.stringify(args.body) : undefined,
       signal: AbortSignal.timeout(10_000),
     });
@@ -260,12 +272,17 @@ async function affiliateCodeOp(args: {
         action: body.error?.action,
       };
     }
+    // Audit-fix M1: explicit `== null` (which catches undefined + null
+    // only) rather than falsy guards. `!body.code` would false-positive
+    // on `""` and `!body.created_at` would false-positive on `0`. Neither
+    // value occurs in production (code is 5 chars, timestamp is post-1970),
+    // but the guard's intent is "field absent" and that's what `== null` says.
     if (
-      !body.code ||
-      !body.wallet_address ||
-      !body.source ||
-      !body.status ||
-      !body.created_at
+      body.code == null ||
+      body.wallet_address == null ||
+      body.source == null ||
+      body.status == null ||
+      body.created_at == null
     ) {
       return {
         ok: false,
