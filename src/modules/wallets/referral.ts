@@ -85,9 +85,9 @@ export async function applyReferralCode(
       signal: AbortSignal.timeout(10_000),
     });
     const body = (await resp.json()) as {
-      referrer_wallet?: Address;
-      set_at?: number;
-      grace_expires_at?: number;
+      referrerWallet?: Address;
+      setAt?: number;
+      graceExpiresAt?: number;
       error?: { code?: string; message?: string; action?: string };
     };
     if (!resp.ok) {
@@ -98,7 +98,7 @@ export async function applyReferralCode(
         action: body.error?.action,
       };
     }
-    if (!body.referrer_wallet || !body.set_at || !body.grace_expires_at) {
+    if (body.referrerWallet == null || body.setAt == null || body.graceExpiresAt == null) {
       return {
         ok: false,
         code: "MALFORMED_RESPONSE",
@@ -107,9 +107,9 @@ export async function applyReferralCode(
     }
     return {
       ok: true,
-      referrerWallet: body.referrer_wallet,
-      setAt: body.set_at,
-      graceExpiresAt: body.grace_expires_at,
+      referrerWallet: body.referrerWallet,
+      setAt: body.setAt,
+      graceExpiresAt: body.graceExpiresAt,
     };
   } catch (err) {
     return {
@@ -189,7 +189,7 @@ export async function claimMyReferralCode(
         message: `Referral code must be 5 chars [a-z0-9] (got "${args.desiredCode}").`,
       };
     }
-    body.desired_code = normalized;
+    body.desiredCode = normalized;
   }
   return await affiliateCodeOp({
     account: args.account,
@@ -220,7 +220,7 @@ export async function upgradeMyReferralCode(
     account: args.account,
     backendUrl: args.backendUrl,
     method: "PATCH",
-    body: { desired_code: normalized },
+    body: { desiredCode: normalized },
   });
 }
 
@@ -257,11 +257,11 @@ async function affiliateCodeOp(args: {
     });
     const body = (await resp.json()) as {
       code?: string;
-      wallet_address?: Address;
+      walletAddress?: Address;
       url?: string;
       source?: "auto_generated" | "user_chosen";
       status?: "active" | "superseded" | "banned";
-      created_at?: number;
+      createdAt?: number;
       error?: { code?: string; message?: string; action?: string };
     };
     if (!resp.ok) {
@@ -274,15 +274,15 @@ async function affiliateCodeOp(args: {
     }
     // Audit-fix M1: explicit `== null` (which catches undefined + null
     // only) rather than falsy guards. `!body.code` would false-positive
-    // on `""` and `!body.created_at` would false-positive on `0`. Neither
+    // on `""` and `!body.createdAt` would false-positive on `0`. Neither
     // value occurs in production (code is 5 chars, timestamp is post-1970),
     // but the guard's intent is "field absent" and that's what `== null` says.
     if (
       body.code == null ||
-      body.wallet_address == null ||
+      body.walletAddress == null ||
       body.source == null ||
       body.status == null ||
-      body.created_at == null
+      body.createdAt == null
     ) {
       return {
         ok: false,
@@ -293,11 +293,11 @@ async function affiliateCodeOp(args: {
     return {
       ok: true,
       code: body.code,
-      walletAddress: body.wallet_address,
+      walletAddress: body.walletAddress,
       url: body.url,
       source: body.source,
       status: body.status,
-      createdAt: body.created_at,
+      createdAt: body.createdAt,
       createdNew: resp.status === 201,
     };
   } catch (err) {
@@ -311,12 +311,29 @@ async function affiliateCodeOp(args: {
 
 // ── Internals ────────────────────────────────────────────────────────
 
+// Token cache (audit-fix M2): in-process keyed on `${address}|${baseUrl}`.
+// Backend access tokens expire in 15 minutes (CLAUDE.md: "Access tokens
+// expire in 15 min"). We cache with a conservative 12-minute TTL so the
+// token is still fresh when reused. Smart-wallet signers (Safe / Argent /
+// 4337) pay 100-500ms per signTypedData via eth_call — without caching,
+// the CLI flow `referral-code show → claim → upgrade` is 3 sequential
+// signs. With caching, it's 1 sign + 2 token reuses.
+const TOKEN_CACHE_TTL_MS = 12 * 60_000;
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
+
+function tokenCacheKey(address: Address, baseUrl: string): string {
+  return `${address.toLowerCase()}|${baseUrl}`;
+}
+
 /**
  * authenticateWallet signs an EIP-712 WalletLoginIntent with the
  * given viem Account, POSTs /auth/wallet, and returns either the
  * JWT bearer + normalized base URL on success, or a typed failure
  * shape compatible with both ApplyReferralCodeResult and
  * MyReferralCodeResult so callers can `return auth` on the unhappy path.
+ *
+ * Caches the bearer in-process for 12 minutes per (address, baseUrl)
+ * pair — see TOKEN_CACHE_TTL_MS.
  */
 async function authenticateWallet(
   account: Account,
@@ -325,6 +342,17 @@ async function authenticateWallet(
   | { ok: true; token: string; baseUrl: string }
   | { ok: false; code: string; message: string; action?: string }
 > {
+  const baseUrl = backendUrl.replace(/\/+$/, "");
+
+  // Check the cache first — saves a sign + an HTTP round-trip on the
+  // hot path (multiple CLI invocations in one process, e.g. a test
+  // script that calls show → upgrade → show).
+  const cacheKey = tokenCacheKey(account.address, baseUrl);
+  const cached = tokenCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return { ok: true, token: cached.token, baseUrl };
+  }
+
   let signedLogin: SignedLoginBody;
   try {
     signedLogin = await signLogin(account);
@@ -336,7 +364,6 @@ async function authenticateWallet(
     };
   }
 
-  const baseUrl = backendUrl.replace(/\/+$/, "");
   try {
     const resp = await fetch(`${baseUrl}/auth/wallet`, {
       method: "POST",
@@ -356,6 +383,10 @@ async function authenticateWallet(
         action: body.error?.action,
       };
     }
+    tokenCache.set(cacheKey, {
+      token: body.accessToken,
+      expiresAt: Date.now() + TOKEN_CACHE_TTL_MS,
+    });
     return { ok: true, token: body.accessToken, baseUrl };
   } catch (err) {
     return {

@@ -151,12 +151,21 @@ export function registerWalletsCommands(program: Command): void {
     .command("referral-code")
     .description("Manage this wallet's own referral code (the code others use to credit it).");
 
+  // --address default: when omitted, resolve to the single active
+  // wallet in the local DB. Errors if zero or multiple active wallets.
+  // Audit-fix M4 — single-wallet operators no longer need to copy-paste
+  // the address every time.
+  const addressFlagDoc =
+    "Wallet address. If omitted and exactly one wallet is active in the local DB, that one is used.";
+
   referralCode
     .command("show")
     .description("Show the current referral code for a wallet (GET /v1/me/referral-code).")
-    .requiredOption("--address <0x>", "Wallet address whose code to fetch.")
+    .option("--address <0x>", addressFlagDoc)
     .action(async (opts) => {
-      const result = await runReferralCodeOp(opts.address, (ctx) =>
+      const address = await resolveAddress(opts.address);
+      if (address === null) return;
+      const result = await runReferralCodeOp(address, (ctx) =>
         getMyReferralCode(ctx),
       );
       printReferralCodeResult(result);
@@ -167,13 +176,15 @@ export function registerWalletsCommands(program: Command): void {
     .description(
       "Get-or-create this wallet's referral code (POST /v1/me/referral-code). Idempotent.",
     )
-    .requiredOption("--address <0x>", "Wallet address to claim a code for.")
+    .option("--address <0x>", addressFlagDoc)
     .option(
       "--desired <code>",
       "Optional 5-char [a-z0-9] code to claim. Omit to auto-generate.",
     )
     .action(async (opts) => {
-      const result = await runReferralCodeOp(opts.address, (ctx) =>
+      const address = await resolveAddress(opts.address);
+      if (address === null) return;
+      const result = await runReferralCodeOp(address, (ctx) =>
         claimMyReferralCode({ ...ctx, desiredCode: opts.desired }),
       );
       printReferralCodeResult(result);
@@ -184,13 +195,15 @@ export function registerWalletsCommands(program: Command): void {
     .description(
       "Replace an auto-generated code with a chosen one (PATCH /v1/me/referral-code). One-shot.",
     )
-    .requiredOption("--address <0x>", "Wallet address whose code to upgrade.")
+    .option("--address <0x>", addressFlagDoc)
     .requiredOption(
       "--desired <code>",
       "The new 5-char [a-z0-9] code to claim.",
     )
     .action(async (opts) => {
-      const result = await runReferralCodeOp(opts.address, (ctx) =>
+      const address = await resolveAddress(opts.address);
+      if (address === null) return;
+      const result = await runReferralCodeOp(address, (ctx) =>
         upgradeMyReferralCode({ ...ctx, desiredCode: opts.desired }),
       );
       printReferralCodeResult(result);
@@ -299,6 +312,71 @@ async function maybeApplyReferral(
 }
 
 /**
+ * resolveAddress returns the explicit --address flag if supplied,
+ * or falls back to the single active wallet in the local DB. Errors
+ * to stderr + process.exit(1) on zero/multiple active wallets so the
+ * operator gets an actionable hint without burning a sign + auth.
+ *
+ * Returns `null` when an error has already been printed + exit
+ * scheduled — callers `if (address === null) return` to bail.
+ */
+async function resolveAddress(explicit: string | undefined): Promise<string | null> {
+  if (explicit) return explicit;
+
+  let rows;
+  try {
+    rows = await listWallets({ activeOnly: true });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(
+      JSON.stringify(
+        {
+          ok: false,
+          code: "WALLET_LIST_FAILED",
+          message: `Could not list local wallets: ${msg}`,
+          action: "Pass --address <0x> explicitly, or fix the local wallet DB.",
+        },
+        null,
+        2,
+      ),
+    );
+    process.exit(1);
+  }
+  if (rows.length === 0) {
+    console.error(
+      JSON.stringify(
+        {
+          ok: false,
+          code: "NO_ACTIVE_WALLET",
+          message: "No active wallets in the local DB.",
+          action: "Register a wallet first: `agent manage wallets register --provider hd`.",
+        },
+        null,
+        2,
+      ),
+    );
+    process.exit(1);
+  }
+  if (rows.length > 1) {
+    console.error(
+      JSON.stringify(
+        {
+          ok: false,
+          code: "AMBIGUOUS_WALLET",
+          message: `${rows.length} active wallets present — cannot default. Pass --address <0x> to choose one.`,
+          addresses: rows.map((r) => r.address),
+          action: "Run `agent manage wallets list` to see the addresses, then pick one with --address.",
+        },
+        null,
+        2,
+      ),
+    );
+    process.exit(1);
+  }
+  return rows[0].address;
+}
+
+/**
  * Loads the signing account for `walletAddress`, resolves the backend
  * URL, and invokes the given affiliate-side op (show/claim/upgrade).
  *
@@ -348,6 +426,10 @@ function printReferralCodeResult(result: MyReferralCodeResult): void {
       },
       "referral-code: ok",
     );
+    // Audit-fix L3: omit `created_new` from JSON output when false.
+    // On idempotent re-calls (the common case after first claim) it
+    // adds no actionable information and confuses agent scripts that
+    // would otherwise have to filter the field manually.
     console.log(
       JSON.stringify(
         {
@@ -358,7 +440,7 @@ function printReferralCodeResult(result: MyReferralCodeResult): void {
           source: result.source,
           status: result.status,
           created_at: result.createdAt,
-          created_new: result.createdNew,
+          ...(result.createdNew ? { created_new: true } : {}),
         },
         null,
         2,
