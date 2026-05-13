@@ -430,22 +430,30 @@ function printReferralCodeResult(result: MyReferralCodeResult): void {
     // On idempotent re-calls (the common case after first claim) it
     // adds no actionable information and confuses agent scripts that
     // would otherwise have to filter the field manually.
-    console.log(
-      JSON.stringify(
-        {
-          ok: true,
-          code: result.code,
-          wallet_address: result.walletAddress,
-          url: result.url,
-          source: result.source,
-          status: result.status,
-          created_at: result.createdAt,
-          ...(result.createdNew ? { created_new: true } : {}),
-        },
-        null,
-        2,
-      ),
-    );
+    //
+    // Audit-fix P3 (round 3): when the backend didn't return a URL
+    // (RT_PUBLIC_BASE_URL unset), surface a clear hint to the operator
+    // explaining how to compute the canonical link instead of leaving
+    // a missing field. Previously the CLI just omitted the URL and an
+    // operator with only the code had no idea how to share it.
+    const output: Record<string, unknown> = {
+      ok: true,
+      code: result.code,
+      wallet_address: result.walletAddress,
+      url: result.url,
+      source: result.source,
+      status: result.status,
+      created_at: result.createdAt,
+    };
+    if (!result.url) {
+      output.url_note =
+        "Backend's RT_PUBLIC_BASE_URL is unset, so no canonical URL was returned. " +
+        "Construct your own: https://<your-public-host>/r/" + result.code;
+    }
+    if (result.createdNew) {
+      output.created_new = true;
+    }
+    console.log(JSON.stringify(output, null, 2));
     return;
   }
   log.warn(
