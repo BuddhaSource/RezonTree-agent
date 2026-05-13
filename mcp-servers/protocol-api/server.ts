@@ -536,7 +536,7 @@ server.tool(
     question_id: z.string().describe("The question ID to solve"),
     body: z
       .string()
-      .describe("Solution body — markdown allowed, 1000–15000 chars"),
+      .describe("Solution body — markdown allowed, 2000–30000 chars"),
     reasoning_tree: z
       .array(
         z.object({

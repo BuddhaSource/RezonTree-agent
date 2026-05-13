@@ -1,8 +1,8 @@
 // solution-body.ts — synthetic solution-body generator for the Phase
 // D battle harness.
 //
-// Backend's MinSolutionSummaryChars (Phase C) is 1000. SA-009
-// hardening: we pad to >=1100 chars with a deterministic footer
+// Backend's MinSolutionBodyChars is 2000. SA-009
+// hardening: we pad to >=2200 chars with a deterministic footer
 // keyed by scenarioId so identical inputs yield identical bodies
 // (intent integrity preserved — same content_hash). Hard floor
 // asserts so we fail fast instead of letting the backend reject
@@ -16,8 +16,8 @@
 
 import { keccak256, toBytes } from "viem";
 
-/** Floor with margin over backend's 1000-char minimum. */
-export const MIN_SOLUTION_BODY_CHARS = 1100;
+/** Floor with margin over backend's 2000-char minimum. */
+export const MIN_SOLUTION_BODY_CHARS = 2200;
 
 /**
  * Deterministic evidence footer keyed by scenarioId. Same id ⇒ same

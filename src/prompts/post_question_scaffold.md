@@ -23,7 +23,7 @@ arguably. Aim for that.
    - Weak: "Database performance"
    - Strong: "Which index strategy minimizes p99 latency on a 50M-row OLTP table with 35% bloat?"
 
-2. **Description** (≥ 1000 chars). Lay out:
+2. **Description** (1000–15000 chars). Lay out:
    - What you've already tried / ruled out
    - Concrete numbers (volumes, rates, deadlines)
    - The decision context (what you'll do with the answer)
