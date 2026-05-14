@@ -251,7 +251,7 @@ async function maybeApplyReferral(
   cliFlag: string | undefined,
 ): Promise<
   | null
-  | { ok: true; referrer_wallet: string; set_at: number; grace_expires_at: number }
+  | { ok: true; referrer_wallet: string; set_at: number }
   | { ok: false; code: string; message: string; action?: string }
 > {
   const code = resolveReferralCode(cliFlag);
@@ -290,7 +290,6 @@ async function maybeApplyReferral(
       ok: true,
       referrer_wallet: result.referrerWallet,
       set_at: result.setAt,
-      grace_expires_at: result.graceExpiresAt,
     };
   }
 
@@ -421,8 +420,7 @@ function printReferralCodeResult(result: MyReferralCodeResult): void {
       {
         wallet: result.walletAddress,
         code: result.code,
-        source: result.source,
-        status: result.status,
+        canUpgrade: result.canUpgrade,
       },
       "referral-code: ok",
     );
@@ -441,8 +439,7 @@ function printReferralCodeResult(result: MyReferralCodeResult): void {
       code: result.code,
       wallet_address: result.walletAddress,
       url: result.url,
-      source: result.source,
-      status: result.status,
+      can_upgrade: result.canUpgrade,
       created_at: result.createdAt,
     };
     if (!result.url) {

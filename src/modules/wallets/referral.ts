@@ -40,7 +40,7 @@ export interface ApplyReferralCodeArgs {
 }
 
 export type ApplyReferralCodeResult =
-  | { ok: true; referrerWallet: Address; setAt: number; graceExpiresAt: number }
+  | { ok: true; referrerWallet: Address; setAt: number }
   | { ok: false; code: string; message: string; action?: string };
 
 /**
@@ -87,7 +87,6 @@ export async function applyReferralCode(
     const body = (await resp.json()) as {
       referrerWallet?: Address;
       setAt?: number;
-      graceExpiresAt?: number;
       error?: { code?: string; message?: string; action?: string };
     };
     if (!resp.ok) {
@@ -98,7 +97,7 @@ export async function applyReferralCode(
         action: body.error?.action,
       };
     }
-    if (body.referrerWallet == null || body.setAt == null || body.graceExpiresAt == null) {
+    if (body.referrerWallet == null || body.setAt == null) {
       return {
         ok: false,
         code: "MALFORMED_RESPONSE",
@@ -109,7 +108,6 @@ export async function applyReferralCode(
       ok: true,
       referrerWallet: body.referrerWallet,
       setAt: body.setAt,
-      graceExpiresAt: body.graceExpiresAt,
     };
   } catch (err) {
     return {
@@ -131,9 +129,10 @@ export async function applyReferralCode(
  *
  * - `url` is the canonical shareable link when the backend has
  *   RT_PUBLIC_BASE_URL configured. Omitted otherwise.
- * - `source` is `"auto_generated"` or `"user_chosen"` — drives the
- *   "can upgrade?" UX.
- * - `status` is `"active"` / `"superseded"` / `"banned"`.
+ * - `canUpgrade` is true iff the one-shot auto_generated → user_chosen
+ *   upgrade is still available. The backend collapses the internal
+ *   (source, status) taxonomy into this single bit so clients never
+ *   see the lifecycle enums.
  */
 export type MyReferralCodeResult =
   | {
@@ -141,8 +140,7 @@ export type MyReferralCodeResult =
       code: string;
       walletAddress: Address;
       url?: string;
-      source: "auto_generated" | "user_chosen";
-      status: "active" | "superseded" | "banned";
+      canUpgrade: boolean;
       createdAt: number;
       createdNew?: boolean; // true on POST first-claim, false/undefined on idempotent re-call
     }
@@ -202,8 +200,10 @@ export async function claimMyReferralCode(
 /**
  * PATCH /v1/me/referral-code — one-shot upgrade auto-generated → user_chosen.
  *
- * Backend enforces the one-shot rule: a code already at
- * `source='user_chosen'` returns REFERRAL_CODE_LOCKED.
+ * Backend enforces the one-shot rule: a code that's already been
+ * upgraded returns REFERRAL_CODE_LOCKED. Check `canUpgrade` on the
+ * current row to know whether the upgrade is still available before
+ * calling.
  */
 export async function upgradeMyReferralCode(
   args: AffiliateOpArgs & { desiredCode: string },
@@ -259,8 +259,7 @@ async function affiliateCodeOp(args: {
       code?: string;
       walletAddress?: Address;
       url?: string;
-      source?: "auto_generated" | "user_chosen";
-      status?: "active" | "superseded" | "banned";
+      canUpgrade?: boolean;
       createdAt?: number;
       error?: { code?: string; message?: string; action?: string };
     };
@@ -280,8 +279,7 @@ async function affiliateCodeOp(args: {
     if (
       body.code == null ||
       body.walletAddress == null ||
-      body.source == null ||
-      body.status == null ||
+      body.canUpgrade == null ||
       body.createdAt == null
     ) {
       return {
@@ -295,8 +293,7 @@ async function affiliateCodeOp(args: {
       code: body.code,
       walletAddress: body.walletAddress,
       url: body.url,
-      source: body.source,
-      status: body.status,
+      canUpgrade: body.canUpgrade,
       createdAt: body.createdAt,
       createdNew: resp.status === 201,
     };
