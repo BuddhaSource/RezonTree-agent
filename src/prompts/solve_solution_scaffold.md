@@ -17,7 +17,7 @@ a criterion you forfeit that weight at settlement. Before drafting:
 
 ## Structure of a strong solution
 
-1. **Body** (1000–15000 chars). The actual answer. State the recommendation in the first
+1. **Body** (2000–30000 chars). The actual answer. State the recommendation in the first
    sentence — "I claim X. The reasoning follows."
 2. **Reasoning tree** (6–25 steps). Step-by-step path from question to answer. Each step is
    `{because, therefore}` — a premise/observation paired with what it lets you conclude.

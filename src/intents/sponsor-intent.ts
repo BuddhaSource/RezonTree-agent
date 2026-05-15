@@ -305,8 +305,8 @@ export interface SponsorFundRequestBody {
   sponsor: string;
   amount: string;
   nonce: string;
-  chainId: string;
-  expiresAt: string;
+  chainId: number;
+  expiresAt: number;
   signature: string;
   feeShares: { recipient: string; basisPoints: string }[];
   oracle: string;
@@ -336,8 +336,8 @@ export function buildSponsorFundRequestBody(params: {
     sponsor: m.sponsor,
     amount: m.amount.toString(),
     nonce: m.nonce.toString(),
-    chainId: m.chainId.toString(),
-    expiresAt: m.expiresAt.toString(),
+    chainId: Number(m.chainId),
+    expiresAt: Number(m.expiresAt),
     signature: params.signature,
     feeShares: m.feeShares.map((s) => ({
       recipient: s.recipient,

@@ -18,6 +18,11 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import {
+  StructuredMCPError,
+  parseBackendErrorEnvelope,
+} from "./errors.js";
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SERVER_TS = readFileSync(join(__dirname, "server.ts"), "utf8");
 
@@ -195,5 +200,152 @@ describe("local MCP boundary — drift fences", () => {
         false,
       );
     });
+  });
+});
+
+// ─── Backend error envelope → StructuredMCPError ───────────
+//
+// A solver agent burned $1.90 / 114 turns chasing a phantom binary-
+// staleness diagnosis because the local MCP wrapped a backend error
+// as "Request body is not valid JSON" instead of surfacing the
+// envelope verbatim. These tests fence the round-trip so the LLM
+// caller always sees the backend's prescriptive {code, message,
+// action, requestId} contract — plus details.diff / details.schema
+// for SCHEMA_CHANGED and details.fieldErrors for validation.
+
+describe("backend error envelope → MCP tool result", () => {
+  it("preserves all four prescriptive fields verbatim", () => {
+    const args = parseBackendErrorEnvelope({
+      data: {
+        error: {
+          code: "DUPLICATE_ACTIVE",
+          message:
+            "Solution for question qst_abc with this body already active.",
+          action:
+            "Fetch /v1/questions/qst_abc/solutions to find your existing entry. Retry only with a different body hash.",
+          requestId: "req_8f3a1c",
+        },
+      },
+      rawText: "",
+      status: 409,
+      fallbackAction: "fallback",
+    });
+    expect(args.code).toBe("DUPLICATE_ACTIVE");
+    expect(args.message).toContain("already active");
+    expect(args.action).toContain("different body hash");
+    expect(args.requestId).toBe("req_8f3a1c");
+    expect(args.httpStatus).toBe(409);
+
+    const err = new StructuredMCPError(args);
+    const wire = JSON.parse(err.message) as Record<string, unknown>;
+    expect(wire.ok).toBe(false);
+    expect(wire.errorCode).toBe("DUPLICATE_ACTIVE");
+    expect(wire.errorMessage).toContain("already active");
+    expect(wire.errorAction).toContain("different body hash");
+    expect(wire.requestId).toBe("req_8f3a1c");
+    expect(wire.httpStatus).toBe(409);
+  });
+
+  it("preserves details.diff for SCHEMA_CHANGED", () => {
+    const args = parseBackendErrorEnvelope({
+      data: {
+        error: {
+          code: "SCHEMA_CHANGED",
+          message: "Request shape outdated.",
+          action: "Apply diff and retry.",
+          requestId: "req_xyz",
+          rev: "2026-05-13.1",
+          diff: [
+            { op: "add", path: "/claims/0/falsifiableBy", required: true },
+          ],
+        },
+      },
+      rawText: "",
+      status: 422,
+      fallbackAction: "fallback",
+    });
+    expect(args.code).toBe("SCHEMA_CHANGED");
+    expect(args.details).toBeDefined();
+    expect((args.details as Record<string, unknown>).rev).toBe("2026-05-13.1");
+    expect((args.details as Record<string, unknown>).diff).toEqual([
+      { op: "add", path: "/claims/0/falsifiableBy", required: true },
+    ]);
+
+    const wire = JSON.parse(new StructuredMCPError(args).message) as Record<
+      string,
+      unknown
+    >;
+    expect((wire.details as Record<string, unknown>).diff).toBeDefined();
+  });
+
+  it("preserves details.fieldErrors for VALIDATION_ERROR", () => {
+    const args = parseBackendErrorEnvelope({
+      data: {
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "summary too long; falsifiableBy required.",
+          action:
+            "Fix: summary max 1000 chars (sent 1247); claims[0].falsifiableBy required. Retry.",
+          requestId: "req_v1",
+          fieldErrors: [
+            { field: "summary", code: "TOO_LONG", fix: "max 1000 chars" },
+            {
+              field: "claims[0].falsifiableBy",
+              code: "REQUIRED",
+              fix: "non-empty string",
+            },
+          ],
+        },
+      },
+      rawText: "",
+      status: 422,
+      fallbackAction: "fallback",
+    });
+    expect(args.details).toBeDefined();
+    const fieldErrors = (args.details as Record<string, unknown>)
+      .fieldErrors as Array<Record<string, unknown>>;
+    expect(fieldErrors).toHaveLength(2);
+    expect(fieldErrors[0].field).toBe("summary");
+  });
+
+  it("accepts legacy snake_case request_id as a fallback", () => {
+    const args = parseBackendErrorEnvelope({
+      data: {
+        error: {
+          code: "AGENT_RESTRICTED",
+          message: "blocked",
+          action: "lift the restriction",
+          request_id: "req_legacy",
+        },
+      },
+      rawText: "",
+      status: 403,
+      fallbackAction: "fallback",
+    });
+    expect(args.requestId).toBe("req_legacy");
+  });
+
+  it("falls back to HTTP_<status> when body is not a JSON envelope", () => {
+    const args = parseBackendErrorEnvelope({
+      data: { _rawBody: "<html>502 Bad Gateway</html>" },
+      rawText: "<html>502 Bad Gateway</html>",
+      status: 502,
+      fallbackAction: "fallback",
+    });
+    expect(args.code).toBe("HTTP_502");
+    expect(args.message).toContain("502 Bad Gateway");
+    expect(args.requestId).toBeUndefined();
+    expect(args.httpStatus).toBe(502);
+  });
+
+  it("uses AUTH_HTTP_ prefix for auth-flow synthetic codes", () => {
+    const args = parseBackendErrorEnvelope({
+      data: {},
+      rawText: "",
+      status: 503,
+      codePrefix: "AUTH_HTTP_",
+      fallbackAction: "fallback",
+    });
+    expect(args.code).toBe("AUTH_HTTP_503");
   });
 });

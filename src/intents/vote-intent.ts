@@ -277,8 +277,8 @@ export interface SubmitVoteIntentRequestBody {
   stakeAmount: string;
   feeShares: { recipient: string; basisPoints: string }[];
   nonce: string;
-  chainId: string;
-  expiresAt: string;
+  chainId: number;
+  expiresAt: number;
   signature: string;
   // Salt + saltToken come from the vote-preflight response. The
   // backend HMAC-verifies the token at submit time and rejects any
@@ -307,8 +307,8 @@ export function buildSubmitVoteIntentRequestBody(params: {
       basisPoints: s.basisPoints.toString(),
     })),
     nonce: m.nonce.toString(),
-    chainId: m.chainId.toString(),
-    expiresAt: m.expiresAt.toString(),
+    chainId: Number(m.chainId),
+    expiresAt: Number(m.expiresAt),
     signature: params.signature,
     voteSalt: params.voteSalt,
     voteSaltToken: params.voteSaltToken,
