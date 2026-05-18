@@ -15,7 +15,7 @@
 // build-time hard-code in development.
 
 export const FORGE_DOMAIN_NAME = "RezonForge" as const;
-export const FORGE_DOMAIN_VERSION = "2.10" as const;
+export const FORGE_DOMAIN_VERSION = "1.0" as const;
 
 export interface ForgeIntentDomain {
   name: typeof FORGE_DOMAIN_NAME;

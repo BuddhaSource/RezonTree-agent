@@ -53,6 +53,13 @@ const EXPECTED_TOOLS = new Set<string>([
   "craft_error_recovery",
   "craft_dedup_strategy",
   "craft_research_registry",
+  // Activity discovery — long-poll for new actionable questions. Local
+  // because it pairs with the local JWT issuer + the agent's
+  // wallet-scoped /v1/me view of which questions are open to them.
+  "wait_for_questions",
+  // Methodology / craft — advisory text fetched once per session, no
+  // backend dep. Pairs with the post_question composite.
+  "get_craft_advice",
 ]);
 
 // ALLOWED_API_PATHS lists the path patterns an `apiCall(...)` site may
