@@ -15,7 +15,14 @@
 // build-time hard-code in development.
 
 export const FORGE_DOMAIN_NAME = "RezonForge" as const;
-export const FORGE_DOMAIN_VERSION = "1.0" as const;
+// R-NO-VERSION-THEATER: matches the deployed Base Sepolia contract's
+// DOMAIN_VERSION_HASH = keccak256(bytes("2.10")) at
+// contracts/src/RezonForge.sol line 186. Off-chain layers mirror the
+// chain string; the launch redeploy bumps to "1.0" in one shot.
+// Kept in lockstep with internal/config/config.go LoadForgeSigningDomain,
+// RezonTree-UI/lib/intents/forge-domain.ts, and the golden envelope
+// vectors. Drift caught by domain_version_coherence_test.go.
+export const FORGE_DOMAIN_VERSION = "2.10" as const;
 
 export interface ForgeIntentDomain {
   name: typeof FORGE_DOMAIN_NAME;
