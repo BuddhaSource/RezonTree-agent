@@ -13,20 +13,37 @@
 //
 // Exit 0 if all four agree. Exit 1 if any layer disagrees, with a
 // per-row diagnosis printed.
+//
+// Defaults target the production Base Sepolia stack. For local-anvil
+// runs (oracle event-matrix harness, task #529) export:
+//   RT_RPC_URL=http://127.0.0.1:8545
+//   RT_CHAIN_ID=31337             (informational; printed in header)
+//   RT_FORGE_ADDRESS=<from .env.local-anvil>
+//   RT_AGENT_BACKEND_URL=http://localhost:8080
+//   RT_PG_HOST=localhost          (default; override if non-local)
+//   RT_PG_PORT=5432
+//   RT_PG_USER=rezontree
+//   RT_PG_DB=rezontree
 
 import "dotenv/config";
-import { execSync } from "node:child_process";
-import {
-  createPublicClient,
-  http,
-  parseAbiItem,
-  type Address,
-  type Hex,
-} from "viem";
+import type { Address, Hex } from "viem";
 
 const FORGE = (process.env.RT_FORGE_ADDRESS as Address)!;
 const RPC = process.env.RT_RPC_URL ?? "https://sepolia.base.org";
 const BACKEND = process.env.RT_AGENT_BACKEND_URL ?? "http://localhost:8080";
+const CHAIN_ID = process.env.RT_CHAIN_ID ?? "(default chain)";
+
+// Postgres connection params. Defaults match the local dev Postgres
+// (rezontree-postgres-1 container on :5432). Override for non-local
+// or test-DB runs.
+const PG_HOST = process.env.RT_PG_HOST ?? "localhost";
+const PG_PORT = process.env.RT_PG_PORT ?? "5432";
+const PG_USER = process.env.RT_PG_USER ?? "rezontree";
+const PG_DB = process.env.RT_PG_DB ?? "rezontree";
+const PSQL_BASE_ARGS = [
+  "-h", PG_HOST, "-p", PG_PORT, "-U", PG_USER, "-d", PG_DB,
+  "-t", "-A",
+];
 
 if (!FORGE) throw new Error("RT_FORGE_ADDRESS required");
 
@@ -34,18 +51,32 @@ const qidArg = process.argv[2];
 if (!qidArg) {
   console.error("usage: verify-question.ts <question_id>");
   console.error("  e.g.: verify-question.ts qst_d7syp0rqatg4cmcse0dg");
+  console.error(
+    "  env: RT_FORGE_ADDRESS, RT_RPC_URL, RT_AGENT_BACKEND_URL, RT_PG_{HOST,PORT,USER,DB}",
+  );
   process.exit(2);
 }
 
-const client = createPublicClient({ transport: http(RPC) });
+console.error(
+  `verify-question  chain=${CHAIN_ID}  forge=${FORGE}  rpc=${RPC}  backend=${BACKEND}`,
+);
 
 // Question ID → bytes32 qid: backend computes qid via DeriveProblemQID.
 // To avoid duplicating that math, we ask the DB.
+function psqlOneShot(sql: string): string {
+  // Quote SQL so backticks/quotes inside don't escape the shell. We
+  // use execFileSync to bypass shell entirely.
+  const cp = require("node:child_process") as typeof import("node:child_process");
+  const r = cp.execFileSync("psql", [...PSQL_BASE_ARGS, "-c", sql], {
+    encoding: "utf8",
+  });
+  return r.trim();
+}
+
 function qidFromDb(questionId: string): string {
-  const out = execSync(
-    `psql -U rezontree -d rezontree -h localhost -t -A -c "SELECT encode(qid, 'hex') FROM questions WHERE id='${questionId}'"`,
-    { encoding: "utf8" },
-  ).trim();
+  const out = psqlOneShot(
+    `SELECT encode(qid, 'hex') FROM questions WHERE id='${questionId}'`,
+  );
   if (!out) throw new Error(`No question with id ${questionId} in DB`);
   return "0x" + out;
 }
@@ -70,10 +101,7 @@ async function chainCount(_qidBytes: Hex, _eventSig: string): Promise<number> {
 }
 
 function dbScalar(sql: string): number {
-  const out = execSync(
-    `psql -U rezontree -d rezontree -h localhost -t -A -c "${sql}"`,
-    { encoding: "utf8" },
-  ).trim();
+  const out = psqlOneShot(sql);
   return Number.parseInt(out, 10) || 0;
 }
 
@@ -214,7 +242,8 @@ async function main() {
     cp.execFile(
       "psql",
       [
-        "-U", "rezontree", "-d", "rezontree", "-h", "localhost", "-t", "-A", "-F", ",",
+        ...PSQL_BASE_ARGS,
+        "-F", ",",
         "-c",
         `SELECT DISTINCT lower(encode(c.sponsor_address,'hex'))
            FROM contributions c JOIN rounds r ON c.round_id = r.id
