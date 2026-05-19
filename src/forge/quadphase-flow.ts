@@ -212,7 +212,7 @@ export async function runSponsorFlow(
       Authorization: `Bearer ${p.bearerToken}`,
       "Prefer": "return=minimal",
     },
-    body: JSON.stringify(submitBody),
+    body: stringifyWithBigInts(submitBody),
   });
   const text = await res.text();
   if (!res.ok) {
@@ -323,7 +323,7 @@ export async function runCosponsorFlow(
       Authorization: `Bearer ${p.bearerToken}`,
       "Prefer": "return=minimal",
     },
-    body: JSON.stringify({
+    body: stringifyWithBigInts({
       envelope: serializeEnvelope(envelope),
       witness: serializeCosponsorWitness(witness),
       signature,
@@ -350,6 +350,29 @@ export async function runCosponsorFlow(
 
 // ─── Wire serialization ──────────────────────────────────────────────
 
+// Go's stdlib JSON unmarshals *big.Int from JSON NUMBERS, not strings.
+// Sending "1234" fails the bind with json.UnmarshalTypeError. We emit
+// these via a sentinel marker + post-stringify regex pass so the wire
+// JSON carries raw integer tokens (`"poolIn": 1000000` not
+// `"poolIn": "1000000"`). USDC values fit in JS safe-int easily; if
+// future tokens push past 2^53-1 we can switch to a streaming encoder.
+const BIGINT_SENTINEL = "__BIGINT_SENTINEL__";
+
+function encodeBigIntForWire(b: bigint): string {
+  // Emit as a marker string at JSON build time; the regex pass strips
+  // the quotes around it so Go receives a number literal.
+  return `${BIGINT_SENTINEL}${b.toString()}`;
+}
+
+export function stringifyWithBigInts(obj: unknown): string {
+  const raw = JSON.stringify(obj);
+  // Strip the marker quotes: "__BIGINT_SENTINEL__1234" → 1234.
+  return raw.replace(
+    new RegExp(`"${BIGINT_SENTINEL}([0-9]+)"`, "g"),
+    "$1",
+  );
+}
+
 function serializeSponsorWitness(
   w: import("../intents/sponsor-witness.js").SponsorWitness,
 ): Record<string, unknown> {
@@ -360,13 +383,13 @@ function serializeSponsorWitness(
     criteria: w.criteria,
     tags: w.tags,
     oracle: w.oracle,
-    sponsorshipFloor: w.sponsorshipFloor.toString(),
-    commitFee: w.commitFee.toString(),
-    voteFee: w.voteFee.toString(),
-    stakeFloor: w.stakeFloor.toString(),
+    sponsorshipFloor: encodeBigIntForWire(w.sponsorshipFloor),
+    commitFee: encodeBigIntForWire(w.commitFee),
+    voteFee: encodeBigIntForWire(w.voteFee),
+    stakeFloor: encodeBigIntForWire(w.stakeFloor),
     stakeBasisPoints: w.stakeBasisPoints,
-    fundingDeadline: w.fundingDeadline.toString(),
-    noSolutionGracePeriod: w.noSolutionGracePeriod.toString(),
+    fundingDeadline: encodeBigIntForWire(w.fundingDeadline),
+    noSolutionGracePeriod: encodeBigIntForWire(w.noSolutionGracePeriod),
   };
 }
 
@@ -375,7 +398,7 @@ function serializeCosponsorWitness(
 ): Record<string, unknown> {
   return {
     actionTag: w.actionTag,
-    amount: w.amount.toString(),
+    amount: encodeBigIntForWire(w.amount),
   };
 }
 
@@ -384,17 +407,17 @@ function serializeEnvelope(e: Envelope): Record<string, unknown> {
     signer: e.signer,
     questionId: e.qid,
     action: e.action,
-    nonce: e.nonce.toString(),
+    nonce: encodeBigIntForWire(e.nonce),
     expiresAt: Number(e.expiresAt),
     contentHash: e.contentHash,
     funds: {
       token: e.funds.token,
-      poolIn: e.funds.poolIn.toString(),
-      poolOut: e.funds.poolOut.toString(),
-      feeAmount: e.funds.feeAmount.toString(),
+      poolIn: encodeBigIntForWire(e.funds.poolIn),
+      poolOut: encodeBigIntForWire(e.funds.poolOut),
+      feeAmount: encodeBigIntForWire(e.funds.feeAmount),
       feeShareBps: e.funds.feeShareBps,
       feeShares: e.funds.feeShares,
-      stakeAmount: e.funds.stakeAmount.toString(),
+      stakeAmount: encodeBigIntForWire(e.funds.stakeAmount),
       stakeOp: e.funds.stakeOp,
     },
   };
