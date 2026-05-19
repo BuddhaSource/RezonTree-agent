@@ -202,7 +202,7 @@ export async function runSponsorFlow(
   // 4. Backend POST.
   const submitBody = {
     envelope: serializeEnvelope(envelope),
-    witness,
+    witness: serializeSponsorWitness(witness),
     signature,
   };
   const res = await fetch(`${p.baseUrl}/v1/quadphase/submit`, {
@@ -325,7 +325,7 @@ export async function runCosponsorFlow(
     },
     body: JSON.stringify({
       envelope: serializeEnvelope(envelope),
-      witness,
+      witness: serializeCosponsorWitness(witness),
       signature,
     }),
   });
@@ -349,6 +349,35 @@ export async function runCosponsorFlow(
 }
 
 // ─── Wire serialization ──────────────────────────────────────────────
+
+function serializeSponsorWitness(
+  w: import("../intents/sponsor-witness.js").SponsorWitness,
+): Record<string, unknown> {
+  return {
+    actionTag: w.actionTag,
+    title: w.title,
+    body: w.body,
+    criteria: w.criteria,
+    tags: w.tags,
+    oracle: w.oracle,
+    sponsorshipFloor: w.sponsorshipFloor.toString(),
+    commitFee: w.commitFee.toString(),
+    voteFee: w.voteFee.toString(),
+    stakeFloor: w.stakeFloor.toString(),
+    stakeBasisPoints: w.stakeBasisPoints,
+    fundingDeadline: w.fundingDeadline.toString(),
+    noSolutionGracePeriod: w.noSolutionGracePeriod.toString(),
+  };
+}
+
+function serializeCosponsorWitness(
+  w: import("../intents/cosponsor-witness.js").CosponsorWitness,
+): Record<string, unknown> {
+  return {
+    actionTag: w.actionTag,
+    amount: w.amount.toString(),
+  };
+}
 
 function serializeEnvelope(e: Envelope): Record<string, unknown> {
   return {
