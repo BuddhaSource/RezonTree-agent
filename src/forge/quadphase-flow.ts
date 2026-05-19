@@ -43,6 +43,15 @@ import {
 import { buildSponsorWitness } from "../intents/sponsor-witness.js";
 import { buildCosponsorWitness } from "../intents/cosponsor-witness.js";
 import {
+  buildCommitWitness,
+  type CommitWitness,
+} from "../intents/commit-witness.js";
+import {
+  buildVoteWitness,
+  type Allocation,
+  type VoteWitness,
+} from "../intents/vote-witness.js";
+import {
   broadcastSponsorSubmit,
   broadcastSubmit,
 } from "./quadphase-broadcast.js";
@@ -348,6 +357,253 @@ export async function runCosponsorFlow(
   return result;
 }
 
+// ─── Commit flow ─────────────────────────────────────────────────────
+
+export interface CommitFlowParams {
+  baseUrl: string;
+  bearerToken: string;
+  signer: Address;
+  qid: Hex;
+  nonce: bigint;
+  expiresAt: bigint;
+  forgeAddress: Address;
+  chainId: number;
+
+  // CommitWitness fields.
+  solutionBody: string;
+  references: string[];
+
+  // Funds shape — Commit requires feeAmount > 0, stakeAmount > 0,
+  // stakeOp = Lock, poolIn = 0, poolOut = 0. feeShares MUST mirror the
+  // question's frozen q.feeShares (basisPoints sum to 10000).
+  token: Address;
+  feeAmount: bigint;
+  stakeAmount: bigint;
+  feeShareBps: number;
+  feeShares: FeeShare[];
+
+  walletClient: WalletClient;
+  privateKey: Hex;
+}
+
+export interface CommitFlowResult {
+  intentHash: Hex;
+  signature: Hex;
+  envelope: Envelope;
+  backendStatus?: string;
+  txHash?: Hex;
+}
+
+/**
+ * Runs the commit flow end-to-end. The chain entry point is
+ * `submit(env, sig)` — no witness bytes (Commit's witness lives off-
+ * chain; the chain only sees contentHash + envelope).
+ */
+export async function runCommitFlow(
+  p: CommitFlowParams,
+): Promise<CommitFlowResult> {
+  const { witness, contentHash } = buildCommitWitness({
+    solutionBody: p.solutionBody,
+    references: p.references,
+  });
+  const funds: Funds = {
+    token: p.token,
+    poolIn: 0n,
+    poolOut: 0n,
+    feeAmount: p.feeAmount,
+    feeShareBps: p.feeShareBps,
+    feeShares: p.feeShares,
+    stakeAmount: p.stakeAmount,
+    stakeOp: StakeOp.Lock,
+  };
+  const envelope: Envelope = {
+    signer: p.signer,
+    qid: p.qid,
+    action: ActionTag.Commit,
+    nonce: p.nonce,
+    expiresAt: p.expiresAt,
+    contentHash,
+    funds,
+  };
+  const typedData = buildEnvelopeForSigning({
+    envelope,
+    chainId: p.chainId,
+    forgeAddress: p.forgeAddress,
+  });
+  const account = privateKeyToAccount(p.privateKey);
+  const signature = (await account.signTypedData({
+    domain: typedData.domain,
+    types: typedData.types,
+    primaryType: typedData.primaryType,
+    message: typedData.message as never,
+  })) as Hex;
+
+  const result: CommitFlowResult = {
+    intentHash: "0x" as Hex,
+    signature,
+    envelope,
+  };
+
+  const res = await fetch(`${p.baseUrl}/v1/quadphase/submit`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${p.bearerToken}`,
+      "Prefer": "return=minimal",
+    },
+    body: stringifyWithBigInts({
+      envelope: serializeEnvelope(envelope),
+      witness: serializeCommitWitness(witness),
+      signature,
+    }),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(
+      `runCommitFlow: POST /v1/quadphase/submit failed: HTTP ${res.status} ${res.statusText}: ${text}`,
+    );
+  }
+  const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
+  result.intentHash = (parsed.intentHash ?? "0x") as Hex;
+  result.backendStatus = parsed.status;
+
+  const txHash = await broadcastSubmit(p.walletClient, {
+    forgeAddress: p.forgeAddress,
+    envelope,
+    signature,
+  });
+  result.txHash = txHash;
+  return result;
+}
+
+// ─── Vote flow ───────────────────────────────────────────────────────
+
+export interface VoteFlowParams {
+  baseUrl: string;
+  bearerToken: string;
+  signer: Address;
+  qid: Hex;
+  nonce: bigint;
+  expiresAt: bigint;
+  forgeAddress: Address;
+  chainId: number;
+
+  // VoteWitness fields. `allocations[].solutionId` is the on-chain
+  // solutionId — i.e. the SolutionCommitted event's intent_hash. `salt`
+  // is the server-issued voteSalt from preflight (mixed into
+  // allocationsHash to defeat rainbow-table enumeration).
+  allocations: Allocation[];
+  voteSalt: Hex;
+  /** Server-issued HMAC token bound to (salt, signer, qid, expiresAt).
+   *  Posted alongside envelope/witness/signature; the backend re-binds
+   *  before persisting. NOT part of the signed envelope. */
+  voteSaltToken: Hex;
+
+  // Funds shape — Vote requires feeAmount > 0, stakeAmount > 0,
+  // stakeOp = Lock, poolIn = 0, poolOut = 0. feeShares MUST mirror
+  // q.feeShares.
+  token: Address;
+  feeAmount: bigint;
+  stakeAmount: bigint;
+  feeShareBps: number;
+  feeShares: FeeShare[];
+
+  walletClient: WalletClient;
+  privateKey: Hex;
+}
+
+export interface VoteFlowResult {
+  intentHash: Hex;
+  signature: Hex;
+  envelope: Envelope;
+  backendStatus?: string;
+  txHash?: Hex;
+}
+
+/**
+ * Runs the vote flow end-to-end. Chain entry is `submit(env, sig)`.
+ * The voteSaltToken rides outside the signed envelope — it's a
+ * server-issued artifact the backend re-binds to the bearer wallet
+ * before persisting (Audit-A5 HIGH gate).
+ */
+export async function runVoteFlow(
+  p: VoteFlowParams,
+): Promise<VoteFlowResult> {
+  const { witness, contentHash } = buildVoteWitness({
+    allocations: p.allocations,
+    salt: p.voteSalt,
+  });
+  const funds: Funds = {
+    token: p.token,
+    poolIn: 0n,
+    poolOut: 0n,
+    feeAmount: p.feeAmount,
+    feeShareBps: p.feeShareBps,
+    feeShares: p.feeShares,
+    stakeAmount: p.stakeAmount,
+    stakeOp: StakeOp.Lock,
+  };
+  const envelope: Envelope = {
+    signer: p.signer,
+    qid: p.qid,
+    action: ActionTag.Vote,
+    nonce: p.nonce,
+    expiresAt: p.expiresAt,
+    contentHash,
+    funds,
+  };
+  const typedData = buildEnvelopeForSigning({
+    envelope,
+    chainId: p.chainId,
+    forgeAddress: p.forgeAddress,
+  });
+  const account = privateKeyToAccount(p.privateKey);
+  const signature = (await account.signTypedData({
+    domain: typedData.domain,
+    types: typedData.types,
+    primaryType: typedData.primaryType,
+    message: typedData.message as never,
+  })) as Hex;
+
+  const result: VoteFlowResult = {
+    intentHash: "0x" as Hex,
+    signature,
+    envelope,
+  };
+
+  const res = await fetch(`${p.baseUrl}/v1/quadphase/submit`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${p.bearerToken}`,
+      "Prefer": "return=minimal",
+    },
+    body: stringifyWithBigInts({
+      envelope: serializeEnvelope(envelope),
+      witness: serializeVoteWitness(witness),
+      signature,
+      voteSaltToken: p.voteSaltToken,
+    }),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(
+      `runVoteFlow: POST /v1/quadphase/submit failed: HTTP ${res.status} ${res.statusText}: ${text}`,
+    );
+  }
+  const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
+  result.intentHash = (parsed.intentHash ?? "0x") as Hex;
+  result.backendStatus = parsed.status;
+
+  const txHash = await broadcastSubmit(p.walletClient, {
+    forgeAddress: p.forgeAddress,
+    envelope,
+    signature,
+  });
+  result.txHash = txHash;
+  return result;
+}
+
 // ─── Wire serialization ──────────────────────────────────────────────
 
 // Go's stdlib JSON unmarshals *big.Int from JSON NUMBERS, not strings.
@@ -399,6 +655,25 @@ function serializeCosponsorWitness(
   return {
     actionTag: w.actionTag,
     amount: encodeBigIntForWire(w.amount),
+  };
+}
+
+function serializeCommitWitness(w: CommitWitness): Record<string, unknown> {
+  return {
+    actionTag: w.actionTag,
+    solutionBody: w.solutionBody,
+    references: w.references,
+  };
+}
+
+function serializeVoteWitness(w: VoteWitness): Record<string, unknown> {
+  return {
+    actionTag: w.actionTag,
+    allocations: w.allocations.map((a) => ({
+      solutionId: a.solutionId,
+      basisPoints: a.basisPoints,
+    })),
+    salt: w.salt,
   };
 }
 

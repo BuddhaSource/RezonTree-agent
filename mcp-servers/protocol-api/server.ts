@@ -26,30 +26,11 @@ import { z } from "zod";
 
 import type { Address, Hex } from "viem";
 import { createPublicClient, formatUnits, http, parseUnits } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 import { deriveAgentWallet } from "../../src/wallet/derive.js";
 import { loadLoginDomain } from "../../src/wallet/domain.js";
 import { signWalletLoginIntent } from "../../src/wallet/signer.js";
-import {
-  buildSponsorFundRequestBody,
-  buildSponsorIntentTypedData,
-  parseAmountToWei,
-} from "../../src/intents/sponsor-intent.js";
-import {
-  buildCosponsorFundRequestBody,
-  buildCosponsorIntentTypedData,
-} from "../../src/intents/cosponsor-intent.js";
-import {
-  buildCommitIntentTypedData,
-  buildSubmitCommitRequestBody,
-  computeContentHash,
-} from "../../src/intents/commit-intent.js";
-import {
-  type Allocation,
-  buildSubmitVoteIntentRequestBody,
-  buildVoteIntentTypedData,
-  computeAllocationsHash,
-} from "../../src/intents/vote-intent.js";
+import { parseAmountToWei } from "../../src/intents/sponsor-intent.js";
+import { canonicalStringify } from "../../src/intents/commit-intent.js";
 import type {
   CommitPreflight,
   FundPreflight,
@@ -58,17 +39,14 @@ import type {
 import {
   awaitReceipt,
   broadcastClaim,
-  broadcastCommit,
-  broadcastCosponsor,
-  broadcastSponsor,
-  broadcastVote,
   makeAgentWalletClient,
 } from "../../src/forge/client.js";
-import { signUSDCPermit } from "../../src/forge/permit.js";
 import {
   ensureUsdcAllowance,
+  runCommitFlow,
   runCosponsorFlow,
   runSponsorFlow,
+  runVoteFlow,
 } from "../../src/forge/quadphase-flow.js";
 
 const API_URL =
@@ -553,7 +531,7 @@ const server = new McpServer({
 
 server.tool(
   "submit_solution",
-  "Submit a solution via the Router signed-intent flow: preflight → sign CommitIntent → POST /commit → POST /solutions body → USDC permit → Router.commitSolution() on-chain. Returns solution_id, intent_hash, and the chain tx hash. The backend row flips pending→confirmed when the HTTP poller ingests the SolutionCommitted event (~3s).",
+  "Submit a solution via the Quadphase v2 unified-envelope flow: preflight → build CommitWitness from {body, reasoning_tree, claims} → sign Envelope(action=Commit) → POST /v1/quadphase/submit (backend stages solution row + signed_intents row in one tx) → ensure USDC allowance → broadcast BountyForge.submit(env, sig). Returns intent_hash + commit_tx_hash. Backend row flips pending→confirmed when Ponder ingests the chain event (~3s).",
   {
     question_id: z.string().describe("The question ID to solve"),
     body: z
@@ -601,22 +579,32 @@ server.tool(
           `/v1/questions/${params.question_id}/solutions/draft?submitter=${address}`,
         )) as CommitPreflight;
 
+        const feeAmount = BigInt(pre.feeAmount);
+        const stakeAmount = BigInt(pre.stakeAmount);
+
         await assertSpendableUSDC(
           publicClient,
           address,
-          BigInt(pre.feeAmount) + BigInt(pre.stakeAmount),
+          feeAmount + stakeAmount,
           "submit_solution",
           pre.caller ?? null,
         );
 
-        // Backend hashes the FULL solution body ({body, reasoningTree,
-        // claims}) into intent.contentHash via canonicalStringify; the
-        // /solutions POST below must carry the same bytes so the hashes
-        // align. Hashing just `params.body` (a string) is wrong — backend
-        // expects the structured object hash. Wire shape is camelCase
-        // (R-NAME-MATCHES-CHAIN); map MCP-snake params to the backend
-        // wire fields here.
-        const contentHash = computeContentHash({
+        // BountyForge uses safeTransferFrom for fee + stake escrow — no
+        // inline EIP-2612 permit. One MAX_UINT256 approve per wallet/forge.
+        await ensureUsdcAllowance(walletClient, publicClient, {
+          usdc: USDC_ADDRESS,
+          forge: env.router,
+          owner: address,
+          required: feeAmount + stakeAmount,
+        });
+
+        // CommitWitness.solutionBody is a canonical JSON string of the
+        // structured body ({body, reasoningTree, claims}) — same shape the
+        // backend canonicalises into solutions.body. References array is
+        // empty at this surface (the agent input has no separate references
+        // field; reasoningTree + claims already cite their support).
+        const solutionBodyJSON = canonicalStringify({
           body: params.body,
           reasoningTree: params.reasoning_tree,
           claims: params.claims.map((c) => ({
@@ -626,78 +614,58 @@ server.tool(
             falsifiableBy: c.falsifiable_by,
           })),
         });
-        const td = buildCommitIntentTypedData({
-          preflight: pre,
-          submitter: address,
-          contentHash,
-        });
-        const intentSig = (await privateKeyToAccount(privateKey).signTypedData(
-          td,
-        )) as Hex;
 
-        const commitResp = (await apiCall(
-          "POST",
-          `/v1/questions/${params.question_id}/commit`,
-          buildSubmitCommitRequestBody({ typedData: td, signature: intentSig }),
-        )) as { intentHash: string };
+        const bearer = await getAgentToken();
+        const expiresAt = BigInt(
+          pre.recommendedExpiresAt ?? Math.floor(Date.now() / 1000) + 300,
+        );
+        const nonce = BigInt(pre.nonce ?? "0");
+        const platformFeeRecipient =
+          (pre.platformFeeRecipient as `0x${string}` | undefined) ??
+          ("0x0000000000000000000000000000000000000000" as `0x${string}`);
 
-        // From here on the backend holds a staged intent_signatures row.
-        // Any partial failure leaves the agent with a pending intent it
-        // can recover via rezontree_me_list_pending (hosted MCP). Surface
-        // intentHash so the agent has a recovery handle and DOES NOT
-        // re-call submit_solution (which would either conflict on the
-        // unique intent_hash or burn another nonce on a fresh intent).
         try {
-          const solResp = (await apiCall(
-            "POST",
-            `/v1/questions/${params.question_id}/solutions`,
-            {
-              intentHash: commitResp.intentHash,
-              body: params.body,
-              reasoningTree: params.reasoning_tree,
-              claims: params.claims.map((c) => ({
-                criterionId: c.criterion_id,
-                value: c.value,
-                argument: c.argument,
-                falsifiableBy: c.falsifiable_by,
-              })),
-            },
-          )) as { id: string };
-
-          const permitValue =
-            BigInt(td.message.feeAmount) + BigInt(td.message.stakeAmount);
-          const permit = await signUSDCPermit(walletClient, publicClient, {
-            usdc: USDC_ADDRESS,
-            spender: env.router,
-            value: permitValue,
-            deadline: td.message.expiresAt,
-          });
-
-          const txHash = await broadcastCommit(walletClient, {
+          const result = await runCommitFlow({
+            baseUrl: API_URL,
+            bearerToken: bearer,
+            signer: address,
+            qid: pre.qid as `0x${string}`,
+            nonce,
+            expiresAt,
             forgeAddress: env.router,
-            intent: td.message,
-            intentSig,
-            permit,
+            chainId: pre.chainId ?? CHAIN_ID,
+            solutionBody: solutionBodyJSON,
+            references: [],
+            token: pre.token.contractAddress as `0x${string}`,
+            feeAmount,
+            stakeAmount,
+            // q.feeShareBps is frozen by the first sponsor; current
+            // questions sponsor with bps=0 + a single platform-recipient
+            // share (matches the sponsor cutover). Commit must mirror.
+            feeShareBps: 0,
+            feeShares: [
+              { recipient: platformFeeRecipient, basisPoints: 10000 },
+            ],
+            walletClient,
+            privateKey,
           });
-          await awaitReceipt(publicClient, txHash);
+          await awaitReceipt(publicClient, result.txHash!);
 
           return {
-            solution_id: solResp.id,
-            intent_hash: commitResp.intentHash,
-            commit_tx_hash: txHash,
-            fee_paid: td.message.feeAmount.toString(),
-            stake_paid: td.message.stakeAmount.toString(),
-            note: "Backend row flips pending→confirmed within one HTTPPoller tick (~2s).",
+            intent_hash: result.intentHash,
+            commit_tx_hash: result.txHash!,
+            fee_paid: feeAmount.toString(),
+            stake_paid: stakeAmount.toString(),
+            note: "Backend row flips pending→confirmed within one Ponder tick (~3s).",
           };
         } catch (err) {
           if (err instanceof StructuredMCPError) throw err;
           throw new StructuredMCPError({
             code: "SUBMIT_SOLUTION_PARTIAL_FAILURE",
-            message: `submit_solution: CommitIntent ${commitResp.intentHash} was staged on the backend, but a later step failed: ${err instanceof Error ? err.message : String(err)}`,
+            message: `submit_solution: Commit envelope flow failed: ${err instanceof Error ? err.message : String(err)}`,
             action:
-              "Your CommitIntent is staged. Call rezontree_me_list_pending (hosted MCP) to inspect — if lifecyclePhase='rejected_revalidation', Stage-4 will not confirm it and lifecycleReason explains why (fix the input, re-derive a fresh intentHash, retry). If status='pending' and the chain tx already broadcast, wait one HTTPPoller tick (~2s). If the tx never broadcast, the intent expires automatically (default ~4 min). Do NOT re-call submit_solution; it would either duplicate or burn a fresh nonce.",
+              "If the backend POST succeeded but broadcast failed, the staged intent will expire automatically (default ~5 min). Call rezontree_me_list_pending (hosted MCP) to inspect lifecycle. Do NOT re-call submit_solution before the intent expires; it would burn a fresh nonce.",
             details: {
-              intentHash: commitResp.intentHash,
               questionId: params.question_id,
             },
           });
@@ -711,7 +679,7 @@ server.tool(
 
 server.tool(
   "cast_vote",
-  "Cast a vote via the Router signed-intent flow: preflight → canonical allocations hash → sign VoteIntent → POST /vote-intent (backend writes votes row) → USDC permit → Router.castVote() on-chain. Stake (1 USDC default) is locked by Router and refunded at settlement; wrong-voter stakes are slashed into the pool.",
+  "Cast a vote via the Quadphase v2 unified-envelope flow: preflight (returns voteSalt + voteSaltToken) → build VoteWitness(allocations, salt) → sign Envelope(action=Vote) → POST /v1/quadphase/submit (backend re-binds the salt token + stages votes row + vote_allocations rows in one tx) → ensure USDC allowance → broadcast BountyForge.submit(env, sig). Stake is locked by the forge and refunded at settlement; wrong-voter stakes are slashed into the pool. allocations[].conviction_points use the 100-point budget and are scaled to basis points (×100) on the envelope.",
   {
     question_id: z.string().describe("The question ID"),
     allocations: z
@@ -733,13 +701,6 @@ server.tool(
     const env = requireRouterEnv();
     const { walletClient, publicClient, privateKey, address } = getClients();
 
-    // Canonicalise allocations for the intent signer
-    // (signer.Allocation: {solutionId, points}).
-    const canonicalAllocs: Allocation[] = params.allocations.map((a) => ({
-      solutionId: a.solution_id,
-      points: a.conviction_points,
-    }));
-
     return withIdempotency(
       "cast_vote",
       { addr: address, pid: params.question_id, allocs: params.allocations },
@@ -760,70 +721,102 @@ server.tool(
         }
         const voteSalt = pre.voteSalt as `0x${string}`;
         const voteSaltToken = pre.voteSaltToken as `0x${string}`;
-        const allocationsHash = computeAllocationsHash(canonicalAllocs, voteSalt);
-        // Bind the intent's expiresAt to the salt's expiresAt —
-        // otherwise the HMAC over (voter, salt, expiresAt) embedded
-        // in voteSaltToken won't verify against the intent we sign,
-        // and the backend rejects with "voteSaltToken rejected".
-        const td = buildVoteIntentTypedData({
-          preflight: pre,
-          voter: address,
-          allocationsHash,
-          expiresAtSeconds: pre.voteSaltExpiresAt,
-        });
-        const intentSig = (await privateKeyToAccount(privateKey).signTypedData(
-          td,
-        )) as Hex;
 
-        const voteResp = (await apiCall(
-          "POST",
-          `/v1/questions/${params.question_id}/vote-intent`,
-          buildSubmitVoteIntentRequestBody({
-            typedData: td,
-            allocations: canonicalAllocs,
-            signature: intentSig,
+        // Convert MCP conviction-points (sum=100 budget) → basis-points
+        // (sum=10000). Each input point becomes 100 bps. Rejects fractional
+        // points loudly — the agent must allocate whole points.
+        let bpsSum = 0;
+        const v2Allocations = params.allocations.map((a) => {
+          if (!Number.isInteger(a.conviction_points)) {
+            throw new StructuredMCPError({
+              code: "VOTE_FRACTIONAL_POINTS",
+              message: `Allocation for ${a.solution_id} has fractional conviction_points (${a.conviction_points}); v2 requires whole-integer points.`,
+              action:
+                "Round to whole conviction_points before calling cast_vote. The 100-point budget maps directly to 10000 basis points.",
+            });
+          }
+          const bps = a.conviction_points * 100;
+          bpsSum += bps;
+          return {
+            solutionId: a.solution_id as `0x${string}`,
+            basisPoints: bps,
+          };
+        });
+        if (bpsSum !== 10000) {
+          throw new StructuredMCPError({
+            code: "VOTE_BPS_SUM_MISMATCH",
+            message: `Allocation basisPoints sum to ${bpsSum}; must equal 10000 (conviction_points must sum to 100).`,
+            action:
+              "Rebalance allocations[].conviction_points so they sum to exactly 100. Retry.",
+          });
+        }
+
+        const feeAmount = BigInt(pre.feeAmount);
+        const stakeAmount = BigInt(pre.stakeAmount);
+
+        await assertSpendableUSDC(
+          publicClient,
+          address,
+          feeAmount + stakeAmount,
+          "cast_vote",
+          pre.caller ?? null,
+        );
+        await ensureUsdcAllowance(walletClient, publicClient, {
+          usdc: USDC_ADDRESS,
+          forge: env.router,
+          owner: address,
+          required: feeAmount + stakeAmount,
+        });
+
+        const bearer = await getAgentToken();
+        // The vote-salt HMAC binds (voter, salt, qid, expiresAt) — the
+        // envelope's expiresAt MUST equal voteSaltExpiresAt or the
+        // backend rejects with "voteSaltToken rejected".
+        const expiresAt = BigInt(pre.voteSaltExpiresAt);
+        const nonce = BigInt(pre.nonce ?? "0");
+        const platformFeeRecipient =
+          (pre.platformFeeRecipient as `0x${string}` | undefined) ??
+          ("0x0000000000000000000000000000000000000000" as `0x${string}`);
+
+        try {
+          const result = await runVoteFlow({
+            baseUrl: API_URL,
+            bearerToken: bearer,
+            signer: address,
+            qid: pre.qid as `0x${string}`,
+            nonce,
+            expiresAt,
+            forgeAddress: env.router,
+            chainId: pre.chainId ?? CHAIN_ID,
+            allocations: v2Allocations,
             voteSalt,
             voteSaltToken,
-          }),
-        )) as { intentHash: string };
-
-        // Backend now holds a staged votes row + intent_signatures row.
-        // Mid-flight failure leaves a recoverable pending intent — surface
-        // intentHash so the agent recovers via rezontree_me_list_pending
-        // (hosted MCP) instead of re-calling cast_vote (which would either
-        // conflict on intent_hash or burn a fresh nonce on duplicate work).
-        try {
-          const permitValue =
-            BigInt(td.message.feeAmount) + BigInt(td.message.stakeAmount);
-          const permit = await signUSDCPermit(walletClient, publicClient, {
-            usdc: USDC_ADDRESS,
-            spender: env.router,
-            value: permitValue,
-            deadline: td.message.expiresAt,
+            token: pre.token.contractAddress as `0x${string}`,
+            feeAmount,
+            stakeAmount,
+            feeShareBps: 0,
+            feeShares: [
+              { recipient: platformFeeRecipient, basisPoints: 10000 },
+            ],
+            walletClient,
+            privateKey,
           });
-
-          const txHash = await broadcastVote(walletClient, {
-            forgeAddress: env.router,
-            intent: td.message,
-            intentSig,
-            permit,
-          });
-          await awaitReceipt(publicClient, txHash);
+          await awaitReceipt(publicClient, result.txHash!);
 
           return {
-            intent_hash: voteResp.intentHash,
-            vote_tx_hash: txHash,
-            stake_paid: td.message.stakeAmount.toString(),
+            intent_hash: result.intentHash,
+            vote_tx_hash: result.txHash!,
+            stake_paid: stakeAmount.toString(),
+            fee_paid: feeAmount.toString(),
           };
         } catch (err) {
           if (err instanceof StructuredMCPError) throw err;
           throw new StructuredMCPError({
             code: "CAST_VOTE_PARTIAL_FAILURE",
-            message: `cast_vote: VoteIntent ${voteResp.intentHash} was staged on the backend, but the chain broadcast failed: ${err instanceof Error ? err.message : String(err)}`,
+            message: `cast_vote: Vote envelope flow failed: ${err instanceof Error ? err.message : String(err)}`,
             action:
-              "Your VoteIntent is staged. Call rezontree_me_list_pending (hosted MCP) to inspect — if lifecyclePhase='rejected_revalidation', Stage-4 will not confirm it and lifecycleReason explains why (fix the input, re-derive a fresh intentHash, retry). If confirmation_status='confirmed', a tx landed and reconciliation succeeded. Otherwise the intent expires automatically (default ~4 min). Do NOT re-call cast_vote.",
+              "If the backend POST succeeded but broadcast failed, the staged intent will expire automatically. Call rezontree_me_list_pending (hosted MCP) to inspect lifecycle. Do NOT re-call cast_vote before the intent expires; it would burn a fresh nonce.",
             details: {
-              intentHash: voteResp.intentHash,
               questionId: params.question_id,
             },
           });

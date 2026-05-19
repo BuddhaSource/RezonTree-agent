@@ -75,12 +75,6 @@ const ALLOWED_API_PATHS: Array<RegExp> = [
   /^\/v1\/questions\/[^/]+\/solutions\/draft(\?|$)/,
   /^\/v1\/questions\/[^/]+\/votes\/draft(\?|$)/,
   /^\/v1\/questions\/[^/]+\/sponsorships\/draft(\?|$)/,
-  // Signed envelopes — POST after local sign, before broadcast.
-  /^\/v1\/questions\/[^/]+\/commit$/,
-  /^\/v1\/questions\/[^/]+\/vote-intent$/,
-  /^\/v1\/questions\/[^/]+\/sponsorships$/,
-  // Content row keyed to a staged intent_hash — POST as part of submit_solution.
-  /^\/v1\/questions\/[^/]+\/solutions$/,
   // Atomic create+sponsor — only inside post_question composite.
   /^\/v1\/questions$/,
   // Question detail — used by fund_question's sponsor-mode orphan-draft
