@@ -65,6 +65,11 @@ import {
   makeAgentWalletClient,
 } from "../../src/forge/client.js";
 import { signUSDCPermit } from "../../src/forge/permit.js";
+import {
+  ensureUsdcAllowance,
+  runCosponsorFlow,
+  runSponsorFlow,
+} from "../../src/forge/quadphase-flow.js";
 
 const API_URL =
   process.env.RT_AGENT_BACKEND_URL || "http://localhost:8080";
@@ -861,125 +866,130 @@ server.tool(
         )) as FundPreflight;
 
         const amountWei = parseAmountToWei(params.amount, pre.token.decimals);
-        const account = privateKeyToAccount(privateKey);
 
-        // Per-contribution feeShares default to none — the sponsor's
-        // share of pool revenue is captured implicitly by the contract's
-        // first-sponsor accounting. Power users wanting custom splits
-        // can call /v1/questions/:id/sponsorships directly.
-        // Capture intentHash after backend POST succeeds so we can
-        // emit a structured FUND_QUESTION_PARTIAL_FAILURE on any
-        // subsequent chain-side failure (permit sign, broadcast, or
-        // receipt wait). Without this, a mid-broadcast crash leaves
-        // an orphan pending intent the agent can't find by ID. Mirrors
-        // SUBMIT_SOLUTION_PARTIAL_FAILURE / CAST_VOTE_PARTIAL_FAILURE.
-        let stagedIntentHash: string | undefined;
+        // BountyForge moved off the inline EIP-2612 permit — escrow uses
+        // safeTransferFrom. Approve once per wallet/forge pair.
+        await ensureUsdcAllowance(walletClient, publicClient, {
+          usdc: USDC_ADDRESS,
+          forge: env.router,
+          owner: address,
+          required: amountWei,
+        });
+
+        const bearer = await getAgentToken();
+        const expiresAt = BigInt(
+          pre.recommendedExpiresAt ?? Math.floor(Date.now() / 1000) + 300,
+        );
+        const nonce = BigInt(pre.nonce ?? "0");
+        const feeShareBps = Number(pre.feeShareBps ?? "0");
+        const platformFeeRecipient =
+          (pre.platformFeeRecipient as `0x${string}` | undefined) ??
+          ("0x0000000000000000000000000000000000000000" as `0x${string}`);
+
         const fundResp = await (async () => {
           if (pre.mode === "sponsor") {
-            // Omit feeShareBps + feeShares so the builder fills the
-            // chain-valid default (0 bps, single self-recipient at 100%).
-            // Chain rejects empty feeShares regardless of feeShareBps;
-            // see sponsor-intent.ts buildSponsorIntentTypedData.
-            const td = buildSponsorIntentTypedData({
-              preflight: pre,
-              sponsor: address,
-              amountWei,
-              ...(params.sponsorship_floor
-                ? { sponsorshipFloor: parseAmountToWei(params.sponsorship_floor, pre.token.decimals) }
-                : {}),
+            // Sponsor flow re-uses the question's title + body from the
+            // backend so the on-chain content hash matches what would be
+            // emitted via post_question. Fetch the draft row to populate
+            // SponsorWitness fields.
+            const qDetail = (await apiCall(
+              "GET",
+              `/v1/questions/${params.question_id}`,
+            )) as {
+              id: string;
+              qid: string;
+              title: string;
+              description: string;
+              tags?: string[];
+              successCriteria?: unknown[];
+            };
+            const sponsorshipFloor = params.sponsorship_floor
+              ? parseAmountToWei(params.sponsorship_floor, pre.token.decimals)
+              : BigInt(
+                  pre.sponsorshipFloor ?? pre.recommendedSponsorshipFloor ?? "0",
+                );
+            const commitFee = BigInt(pre.commitFee ?? "0");
+            const voteFee = BigInt(pre.voteFee ?? "0");
+            const stakeFloor = BigInt(pre.stakeFloor ?? "0");
+            const stakeBasisPoints = Number(pre.stakeBasisPoints ?? "0");
+            const noSolutionGracePeriod = BigInt(
+              pre.noSolutionGracePeriod ?? "86400",
+            );
+            const fundingDeadline = BigInt(
+              pre.recommendedFundingDeadline ??
+                Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
+            );
+            const oracle =
+              (pre.oracle as `0x${string}` | undefined) ?? address;
+            const result = await runSponsorFlow({
+              baseUrl: API_URL,
+              bearerToken: bearer,
+              signer: address,
+              qid: pre.qid as `0x${string}`,
+              nonce,
+              expiresAt,
+              forgeAddress: env.router,
+              chainId: pre.chainId ?? CHAIN_ID,
+              title: qDetail.title,
+              body: qDetail.description,
+              criteria: JSON.stringify(qDetail.successCriteria ?? []),
+              tags: qDetail.tags ?? [],
+              oracle,
+              sponsorshipFloor,
+              commitFee,
+              voteFee,
+              stakeFloor,
+              stakeBasisPoints,
+              fundingDeadline,
+              noSolutionGracePeriod,
+              token: pre.token.contractAddress as `0x${string}`,
+              amount: amountWei,
+              feeAmount: 0n,
+              feeShareBps,
+              feeShares: [
+                { recipient: platformFeeRecipient, basisPoints: 10000 },
+              ],
+              walletClient,
+              privateKey,
             });
-            const intentSig = (await account.signTypedData(td)) as Hex;
-
-            const resp = (await apiCall(
-              "POST",
-              `/v1/questions/${params.question_id}/sponsorships`,
-              buildSponsorFundRequestBody({ typedData: td, signature: intentSig }),
-            )) as { intentHash: string; contributionId: string };
-            stagedIntentHash = resp.intentHash;
-
-            try {
-              const permit = await signUSDCPermit(walletClient, publicClient, {
-                usdc: USDC_ADDRESS,
-                spender: env.router,
-                value: amountWei,
-                deadline: td.message.expiresAt,
-              });
-
-              const txHash = await broadcastSponsor(walletClient, {
-                forgeAddress: env.router,
-                intent: td.message,
-                intentSig,
-                permit,
-              });
-              await awaitReceipt(publicClient, txHash);
-              return { ...resp, txHash, mode: "sponsor" as const };
-            } catch (err) {
-              if (err instanceof StructuredMCPError) throw err;
-              throw new StructuredMCPError({
-                code: "FUND_QUESTION_PARTIAL_FAILURE",
-                message: `fund_question: SponsorIntent ${stagedIntentHash} was staged on the backend, but a later step failed: ${err instanceof Error ? err.message : String(err)}`,
-                action:
-                  "Your SponsorIntent is staged. Call rezontree_me_list_pending (hosted MCP) to inspect — if lifecyclePhase='rejected_revalidation', the backend will not confirm it; check lifecycleReason for the diagnosis. If status='pending' and the chain tx already broadcast, wait one HTTPPoller tick (~2s). If the tx never broadcast, the intent expires automatically (default ~4 min). Do NOT re-call fund_question; it would either duplicate or burn the nonce.",
-                details: {
-                  intentHash: stagedIntentHash,
-                  questionId: params.question_id,
-                  mode: "sponsor",
-                },
-              });
-            }
+            await awaitReceipt(publicClient, result.txHash!);
+            return {
+              intentHash: result.intentHash,
+              txHash: result.txHash!,
+              mode: "sponsor" as const,
+            };
           }
 
           // mode === "cosponsor"
-          // Same default-omission pattern as sponsor branch above.
-          const td = buildCosponsorIntentTypedData({
-            preflight: pre,
-            sponsor: address,
-            amountWei,
+          const result = await runCosponsorFlow({
+            baseUrl: API_URL,
+            bearerToken: bearer,
+            signer: address,
+            qid: pre.qid as `0x${string}`,
+            nonce,
+            expiresAt,
+            forgeAddress: env.router,
+            chainId: pre.chainId ?? CHAIN_ID,
+            token: pre.token.contractAddress as `0x${string}`,
+            amount: amountWei,
+            feeAmount: 0n,
+            feeShareBps,
+            feeShares: [
+              { recipient: platformFeeRecipient, basisPoints: 10000 },
+            ],
+            walletClient,
+            privateKey,
           });
-          const intentSig = (await account.signTypedData(td)) as Hex;
-
-          const resp = (await apiCall(
-            "POST",
-            `/v1/questions/${params.question_id}/sponsorships`,
-            buildCosponsorFundRequestBody({ typedData: td, signature: intentSig }),
-          )) as { intentHash: string; contributionId: string };
-          stagedIntentHash = resp.intentHash;
-
-          try {
-            const permit = await signUSDCPermit(walletClient, publicClient, {
-              usdc: USDC_ADDRESS,
-              spender: env.router,
-              value: amountWei,
-              deadline: td.message.expiresAt,
-            });
-
-            const txHash = await broadcastCosponsor(walletClient, {
-              forgeAddress: env.router,
-              intent: td.message,
-              intentSig,
-              permit,
-            });
-            await awaitReceipt(publicClient, txHash);
-            return { ...resp, txHash, mode: "cosponsor" as const };
-          } catch (err) {
-            if (err instanceof StructuredMCPError) throw err;
-            throw new StructuredMCPError({
-              code: "FUND_QUESTION_PARTIAL_FAILURE",
-              message: `fund_question: CosponsorIntent ${stagedIntentHash} was staged on the backend, but a later step failed: ${err instanceof Error ? err.message : String(err)}`,
-              action:
-                "Your CosponsorIntent is staged. Call rezontree_me_list_pending (hosted MCP) to inspect — if lifecyclePhase='rejected_revalidation', the backend will not confirm it; check lifecycleReason for the diagnosis. If status='pending' and the chain tx already broadcast, wait one HTTPPoller tick (~2s). If the tx never broadcast, the intent expires automatically (default ~4 min). Do NOT re-call fund_question; it would either duplicate or burn the nonce.",
-              details: {
-                intentHash: stagedIntentHash,
-                questionId: params.question_id,
-                mode: "cosponsor",
-              },
-            });
-          }
+          await awaitReceipt(publicClient, result.txHash!);
+          return {
+            intentHash: result.intentHash,
+            txHash: result.txHash!,
+            mode: "cosponsor" as const,
+          };
         })();
 
         return {
           mode: fundResp.mode,
-          contribution_id: fundResp.contributionId,
           intent_hash: fundResp.intentHash,
           fund_tx_hash: fundResp.txHash,
           amount_wei: amountWei.toString(),
@@ -1401,7 +1411,7 @@ server.tool(
         // fund_question(question_id) to retry the sponsor leg without
         // re-running step 1.
         try {
-          // Step 2 — sponsor preflight.
+          // Step 2 — sponsor preflight (Quadphase v2 surface).
           const pre = (await apiCall(
             "GET",
             `/v1/questions/${created.id}/sponsorships/draft?sponsor=${address}`,
@@ -1416,58 +1426,96 @@ server.tool(
             });
           }
 
-          // Step 3 — build sponsor intent + sign.
+          // Step 3 — balance + allowance gates. BountyForge uses
+          // safeTransferFrom (no inline EIP-2612 permit); ensure the
+          // wallet has approved the forge address.
           const amountWei = parseAmountToWei(
             params.bounty_usd,
             pre.token.decimals,
           );
-
           await assertSpendableUSDC(
             publicClient,
             address,
             amountWei,
             "post_question",
           );
-
-          const td = buildSponsorIntentTypedData({
-            preflight: pre,
-            sponsor: address,
-            amountWei,
-          });
-          const intentSig = (await privateKeyToAccount(
-            privateKey,
-          ).signTypedData(td)) as Hex;
-
-          // Step 4 — POST signed intent to backend (stores pending row).
-          const fundResp = (await apiCall(
-            "POST",
-            `/v1/questions/${created.id}/sponsorships`,
-            buildSponsorFundRequestBody({
-              typedData: td,
-              signature: intentSig,
-            }),
-          )) as { intentHash: string };
-
-          // Step 5 — USDC permit + broadcast.
-          const permit = await signUSDCPermit(walletClient, publicClient, {
+          await ensureUsdcAllowance(walletClient, publicClient, {
             usdc: USDC_ADDRESS,
-            spender: env.router,
-            value: amountWei,
-            deadline: td.message.expiresAt,
+            forge: env.router,
+            owner: address,
+            required: amountWei,
           });
-          const txHash = await broadcastSponsor(walletClient, {
+
+          // Step 4 + 5 — single helper: builds witness, builds envelope,
+          // signs, POSTs /v1/quadphase/submit, then broadcasts
+          // sponsorSubmit(env, sig, witnessBytes) to the chain.
+          const bearer = await getAgentToken();
+          const sponsorshipFloor = BigInt(
+            pre.sponsorshipFloor ?? pre.recommendedSponsorshipFloor ?? "0",
+          );
+          const commitFee = BigInt(pre.commitFee ?? "0");
+          const voteFee = BigInt(pre.voteFee ?? "0");
+          const stakeFloor = BigInt(pre.stakeFloor ?? "0");
+          const stakeBasisPoints = Number(pre.stakeBasisPoints ?? "0");
+          const noSolutionGracePeriod = BigInt(
+            pre.noSolutionGracePeriod ?? "86400",
+          );
+          const fundingDeadline = BigInt(
+            pre.recommendedFundingDeadline ??
+              Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
+          );
+          const feeShareBps = Number(pre.feeShareBps ?? "0");
+          const platformFeeRecipient =
+            (pre.platformFeeRecipient as `0x${string}` | undefined) ??
+            ("0x0000000000000000000000000000000000000000" as `0x${string}`);
+          const expiresAt = BigInt(
+            pre.recommendedExpiresAt ?? Math.floor(Date.now() / 1000) + 300,
+          );
+          const nonce = BigInt(pre.nonce ?? "0");
+          const oracle =
+            (pre.oracle as `0x${string}` | undefined) ?? address;
+
+          const result = await runSponsorFlow({
+            baseUrl: API_URL,
+            bearerToken: bearer,
+            signer: address,
+            qid: pre.qid as `0x${string}`,
+            nonce,
+            expiresAt,
             forgeAddress: env.router,
-            intent: td.message,
-            intentSig,
-            permit,
+            chainId: pre.chainId ?? CHAIN_ID,
+            // Sponsor witness fields. Title + body are bound on-chain via
+            // contentHash so the chain can attest content immutability.
+            title: params.title,
+            body: params.description,
+            criteria: JSON.stringify(params.success_criteria),
+            tags: params.tags ?? [],
+            oracle,
+            sponsorshipFloor,
+            commitFee,
+            voteFee,
+            stakeFloor,
+            stakeBasisPoints,
+            fundingDeadline,
+            noSolutionGracePeriod,
+            // Funds the sponsor envelope binds.
+            token: pre.token.contractAddress as `0x${string}`,
+            amount: amountWei,
+            feeAmount: 0n,
+            feeShareBps,
+            feeShares: [
+              { recipient: platformFeeRecipient, basisPoints: 10000 },
+            ],
+            walletClient,
+            privateKey,
           });
-          await awaitReceipt(publicClient, txHash);
+          await awaitReceipt(publicClient, result.txHash!);
 
           return {
             question_id: created.id,
             qid: created.qid,
-            intent_hash: fundResp.intentHash,
-            sponsor_tx_hash: txHash,
+            intent_hash: result.intentHash,
+            sponsor_tx_hash: result.txHash,
             chain_pool_amount: amountWei.toString(),
             status: "sponsored",
             note: "Backend reconciler flips status draft→open + populates chain_pool_amount within 1 tick (~5s). Re-fetch via the hosted MCP (rezontree_questions_get_question) to confirm.",

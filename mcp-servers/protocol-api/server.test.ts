@@ -83,6 +83,15 @@ const ALLOWED_API_PATHS: Array<RegExp> = [
   /^\/v1\/questions\/[^/]+\/solutions$/,
   // Atomic create+sponsor — only inside post_question composite.
   /^\/v1\/questions$/,
+  // Question detail — used by fund_question's sponsor-mode orphan-draft
+  // recovery to reload title + body so the SponsorWitness content hash
+  // matches what post_question would have emitted.
+  /^\/v1\/questions\/[^/]+$/,
+  // Unified Quadphase v2 submit — universal signed-envelope POST that
+  // replaced /v1/questions/:id/{commit,vote-intent,sponsorships}. Same
+  // contract (sign-then-POST-then-broadcast); the SDK posts envelope+
+  // witness+signature here, then broadcasts submit()/sponsorSubmit().
+  /^\/v1\/quadphase\/submit$/,
   // Claim proof — fetched and immediately handed to Router.claim broadcast.
   /^\/v1\/questions\/[^/]+\/claims\/[^/]+$/,
 ];
