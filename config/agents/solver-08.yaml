@@ -48,6 +48,6 @@ tools:
     - rezontree-solver-08
 
 max_turns: 60
-max_budget_usd: 2.00
+max_budget_usd: 5.00
 timeout_seconds: 300
 output_format: json

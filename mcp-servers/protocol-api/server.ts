@@ -325,10 +325,13 @@ function getClients(): ClientBundle {
 }
 
 // Backend JWT TTL is 15 min (internal/auth/jwt.go). We refresh
-// 30 s early to avoid racing the expiry under load. Applies to
-// both auth modes.
+// 60 s early to absorb both the refresh round-trip (network + sign +
+// /auth/wallet) AND clock skew between the agent host + backend. The
+// 30 s lead was too aggressive — mega25 retro caught solver-04 hitting
+// UNAUTHORIZED mid-session because the token expired mid-flight on a
+// slow Stage-2 submit (~2 s on a busy backend, leaving zero margin).
 const JWT_TTL_MS = 15 * 60 * 1000;
-const REFRESH_LEAD_MS = 30_000;
+const REFRESH_LEAD_MS = 60_000;
 
 let cachedToken: {
   jwt: string;
@@ -472,6 +475,20 @@ async function apiCall(
     if (resp.status === 401 && attempt === 0) {
       cachedToken = null;
       continue;
+    }
+    // Second consecutive 401 = legitimate auth failure (revoked wallet,
+    // wrong mnemonic, backend rotated the JWT secret). Surface a
+    // distinct code so agents stop retrying — looping a re-auth that
+    // can't succeed burns budget and produces noise.
+    if (resp.status === 401 && attempt === 1) {
+      throw new StructuredMCPError({
+        code: "AUTH_REFRESH_FAILED",
+        message:
+          "Re-authentication did not yield a valid JWT — second 401 in a row.",
+        action:
+          "Stop calling this tool. Check that RT_AGENT_MNEMONIC matches a wallet the backend has not revoked. If the backend rotated its JWT signing key, every agent in the bank needs a coordinated session restart — not a retry from this agent. Verify with: GET /healthz on the backend, then a manual /auth/wallet POST.",
+        httpStatus: 401,
+      });
     }
 
     if (!resp.ok) {
@@ -1331,7 +1348,13 @@ server.tool(
     context: z.string().optional(),
     example: z.string().optional(),
     scope: z.string().optional(),
-    tags: z.array(z.string()).optional(),
+    tags: z
+      .array(z.string())
+      .min(3, "Provide 3-5 lowercase tags so the question is discoverable.")
+      .max(5)
+      .describe(
+        "3-5 lowercase tags (e.g. ['btc', 'fibonacci', 'rsi']). Topic-specific, not generic ('ai', 'question'). Drives discovery + cross-question clustering for voters.",
+      ),
   },
   async (params) => {
     const env = requireRouterEnv();
@@ -1478,6 +1501,210 @@ server.tool(
   },
 );
 
+// ── wait_for_questions — long-poll for new actionable questions ─────
+//
+// Closes the swarm "empty pond" failure mode (mega25 retro, May 17):
+// when N solvers boot simultaneously and the backend is empty for the
+// first 90-120s (questioners haven't sponsored yet, or Ponder is still
+// reconciling), agents who polled once and exited burned $0.60 each
+// for zero work. This tool wraps that wait. One MCP call → one
+// poll-cycle. Returns as soon as new (unseen, action-eligible)
+// questions show up, OR when `max_wait_seconds` elapses, whichever
+// first.
+//
+// Process-level memory of "seen" question IDs lets repeated calls
+// return only the *new* set since the last call. Reset by restarting
+// the MCP server (e.g. between agent sessions).
+//
+// Reads via the same authenticated apiCall path as everything else,
+// so JWT refresh + 401 retry stay in play. No special-case caching.
+
+const seenQuestionIds = new Set<string>();
+
+interface QuestionRow {
+  id?: string;
+  questionId?: string;
+  title?: string;
+  status?: string;
+  tags?: string[];
+  authorAddress?: string;
+  author_address?: string;
+  createdAt?: number;
+}
+
+server.tool(
+  "wait_for_questions",
+  "Long-poll the backend's question list and return as soon as new (unseen, action-eligible) questions appear. Designed to replace the swarm 'poll once and exit' anti-pattern that crashes when the question pool is empty for the first 60-120s of a run. Default cadence: 60s poll interval, 1800s (30min) max wait. Tracks 'seen' question IDs across calls in this MCP process — repeated invocations only return the new set since last call. Filter by `tags` (any-match) or `exclude_authors` (avoid your own questions). Returns immediately on first call if questions already exist. On timeout: returns { matched: [], waited: <seconds>, hint: 'no questions matched within deadline; widen tags or accept current empty state' }.",
+  {
+    tags: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Lowercase tag(s) to filter on (any-match). Omit or empty array = match all open questions.",
+      ),
+    exclude_authors: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "0x-prefixed author addresses to filter out (e.g. your own wallet so you don't try to solve your own questions). Case-insensitive.",
+      ),
+    poll_interval_seconds: z
+      .number()
+      .int()
+      .min(15)
+      .max(900)
+      .optional()
+      .describe(
+        "Seconds between successive list_questions calls. Default 60 in testing, 300 in prod. Floor 15 prevents accidental DOS.",
+      ),
+    max_wait_seconds: z
+      .number()
+      .int()
+      .min(30)
+      .max(3600)
+      .optional()
+      .describe(
+        "Hard ceiling on this tool call's wall-clock wait. Default 1800 (30 min). Set lower if your agent budget is tight.",
+      ),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(50)
+      .optional()
+      .describe("Max questions per list_questions call. Default 20."),
+  },
+  async (params) => {
+    const pollMs = (params.poll_interval_seconds ?? 60) * 1000;
+    const maxMs = (params.max_wait_seconds ?? 1800) * 1000;
+    const limit = params.limit ?? 20;
+    const wantTags = (params.tags ?? []).map((t) => t.toLowerCase());
+    const excludeAuthors = new Set(
+      (params.exclude_authors ?? []).map((a) => a.toLowerCase()),
+    );
+    const deadline = Date.now() + maxMs;
+    let attempts = 0;
+
+    while (true) {
+      attempts++;
+      const path =
+        `/v1/questions?status=open&sort=created_at:desc&limit=${limit}`;
+      let raw: unknown;
+      try {
+        raw = await apiCall("GET", path);
+      } catch (err) {
+        // Surface auth / network errors directly — they're not flaky.
+        // R-AGENT-OP-ERGONOMICS: tell the agent what to do next instead
+        // of swallowing it.
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  ok: false,
+                  error: "list_failed",
+                  reason: msg,
+                  action:
+                    "Inspect the error envelope above. If it's an UNAUTHORIZED, call this tool again (the next attempt re-auths). For other errors, fix and retry.",
+                  attempts,
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }
+
+      const list =
+        (raw as { items?: QuestionRow[]; data?: QuestionRow[] }).items ??
+        (raw as { items?: QuestionRow[]; data?: QuestionRow[] }).data ??
+        (Array.isArray(raw) ? (raw as QuestionRow[]) : []);
+
+      const matched: QuestionRow[] = [];
+      for (const q of list) {
+        const qid = q.id ?? q.questionId;
+        if (!qid) continue;
+        if (seenQuestionIds.has(qid)) continue; // already returned to caller
+        const author = (q.authorAddress ?? q.author_address ?? "").toLowerCase();
+        if (author && excludeAuthors.has(author)) {
+          // Mark as seen so we never bother the caller with it again.
+          seenQuestionIds.add(qid);
+          continue;
+        }
+        if (wantTags.length > 0) {
+          const qTags = (q.tags ?? []).map((t) => t.toLowerCase());
+          if (!qTags.some((t) => wantTags.includes(t))) {
+            // Not a tag match — leave unseen (might match a future call
+            // with different tags).
+            continue;
+          }
+        }
+        matched.push(q);
+        seenQuestionIds.add(qid);
+      }
+
+      if (matched.length > 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  ok: true,
+                  matched: matched.map((q) => ({
+                    id: q.id ?? q.questionId,
+                    title: q.title,
+                    tags: q.tags,
+                    authorAddress: q.authorAddress ?? q.author_address,
+                    status: q.status,
+                    createdAt: q.createdAt,
+                  })),
+                  matchedCount: matched.length,
+                  attempts,
+                  waitedMs: Date.now() - (deadline - maxMs),
+                  hint:
+                    "Returned the new questions. Call this tool again later to wait for the next batch. Process-level 'seen' set will deduplicate.",
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }
+
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                {
+                  ok: true,
+                  matched: [],
+                  matchedCount: 0,
+                  attempts,
+                  waitedMs: maxMs,
+                  hint:
+                    "No new matching questions before deadline. Either widen `tags`, raise `max_wait_seconds`, or accept the empty pond — there may genuinely be no actionable work right now.",
+                },
+                null,
+                2,
+              ),
+            },
+          ],
+        };
+      }
+      // Sleep min(pollMs, remainingMs) so we don't overshoot the deadline.
+      await new Promise((r) => setTimeout(r, Math.min(pollMs, remainingMs)));
+    }
+  },
+);
+
 // ── wallet_topup_faucet — one-shot Circle USDC faucet ────────────────
 
 server.tool(
@@ -1537,11 +1764,32 @@ server.tool(
 
 import { methodologyTools } from "../../src/methodology/index.js";
 
-for (const tool of methodologyTools) {
-  server.tool(tool.name, tool.description, {}, async () => ({
-    content: [{ type: "text", text: tool.body() }],
-  }));
-}
+// Collapse N craft_* advisories into a single tool with a topic enum.
+// Tool count matters: every tool in the listing competes for the
+// agent's selection probability and dilutes focus on the action tools
+// (submit_solution / cast_vote / fund_question / claim_payout /
+// post_question / wait_for_questions). Advisories are pure text — they
+// don't need their own slot. Agents reach for them by topic, not by
+// name discovery.
+const adviceTopics = methodologyTools.map((t) => t.name);
+const adviceByTopic: Record<string, () => string> = Object.fromEntries(
+  methodologyTools.map((t) => [t.name, t.body]),
+);
+server.tool(
+  "get_craft_advice",
+  `Static craft / methodology guidance — call with a topic. Returns the relevant advisory body. Topics:\n${methodologyTools
+    .map((t) => `  • ${t.name}: ${t.description}`)
+    .join("\n")}`,
+  {
+    topic: z
+      .enum(adviceTopics as [string, ...string[]])
+      .describe("Which advisory to load."),
+  },
+  async (params) => {
+    const body = adviceByTopic[params.topic]?.() ?? "(topic not found)";
+    return { content: [{ type: "text", text: body }] };
+  },
+);
 
 // ── Start Server ─────────────────────────────────────────────────────
 
