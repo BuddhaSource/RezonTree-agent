@@ -204,6 +204,8 @@ async function main() {
     `[settlement]    chain=${chainSettle}  ponder=${ponderSettle}  db_with_root=${dbSettle}`,
   );
 
+  // Terminal-state checks happen after qDetail is fetched below.
+
   // ── L4-DERIVED projections ──────────────────────────────────────
   // Per R-VERIFY-FOUR-LAYERS, primary L4 (the entity itself appears
   // in /v1/.../<entity>) is necessary but not sufficient. Real UI
@@ -226,6 +228,40 @@ async function main() {
     !!qDetail?.chainStakeFloor ||
     !!qDetail?.chainFundingDeadline ||
     qDetail?.chainStakeBasisPoints !== undefined;
+
+  // ── Recovered + Abandoned (W4 out-of-band terminals) ────────────
+  //
+  // Two transitions live outside the unified Quadphase event:
+  //   - Recovered            (RezonForge:Recovered event)
+  //   - ForcedAbandonment    (RezonForge:ForcedAbandonment event)
+  // Each is projected by internal/reconciler/quadphase_recovery.go onto
+  // questions.status. The matrix below asserts that whenever Ponder has
+  // a row, the DB + API show the corresponding terminal status.
+  const ponderRecovered = dbScalar(
+    `SELECT COUNT(*) FROM ponder_indexer.recoveries WHERE question_id='${qid}'`,
+  );
+  const ponderForcedAbandoned = dbScalar(
+    `SELECT COUNT(*) FROM ponder_indexer.forced_abandonments WHERE question_id='${qid}'`,
+  );
+  const dbStatus = psqlOneShot(
+    `SELECT status FROM questions WHERE id='${qidArg}'`,
+  ).trim();
+  let apiStatus = "(unknown)";
+  if (qDetail && typeof (qDetail as Record<string, unknown>).status === "string") {
+    apiStatus = (qDetail as Record<string, unknown>).status as string;
+  }
+  let terminalOK = true;
+  let terminalNote = "";
+  if (ponderRecovered > 0) {
+    terminalOK = terminalOK && dbStatus === "recovered" && apiStatus === "recovered";
+    terminalNote = `recovered Ponder=${ponderRecovered} db=${dbStatus} api=${apiStatus}`;
+  } else if (ponderForcedAbandoned > 0) {
+    terminalOK = terminalOK && dbStatus === "abandoned" && apiStatus === "abandoned";
+    terminalNote = `forced_abandonment Ponder=${ponderForcedAbandoned} db=${dbStatus} api=${apiStatus}`;
+  }
+  if (terminalNote) {
+    console.log(`[terminal-oob]  ${terminalNote}  ${terminalOK ? "✅" : "❌"}`);
+  }
   console.log(
     `[chain_* mirrors]   ${chainMirrorPresent ? "✅ populated" : "❌ ABSENT — projector gap on chain_* columns"}`,
   );
@@ -284,9 +320,14 @@ async function main() {
     dbVoteConfirmed === apiVote;
 
   console.log("");
-  if (primaryMatch && chainMirrorPresent && derivedFails === 0) {
+  if (primaryMatch && chainMirrorPresent && derivedFails === 0 && terminalOK) {
     console.log("✅ All layers + derived projections agree. End-to-end confirmed.");
     process.exit(0);
+  } else if (!terminalOK) {
+    console.log("❌ Terminal-state mismatch — chain emitted Recovered/ForcedAbandonment");
+    console.log("   but the DB/API have not flipped to the matching terminal status.");
+    console.log("   → Investigate internal/reconciler/quadphase_recovery.go projectors.");
+    process.exit(1);
   } else if (primaryMatch && (chainMirrorPresent === false || derivedFails > 0)) {
     console.log("⚠️ Primary 4 layers agree but DERIVED projections lag.");
     console.log("   Primary is OK; the UI pages reading wallet_transactions /");
