@@ -126,7 +126,7 @@ async function checkWalletLogin(url: string): Promise<CheckResult> {
   const m = process.env.RT_AGENT_MNEMONIC?.trim();
   if (!m) {
     return {
-      name: "wallet /auth/wallet",
+      name: "wallet /v1/sessions",
       passed: false,
       detail: "skipped — no mnemonic",
     };
@@ -139,7 +139,7 @@ async function checkWalletLogin(url: string): Promise<CheckResult> {
       expiresAt: Math.floor(Date.now() / 1000) + 300,
       domain,
     });
-    const resp = await fetch(`${url}/auth/wallet`, {
+    const resp = await fetch(`${url}/v1/sessions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -152,19 +152,19 @@ async function checkWalletLogin(url: string): Promise<CheckResult> {
     };
     if (!resp.ok || !raw.accessToken) {
       return {
-        name: "wallet /auth/wallet",
+        name: "wallet /v1/sessions",
         passed: false,
         detail: `backend rejected: ${resp.status} ${raw.error?.code ?? ""} — ${raw.error?.message ?? "(no body)"}. Action: ${raw.error?.action ?? "(none)"}`,
       };
     }
     return {
-      name: "wallet /auth/wallet",
+      name: "wallet /v1/sessions",
       passed: true,
       detail: `account=${raw.address ?? "(unknown)"}`,
     };
   } catch (err) {
     return {
-      name: "wallet /auth/wallet",
+      name: "wallet /v1/sessions",
       passed: false,
       detail: `sign/POST failed: ${err instanceof Error ? err.message : String(err)}`,
     };

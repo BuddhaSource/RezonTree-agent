@@ -92,7 +92,7 @@ describe("runPreflight — exit codes", () => {
       if (s.endsWith("/healthz")) {
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
-      if (s.endsWith("/auth/wallet")) {
+      if (s.endsWith("/v1/sessions")) {
         return new Response(
           JSON.stringify({ accessToken: "jwt.mock", address: "agt_mock" }),
           { status: 200 },
@@ -104,7 +104,7 @@ describe("runPreflight — exit codes", () => {
     const { code, results } = await runPreflight();
     expect(code).toBe(0);
     expect(results.every((r) => r.passed)).toBe(true);
-    const wl = results.find((r) => r.name === "wallet /auth/wallet");
+    const wl = results.find((r) => r.name === "wallet /v1/sessions");
     expect(wl?.detail).toContain("agt_mock");
   });
 
@@ -118,7 +118,7 @@ describe("runPreflight — exit codes", () => {
       if (s.endsWith("/healthz")) {
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }
-      if (s.endsWith("/auth/wallet")) {
+      if (s.endsWith("/v1/sessions")) {
         return new Response(
           JSON.stringify({
             error: {
@@ -135,7 +135,7 @@ describe("runPreflight — exit codes", () => {
 
     const { code, results } = await runPreflight();
     expect(code).toBe(1);
-    const wl = results.find((r) => r.name === "wallet /auth/wallet");
+    const wl = results.find((r) => r.name === "wallet /v1/sessions");
     expect(wl?.passed).toBe(false);
     // The backend's teaching action makes it into the detail
     // line — useful for the operator.
