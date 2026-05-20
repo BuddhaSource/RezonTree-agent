@@ -71,23 +71,31 @@ const EXPECTED_TOOLS = new Set<string>([
 // Anything else — GET /v1/accounts/..., GET /v1/me/..., GET on a list
 // endpoint — is an API mirror and must move to hosted MCP.
 const ALLOWED_API_PATHS: Array<RegExp> = [
-  // Preflights — backend authors canonical params + expectedIntentHash.
-  /^\/v1\/questions\/[^/]+\/solutions\/draft(\?|$)/,
-  /^\/v1\/questions\/[^/]+\/votes\/draft(\?|$)/,
-  /^\/v1\/questions\/[^/]+\/sponsorships\/draft(\?|$)/,
-  // Atomic create+sponsor — only inside post_question composite.
+  // Round-3 unified preflight — POST body discriminates action via
+  // `actionType` (sponsor / cosponsor / commit / vote / claim / refund
+  // / settle / abandon). Backend authors canonical params +
+  // expectedIntentHash.
+  /^\/v1\/questions\/[^/]+\/intents\/preflight(\?|$)/,
+  // Round-3 unified submit — universal signed-envelope POST that
+  // replaced /v1/questions/:id/{commit,vote-intent,sponsorships,
+  // claims,refunds} and /v1/quadphase/submit. Same contract
+  // (sign-then-POST-then-broadcast); the SDK posts {actionType,
+  // typedData, signature, expectedIntentHash, content} here, then
+  // broadcasts submit()/sponsorSubmit().
+  /^\/v1\/questions\/[^/]+\/intents(\?|$)/,
+  // Atomic create — only inside post_question composite.
   /^\/v1\/questions$/,
   // Question detail — used by fund_question's sponsor-mode orphan-draft
   // recovery to reload title + body so the SponsorWitness content hash
   // matches what post_question would have emitted.
   /^\/v1\/questions\/[^/]+$/,
-  // Unified Quadphase v2 submit — universal signed-envelope POST that
-  // replaced /v1/questions/:id/{commit,vote-intent,sponsorships}. Same
-  // contract (sign-then-POST-then-broadcast); the SDK posts envelope+
-  // witness+signature here, then broadcasts submit()/sponsorSubmit().
-  /^\/v1\/quadphase\/submit$/,
-  // Claim proof — fetched and immediately handed to Router.claim broadcast.
-  /^\/v1\/questions\/[^/]+\/claims\/[^/]+$/,
+  // Account-include fetch — claim_payout pulls
+  // `?include=claims` to derive role + amount + Merkle proof for
+  // Router.claim. Round-3 consolidated the per-question
+  // /v1/questions/:id/claims/:address GET into this single account
+  // surface; the local MCP keeps this call because the response feeds
+  // a chain broadcast in the same orchestration step.
+  /^\/v1\/accounts\/[^/]+(\?|$)/,
 ];
 
 describe("local MCP boundary — drift fences", () => {

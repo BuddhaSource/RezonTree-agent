@@ -59,6 +59,11 @@ export interface CallerStatus {
 export interface FundPreflight {
   mode: "sponsor" | "cosponsor";
   qid: string;
+  /** Server-recomputed EIP-712 intent hash. Posted verbatim on the
+   *  unified submit so the dispatcher rejects client recompute drift
+   *  before any Stage-2 work. Optional only because some legacy stub
+   *  paths emit the canonical zero-sentinel. */
+  expectedIntentHash?: string;
   recommendedSponsorshipFloor: string;
   token: TokenPreflight;
   forgeAddress: string;
@@ -107,6 +112,8 @@ export interface FundPreflight {
 
 export interface CommitPreflight {
   qid: string;
+  /** Server-recomputed EIP-712 intent hash. See FundPreflight. */
+  expectedIntentHash?: string;
   feeAmount: string;
   stakeAmount: string;
   token: TokenPreflight;
@@ -126,6 +133,8 @@ export interface CommitPreflight {
 
 export interface VotePreflight {
   qid: string;
+  /** Server-recomputed EIP-712 intent hash. See FundPreflight. */
+  expectedIntentHash?: string;
   feeAmount: string;
   stakeAmount: string;
   token: TokenPreflight;

@@ -7,7 +7,7 @@
  *
  * Authentication: derive an HD wallet from RT_AGENT_MNEMONIC at
  * RT_AGENT_INDEX, sign an EIP-712 WalletLoginIntent, POST to
- * /auth/wallet. Backend auto-registers unknown wallets.
+ * /v1/sessions. Backend auto-registers unknown wallets.
  *
  * Env:
  *   RT_AGENT_MNEMONIC                     BIP-39 mnemonic
@@ -198,6 +198,38 @@ async function assertSpendableUSDC(
 // import).
 import { StructuredMCPError, parseBackendErrorEnvelope } from "./errors.js";
 
+// ─── expectedIntentHash gate ─────────────────────────────────
+//
+// Round-3 preflight responses carry `expectedIntentHash` — the
+// server's recompute of the EIP-712 intentHash for the canonical
+// envelope the client is about to sign. Posting the value verbatim
+// on the unified submit lets the backend dispatcher reject any
+// client recompute drift before Stage-2 work. The zero sentinel
+// "0x0000…" or absent field is a backend stub path (claim/refund
+// pre-population, settle stub) — for the four chain-bound action
+// flows the SDK exercises today (sponsor / cosponsor / commit /
+// vote), the field MUST be populated and non-zero. Fail loud rather
+// than ship the zero sentinel to the dispatcher (which would
+// surface as a confusing Stage-2 contentHash reject).
+const ZERO_BYTES32 =
+  "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+function requireExpectedIntentHash(
+  pre: { expectedIntentHash?: string },
+  flow: string,
+): `0x${string}` {
+  const v = pre.expectedIntentHash ?? "";
+  if (!v || v.toLowerCase() === ZERO_BYTES32) {
+    throw new StructuredMCPError({
+      code: "PREFLIGHT_MISSING_INTENT_HASH",
+      message: `${flow} preflight did not return a populated expectedIntentHash; the backend cannot fence Stage-2 drift without it.`,
+      action:
+        "Re-fetch /v1/questions/:id/intents/preflight with the correct {actionType, params} body. If still empty, the backend version may be pre-Round 3 — upgrade backend.",
+    });
+  }
+  return v as `0x${string}`;
+}
+
 // ─── Idempotency cache ─────────────────────────────────────
 //
 // Multi-step tool flows (submit_solution, cast_vote, fund_question,
@@ -357,7 +389,7 @@ function getClients(): ClientBundle {
 
 // Backend JWT TTL is 15 min (internal/auth/jwt.go). We refresh
 // 60 s early to absorb both the refresh round-trip (network + sign +
-// /auth/wallet) AND clock skew between the agent host + backend. The
+// /v1/sessions) AND clock skew between the agent host + backend. The
 // 30 s lead was too aggressive — mega25 retro caught solver-04 hitting
 // UNAUTHORIZED mid-session because the token expired mid-flight on a
 // slow Stage-2 submit (~2 s on a busy backend, leaving zero margin).
@@ -372,13 +404,13 @@ let cachedToken: {
 // Promise memoization to prevent the cold-start stampede: when N tool
 // calls arrive concurrently before the first login completes, each
 // would otherwise sign its own (deterministic) WalletLoginIntent and
-// POST to /auth/wallet — backend's replay-dedup table treats all but
+// POST to /v1/sessions — backend's replay-dedup table treats all but
 // the first as a 409 conflict. By sharing one in-flight promise, every
 // concurrent caller receives the same JWT from a single login round-trip.
 let inflightLogin: Promise<string> | null = null;
 
 /**
- * Wallet auth: derive → sign WalletLoginIntent → POST /auth/wallet.
+ * Wallet auth: derive → sign WalletLoginIntent → POST /v1/sessions.
  * Backend recovers the signer's address from the signature and
  * looks up (or auto-registers) the agent by (address, chainId).
  * Tokens cached with a 30s early-refresh buffer; concurrent cold-cache
@@ -422,7 +454,7 @@ async function doLogin(): Promise<string> {
 
   let resp: Response;
   try {
-    resp = await fetch(`${API_URL}/auth/wallet`, {
+    resp = await fetch(`${API_URL}/v1/sessions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -430,7 +462,7 @@ async function doLogin(): Promise<string> {
   } catch (e) {
     throw new StructuredMCPError({
       code: "AUTH_TRANSPORT_FAILED",
-      message: `Could not reach backend /auth/wallet: ${e instanceof Error ? e.message : String(e)}`,
+      message: `Could not reach backend /v1/sessions: ${e instanceof Error ? e.message : String(e)}`,
       action: `Verify RT_AGENT_BACKEND_URL (currently ${API_URL}) is reachable and backend is healthy. Retry.`,
     });
   }
@@ -517,7 +549,7 @@ async function apiCall(
         message:
           "Re-authentication did not yield a valid JWT — second 401 in a row.",
         action:
-          "Stop calling this tool. Check that RT_AGENT_MNEMONIC matches a wallet the backend has not revoked. If the backend rotated its JWT signing key, every agent in the bank needs a coordinated session restart — not a retry from this agent. Verify with: GET /healthz on the backend, then a manual /auth/wallet POST.",
+          "Stop calling this tool. Check that RT_AGENT_MNEMONIC matches a wallet the backend has not revoked. If the backend rotated its JWT signing key, every agent in the bank needs a coordinated session restart — not a retry from this agent. Verify with: GET /healthz on the backend, then a manual POST /v1/sessions.",
         httpStatus: 401,
       });
     }
@@ -579,7 +611,7 @@ const server = new McpServer({
 
 server.tool(
   "submit_solution",
-  "Submit a solution via the Quadphase v2 unified-envelope flow: preflight → build CommitWitness from {body, reasoning_tree, claims} → sign Envelope(action=Commit) → POST /v1/quadphase/submit (backend stages solution row + signed_intents row in one tx) → ensure USDC allowance → broadcast BountyForge.submit(env, sig). Returns intent_hash + commit_tx_hash. Backend row flips pending→confirmed when Ponder ingests the chain event (~3s).",
+  "Submit a solution via the Quadphase v2 unified-envelope flow: preflight → build CommitWitness from {body, reasoning_tree, claims} → sign Envelope(action=Commit) → POST /v1/questions/:id/intents (backend stages solution row + signed_intents row in one tx) → ensure USDC allowance → broadcast BountyForge.submit(env, sig). Returns intent_hash + commit_tx_hash. Backend row flips pending→confirmed when Ponder ingests the chain event (~3s).",
   {
     question_id: z.string().describe("The question ID to solve"),
     body: z
@@ -623,8 +655,9 @@ server.tool(
       },
       async () => {
         const pre = (await apiCall(
-          "GET",
-          `/v1/questions/${params.question_id}/solutions/draft?submitter=${address}`,
+          "POST",
+          `/v1/questions/${params.question_id}/intents/preflight`,
+          { actionType: "commit", params: { submitter: address } },
         )) as CommitPreflight;
 
         const feeAmount = BigInt(pre.feeAmount);
@@ -677,11 +710,13 @@ server.tool(
             baseUrl: API_URL,
             bearerToken: bearer,
             signer: address,
+            questionId: params.question_id,
             qid: pre.qid as `0x${string}`,
             nonce,
             expiresAt,
             forgeAddress: env.router,
             chainId: pre.chainId ?? CHAIN_ID,
+            expectedIntentHash: requireExpectedIntentHash(pre, "commit"),
             solutionBody: solutionBodyJSON,
             references: [],
             token: pre.token.contractAddress as `0x${string}`,
@@ -727,7 +762,7 @@ server.tool(
 
 server.tool(
   "cast_vote",
-  "Cast a vote via the Quadphase v2 unified-envelope flow: preflight (returns voteSalt + voteSaltToken) → build VoteWitness(allocations, salt) → sign Envelope(action=Vote) → POST /v1/quadphase/submit (backend re-binds the salt token + stages votes row + vote_allocations rows in one tx) → ensure USDC allowance → broadcast BountyForge.submit(env, sig). Stake is locked by the forge and refunded at settlement; wrong-voter stakes are slashed into the pool. allocations[].conviction_points use the 100-point budget and are scaled to basis points (×100) on the envelope.",
+  "Cast a vote via the Quadphase v2 unified-envelope flow: preflight (returns voteSalt + voteSaltToken) → build VoteWitness(allocations, salt) → sign Envelope(action=Vote) → POST /v1/questions/:id/intents (backend re-binds the salt token + stages votes row + vote_allocations rows in one tx) → ensure USDC allowance → broadcast BountyForge.submit(env, sig). Stake is locked by the forge and refunded at settlement; wrong-voter stakes are slashed into the pool. allocations[].conviction_points use the 100-point budget and are scaled to basis points (×100) on the envelope.",
   {
     question_id: z.string().describe("The question ID"),
     allocations: z
@@ -754,8 +789,9 @@ server.tool(
       { addr: address, pid: params.question_id, allocs: params.allocations },
       async () => {
         const pre = (await apiCall(
-          "GET",
-          `/v1/questions/${params.question_id}/votes/draft?voter=${address}`,
+          "POST",
+          `/v1/questions/${params.question_id}/intents/preflight`,
+          { actionType: "vote", params: { voter: address } },
         )) as VotePreflight;
 
         if (!pre.voteSalt || !pre.voteSaltToken) {
@@ -764,7 +800,7 @@ server.tool(
             message:
               "Vote preflight did not return voteSalt + voteSaltToken; the backend requires both for privacy.",
             action:
-              "Re-fetch /v1/questions/:id/votes/draft?voter=<addr> with a known voter address. If still missing, the backend version may not support the vote-allocation salt — upgrade the backend.",
+              "Re-fetch POST /v1/questions/:id/intents/preflight with body {actionType:'vote', params:{voter:<addr>}}. If still missing, the backend version may not support the vote-allocation salt — upgrade the backend.",
           });
         }
         const voteSalt = pre.voteSalt as `0x${string}`;
@@ -831,11 +867,13 @@ server.tool(
             baseUrl: API_URL,
             bearerToken: bearer,
             signer: address,
+            questionId: params.question_id,
             qid: pre.qid as `0x${string}`,
             nonce,
             expiresAt,
             forgeAddress: env.router,
             chainId: pre.chainId ?? CHAIN_ID,
+            expectedIntentHash: requireExpectedIntentHash(pre, "vote"),
             allocations: v2Allocations,
             voteSalt,
             voteSaltToken,
@@ -901,9 +939,15 @@ server.tool(
       "fund_question",
       { addr: address, pid: params.question_id, amount: params.amount },
       async () => {
+        // Backend dispatches both `actionType=sponsor` and
+        // `actionType=cosponsor` to the same FundPreflight handler — it
+        // disambiguates from chain state and returns `mode`. We can ask
+        // with either token; using "sponsor" is the simplest default,
+        // and the response.mode field tells us which flow to run.
         const pre = (await apiCall(
-          "GET",
-          `/v1/questions/${params.question_id}/sponsorships/draft?sponsor=${address}`,
+          "POST",
+          `/v1/questions/${params.question_id}/intents/preflight`,
+          { actionType: "sponsor", params: { sponsor: address } },
         )) as FundPreflight;
 
         const amountWei = parseAmountToWei(params.amount, pre.token.decimals);
@@ -966,11 +1010,13 @@ server.tool(
               baseUrl: API_URL,
               bearerToken: bearer,
               signer: address,
+              questionId: params.question_id,
               qid: pre.qid as `0x${string}`,
               nonce,
               expiresAt,
               forgeAddress: env.router,
               chainId: pre.chainId ?? CHAIN_ID,
+              expectedIntentHash: requireExpectedIntentHash(pre, "sponsor"),
               title: qDetail.title,
               body: qDetail.description,
               criteria: JSON.stringify(qDetail.successCriteria ?? []),
@@ -1001,16 +1047,21 @@ server.tool(
             };
           }
 
-          // mode === "cosponsor"
+          // mode === "cosponsor". If the preflight was fetched with
+          // actionType="sponsor" the dispatcher delegated to the same
+          // FundPreflight handler — preflight.mode reflects chain
+          // state and is the source of truth here.
           const result = await runCosponsorFlow({
             baseUrl: API_URL,
             bearerToken: bearer,
             signer: address,
+            questionId: params.question_id,
             qid: pre.qid as `0x${string}`,
             nonce,
             expiresAt,
             forgeAddress: env.router,
             chainId: pre.chainId ?? CHAIN_ID,
+            expectedIntentHash: requireExpectedIntentHash(pre, "cosponsor"),
             token: pre.token.contractAddress as `0x${string}`,
             amount: amountWei,
             feeAmount: 0n,
@@ -1044,7 +1095,7 @@ server.tool(
 
 server.tool(
   "claim_payout",
-  "Claim your share of a SETTLED question's payout pool. Pass just question_id — the tool fetches your role + amount + Merkle proof from GET /v1/questions/:id/claims/:address and broadcasts Router.claim. Optional question_id/amount_wei/proof overrides exist for power-user paths (manual settlement outside the standard pipeline). Router verifies the proof against the stored root and transfers USDC on success.",
+  "Claim your share of a SETTLED question's payout pool. Pass just question_id — the tool fetches your role + amount + Merkle proof from GET /v1/accounts/:address?include=claims (filtered to this question) and broadcasts Router.claim. Optional qid_hex/amount_wei/proof overrides exist for power-user paths (manual settlement outside the standard pipeline). Router verifies the proof against the stored root and transfers USDC on success.",
   {
     question_id: z
       .string()
@@ -1089,34 +1140,43 @@ server.tool(
       amountWei = BigInt(params.amount_wei!);
       proof = params.proof as Hex[];
     } else {
-      // Default path: derive everything from the backend's claim
-      // endpoint (R-API-FOR-AGENTS — the API teaches the agent what
-      // to send to chain). Backend rebuilds the Merkle tree from
-      // the persisted RoundResult and returns the proof for this
-      // address; amount is in USD decimal so we shift to USDC 6dp
-      // wei to match the on-chain leaf encoding.
-      // Backend response is camelCase (R-NAME-MATCHES-CHAIN). The
-      // claim endpoint returns `qid` (chain bytes32 hex) at the top
-      // level — preferred over the legacy `questionId` string for the
-      // chain-bound qid we hand to Router.claim.
-      const claim = (await apiCall(
+      // Default path: pull the caller's claim set from
+      // GET /v1/accounts/:address?include=claims and filter to the
+      // requested question_id. The Round-3 account include flattens
+      // the per-question claim docs (qid + role + amount + proof +
+      // merkleRoot) so a single backend call serves every settled
+      // claim the caller is entitled to.
+      const account = (await apiCall(
         "GET",
-        `/v1/questions/${params.question_id}/claims/${address}`,
+        `/v1/accounts/${address}?include=claims`,
       )) as {
-        questionId: string;
-        qid: string | null;
-        role: string;
-        amount: string;
-        proof: string[];
-        merkleRoot: string | null;
+        claims?: Array<{
+          questionId: string;
+          qid: string | null;
+          role: string;
+          amount: string;
+          proof: string[];
+          merkleRoot: string | null;
+        }>;
       };
+      const claims = account.claims ?? [];
+      const claim = claims.find((c) => c.questionId === params.question_id);
 
+      if (!claim) {
+        throw new StructuredMCPError({
+          code: "NOT_PARTICIPANT",
+          message: `Address ${address} has no claim row for question ${params.question_id}; nothing to claim.`,
+          action:
+            "Only sponsors, solvers, and voters of a settled question receive a claim row. Inspect the caller's settled participation via GET /v1/accounts/:address?include=claims,participating. If the question is unsettled, wait for SettlementPublished.",
+          details: { address, questionId: params.question_id },
+        });
+      }
       if (!claim.qid) {
         throw new StructuredMCPError({
           code: "QUESTION_NOT_ON_CHAIN",
           message: `Question ${params.question_id} has no chain qid yet.`,
           action:
-            "Round may not be funded on-chain. Inspect status via the hosted MCP (rezontree_questions_get_question + rezontree_rounds_list_rounds); fund_question if a sponsor is needed.",
+            "Round may not be funded on-chain. Inspect status via the hosted MCP (rezontree_questions_get_question); fund_question if a sponsor is needed.",
           details: { questionId: params.question_id },
         });
       }
@@ -1125,7 +1185,7 @@ server.tool(
           code: "NOT_PARTICIPANT",
           message: `Address ${address} did not participate in question ${params.question_id}; nothing to claim.`,
           action:
-            "Only sponsors, solvers, and voters of a settled question can claim. Check participating-questions for ones you have a role in.",
+            "Only sponsors, solvers, and voters of a settled question can claim. Check GET /v1/accounts/:address?include=participating for questions where you have a role.",
           details: { address, questionId: params.question_id },
         });
       }
@@ -1134,7 +1194,7 @@ server.tool(
           code: "ROUND_NOT_SETTLED",
           message: `Round for question ${params.question_id} is not yet settled on-chain — no merkleRoot persisted.`,
           action:
-            "Wait for SettlementPublished, then retry claim_payout. Monitor via the hosted MCP (rezontree_rounds_get_round).",
+            "Wait for SettlementPublished, then retry claim_payout. Monitor via GET /v1/questions/:id?include=settlement.",
           details: { questionId: params.question_id },
         });
       }
@@ -1464,10 +1524,11 @@ server.tool(
         // fund_question(question_id) to retry the sponsor leg without
         // re-running step 1.
         try {
-          // Step 2 — sponsor preflight (Quadphase v2 surface).
+          // Step 2 — sponsor preflight (Round-3 unified surface).
           const pre = (await apiCall(
-            "GET",
-            `/v1/questions/${created.id}/sponsorships/draft?sponsor=${address}`,
+            "POST",
+            `/v1/questions/${created.id}/intents/preflight`,
+            { actionType: "sponsor", params: { sponsor: address } },
           )) as FundPreflight;
           if (pre.mode !== "sponsor") {
             throw new StructuredMCPError({
@@ -1532,11 +1593,13 @@ server.tool(
             baseUrl: API_URL,
             bearerToken: bearer,
             signer: address,
+            questionId: created.id,
             qid: pre.qid as `0x${string}`,
             nonce,
             expiresAt,
             forgeAddress: env.router,
             chainId: pre.chainId ?? CHAIN_ID,
+            expectedIntentHash: requireExpectedIntentHash(pre, "sponsor"),
             // Sponsor witness fields. Title + body are bound on-chain via
             // contentHash so the chain can attest content immutability.
             title: params.title,

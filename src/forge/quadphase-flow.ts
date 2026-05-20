@@ -6,7 +6,8 @@
 //   2. Build envelope (signer + qid + action + nonce + expiresAt +
 //      contentHash + funds) from preflight-advertised params.
 //   3. EIP-712 sign the envelope via the agent's wallet.
-//   4. POST /v1/quadphase/submit (backend stages the row).
+//   4. POST /v1/questions/:id/intents (backend stages the row via the
+//      Round-3 unified-intent dispatcher).
 //   5. Broadcast to the chain via the universal `submit` /
 //      `sponsorSubmit` entry point.
 //
@@ -100,11 +101,20 @@ export interface SponsorFlowParams {
   baseUrl: string;
   bearerToken: string;
   signer: Address;
+  /** App-level question id (qst_…) — used to build the unified intent
+   *  URL `/v1/questions/:question_id/intents`. The chain-level `qid`
+   *  (bytes32) still flows through the envelope below. */
+  questionId: string;
   qid: Hex;
   nonce: bigint;
   expiresAt: bigint;
   forgeAddress: Address;
   chainId: number;
+
+  /** Server-asserted intentHash from the preflight response. Posted
+   *  verbatim on the unified submit so the dispatcher can mirror its
+   *  Stage-2 reject if the client-recomputed hash drifts. */
+  expectedIntentHash: Hex;
 
   // SponsorWitness fields (per-Q parameters frozen on first sponsor).
   title: string;
@@ -208,32 +218,40 @@ export async function runSponsorFlow(
     envelope,
   };
 
-  // 4. Backend POST.
+  // 4. Backend POST — Round-3 unified intent dispatcher. `typedData`
+  // is the envelope JSON (the dispatcher wraps it into the existing
+  // QuadphaseSubmit shape server-side); `content` carries the witness
+  // fields.
   const submitBody = {
-    envelope: serializeEnvelope(envelope),
-    witness: serializeSponsorWitness(witness),
+    actionType: "sponsor",
+    typedData: serializeEnvelope(envelope),
+    content: serializeSponsorWitness(witness),
     signature,
+    expectedIntentHash: p.expectedIntentHash,
   };
-  const res = await fetch(`${p.baseUrl}/v1/quadphase/submit`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${p.bearerToken}`,
-      "Prefer": "return=minimal",
+  const res = await fetch(
+    `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${p.bearerToken}`,
+        Prefer: "return=minimal",
+      },
+      body: stringifyWithBigInts(submitBody),
     },
-    body: stringifyWithBigInts(submitBody),
-  });
+  );
   const text = await res.text();
   if (!res.ok) {
     throw new Error(
-      `runSponsorFlow: POST /v1/quadphase/submit failed: HTTP ${res.status} ${res.statusText}: ${text}`,
+      `runSponsorFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${text}`,
     );
   }
   const parsed = JSON.parse(text) as {
     intentHash?: string;
     status?: string;
   };
-  result.intentHash = (parsed.intentHash ?? "0x") as Hex;
+  result.intentHash = (parsed.intentHash ?? p.expectedIntentHash) as Hex;
   result.backendStatus = parsed.status;
 
   // 5. Chain broadcast.
@@ -253,11 +271,17 @@ export interface CosponsorFlowParams {
   baseUrl: string;
   bearerToken: string;
   signer: Address;
+  /** App-level question id (qst_…) — used to build the unified intent
+   *  URL `/v1/questions/:question_id/intents`. */
+  questionId: string;
   qid: Hex;
   nonce: bigint;
   expiresAt: bigint;
   forgeAddress: Address;
   chainId: number;
+
+  /** Server-asserted intentHash from the preflight response. */
+  expectedIntentHash: Hex;
 
   // Funds.
   token: Address;
@@ -325,27 +349,32 @@ export async function runCosponsorFlow(
     envelope,
   };
 
-  const res = await fetch(`${p.baseUrl}/v1/quadphase/submit`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${p.bearerToken}`,
-      "Prefer": "return=minimal",
+  const res = await fetch(
+    `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${p.bearerToken}`,
+        Prefer: "return=minimal",
+      },
+      body: stringifyWithBigInts({
+        actionType: "cosponsor",
+        typedData: serializeEnvelope(envelope),
+        content: serializeCosponsorWitness(witness),
+        signature,
+        expectedIntentHash: p.expectedIntentHash,
+      }),
     },
-    body: stringifyWithBigInts({
-      envelope: serializeEnvelope(envelope),
-      witness: serializeCosponsorWitness(witness),
-      signature,
-    }),
-  });
+  );
   const text = await res.text();
   if (!res.ok) {
     throw new Error(
-      `runCosponsorFlow: POST /v1/quadphase/submit failed: HTTP ${res.status} ${res.statusText}: ${text}`,
+      `runCosponsorFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${text}`,
     );
   }
   const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
-  result.intentHash = (parsed.intentHash ?? "0x") as Hex;
+  result.intentHash = (parsed.intentHash ?? p.expectedIntentHash) as Hex;
   result.backendStatus = parsed.status;
 
   const txHash = await broadcastSubmit(p.walletClient, {
@@ -363,11 +392,17 @@ export interface CommitFlowParams {
   baseUrl: string;
   bearerToken: string;
   signer: Address;
+  /** App-level question id (qst_…) — used to build the unified intent
+   *  URL `/v1/questions/:question_id/intents`. */
+  questionId: string;
   qid: Hex;
   nonce: bigint;
   expiresAt: bigint;
   forgeAddress: Address;
   chainId: number;
+
+  /** Server-asserted intentHash from the preflight response. */
+  expectedIntentHash: Hex;
 
   // CommitWitness fields.
   solutionBody: string;
@@ -444,27 +479,32 @@ export async function runCommitFlow(
     envelope,
   };
 
-  const res = await fetch(`${p.baseUrl}/v1/quadphase/submit`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${p.bearerToken}`,
-      "Prefer": "return=minimal",
+  const res = await fetch(
+    `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${p.bearerToken}`,
+        Prefer: "return=minimal",
+      },
+      body: stringifyWithBigInts({
+        actionType: "commit",
+        typedData: serializeEnvelope(envelope),
+        content: serializeCommitWitness(witness),
+        signature,
+        expectedIntentHash: p.expectedIntentHash,
+      }),
     },
-    body: stringifyWithBigInts({
-      envelope: serializeEnvelope(envelope),
-      witness: serializeCommitWitness(witness),
-      signature,
-    }),
-  });
+  );
   const text = await res.text();
   if (!res.ok) {
     throw new Error(
-      `runCommitFlow: POST /v1/quadphase/submit failed: HTTP ${res.status} ${res.statusText}: ${text}`,
+      `runCommitFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${text}`,
     );
   }
   const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
-  result.intentHash = (parsed.intentHash ?? "0x") as Hex;
+  result.intentHash = (parsed.intentHash ?? p.expectedIntentHash) as Hex;
   result.backendStatus = parsed.status;
 
   const txHash = await broadcastSubmit(p.walletClient, {
@@ -482,11 +522,17 @@ export interface VoteFlowParams {
   baseUrl: string;
   bearerToken: string;
   signer: Address;
+  /** App-level question id (qst_…) — used to build the unified intent
+   *  URL `/v1/questions/:question_id/intents`. */
+  questionId: string;
   qid: Hex;
   nonce: bigint;
   expiresAt: bigint;
   forgeAddress: Address;
   chainId: number;
+
+  /** Server-asserted intentHash from the preflight response. */
+  expectedIntentHash: Hex;
 
   // VoteWitness fields. `allocations[].solutionId` is the on-chain
   // solutionId — i.e. the SolutionCommitted event's intent_hash. `salt`
@@ -571,28 +617,33 @@ export async function runVoteFlow(
     envelope,
   };
 
-  const res = await fetch(`${p.baseUrl}/v1/quadphase/submit`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${p.bearerToken}`,
-      "Prefer": "return=minimal",
+  const res = await fetch(
+    `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${p.bearerToken}`,
+        Prefer: "return=minimal",
+      },
+      body: stringifyWithBigInts({
+        actionType: "vote",
+        typedData: serializeEnvelope(envelope),
+        content: serializeVoteWitness(witness),
+        signature,
+        expectedIntentHash: p.expectedIntentHash,
+        voteSaltToken: p.voteSaltToken,
+      }),
     },
-    body: stringifyWithBigInts({
-      envelope: serializeEnvelope(envelope),
-      witness: serializeVoteWitness(witness),
-      signature,
-      voteSaltToken: p.voteSaltToken,
-    }),
-  });
+  );
   const text = await res.text();
   if (!res.ok) {
     throw new Error(
-      `runVoteFlow: POST /v1/quadphase/submit failed: HTTP ${res.status} ${res.statusText}: ${text}`,
+      `runVoteFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${text}`,
     );
   }
   const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
-  result.intentHash = (parsed.intentHash ?? "0x") as Hex;
+  result.intentHash = (parsed.intentHash ?? p.expectedIntentHash) as Hex;
   result.backendStatus = parsed.status;
 
   const txHash = await broadcastSubmit(p.walletClient, {

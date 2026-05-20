@@ -362,7 +362,7 @@ async function authenticateWallet(
   }
 
   try {
-    const resp = await fetch(`${baseUrl}/auth/wallet`, {
+    const resp = await fetch(`${baseUrl}/v1/sessions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(signedLogin),

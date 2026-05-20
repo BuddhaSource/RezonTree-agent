@@ -160,7 +160,7 @@ async function main(): Promise<number> {
         expiresAt: Math.floor(Date.now() / 1000) + 300,
         domain,
       });
-      const resp = await fetch(`${backendUrl}/auth/wallet`, {
+      const resp = await fetch(`${backendUrl}/v1/sessions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
