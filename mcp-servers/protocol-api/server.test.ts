@@ -363,16 +363,13 @@ describe("backend error envelope → MCP tool result", () => {
 // ── Regression fences for MCP audit hotfixes (2026-05-20) ──────────
 
 describe("claim_payout — recipient binding (#613)", () => {
+  const claimBlock = sliceBetween(
+    SERVER_TS,
+    "Router enforces one claim per (qid, recipient)",
+    "await awaitReceipt(publicClient, txHash);",
+  );
+
   it("passes recipient explicitly to broadcastClaim", () => {
-    // The Merkle leaf is keccak256(qid, recipient, amount). Calling
-    // broadcastClaim without `recipient` defaults to undefined → chain
-    // reverts on every claim. This fence pins the call site so a
-    // refactor that drops the field is caught at build time.
-    const claimBlock = sliceBetween(
-      SERVER_TS,
-      "Router enforces one claim per (qid, recipient)",
-      "await awaitReceipt(publicClient, txHash);",
-    );
     expect(
       claimBlock,
       "broadcastClaim must pass recipient — Merkle leaf binds (qid, recipient, amount); omitting it reverts on chain",
@@ -380,14 +377,6 @@ describe("claim_payout — recipient binding (#613)", () => {
   });
 
   it("includes a proof fingerprint in the idempotency cache key", () => {
-    // Cache key excluding proof means a retry with a different proof
-    // override would replay the cached tx_hash from the wrong claim
-    // state. Pin proofKey presence.
-    const claimBlock = sliceBetween(
-      SERVER_TS,
-      "Router enforces one claim per (qid, recipient)",
-      "await awaitReceipt(publicClient, txHash);",
-    );
     expect(
       claimBlock,
       "claim_payout cache key must include proofFingerprint(proof) so power-user overrides don't collide",
@@ -397,23 +386,22 @@ describe("claim_payout — recipient binding (#613)", () => {
 
 describe("idempotency cache hygiene (#614)", () => {
   it("uses canonicalStringify for cache key derivation", () => {
-    // JSON.stringify is key-order-dependent. Two semantically-equal
-    // params objects with different key order would hash to different
-    // keys, silently defeating the cache.
     expect(
       SERVER_TS,
       "idempotencyKey must use canonicalStringify so key order doesn't break the cache",
     ).toMatch(/function idempotencyKey[\s\S]+?canonicalStringify\(params\)/);
   });
 
-  it("defines canonicalStringify with sorted-keys recursion", () => {
-    const def = sliceBetween(
-      SERVER_TS,
-      "function canonicalStringify",
-      "function proofFingerprint",
+  it("imports canonicalStringify from the shared intents helper", () => {
+    // Drift fence: a local re-definition would shadow the canonical
+    // (bigint/NaN-safe) version with a weaker variant. claim_payout
+    // params include bigint-derived strings; the commit content body
+    // is nested user content — both rely on the shared strictness.
+    expect(SERVER_TS).toMatch(
+      /from\s+"\.\.\/\.\.\/src\/intents\/commit-intent\.js"/,
     );
-    expect(def, "canonicalStringify must sort keys").toMatch(/Object\.keys\(obj\)\.sort\(\)/);
-    expect(def, "canonicalStringify must recurse for arrays").toMatch(/Array\.isArray\(value\)/);
+    expect(SERVER_TS, "must not redefine canonicalStringify locally").not
+      .toMatch(/^function canonicalStringify/m);
   });
 
   it("prunes the idempotency cache to avoid unbounded growth", () => {
@@ -428,9 +416,6 @@ describe("idempotency cache hygiene (#614)", () => {
   });
 });
 
-// sliceBetween returns the substring between two literal anchors,
-// inclusive of both. Used for scoping regex assertions to a single
-// function body rather than the whole file.
 function sliceBetween(haystack: string, start: string, end: string): string {
   const i = haystack.indexOf(start);
   const j = haystack.indexOf(end, i);

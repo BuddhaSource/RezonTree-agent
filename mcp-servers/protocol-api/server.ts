@@ -219,36 +219,16 @@ const IDEM_CACHE_TTL_MS = 15 * 60 * 1000;
 const IDEM_CACHE_MAX_ENTRIES = 1024;
 const idempotencyCache = new Map<string, CacheEntry>();
 
-// canonicalStringify produces stable JSON regardless of object-key
-// order so semantically-equal-but-reordered params hash to the
-// same cache key. Audit finding #614: `JSON.stringify({a, b})` and
-// `JSON.stringify({b, a})` produced different keys for the same
-// idempotent call, defeating the cache silently.
-function canonicalStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) {
-    return "[" + value.map(canonicalStringify).join(",") + "]";
-  }
-  const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj).sort();
-  return (
-    "{" +
-    keys
-      .map((k) => JSON.stringify(k) + ":" + canonicalStringify(obj[k]))
-      .join(",") +
-    "}"
-  );
-}
-
 // proofFingerprint returns a short stable hash of a Merkle proof
 // array so it can be folded into the idempotency cache key without
 // blowing up its size. Two proofs with the same elements in the same
 // order produce the same fingerprint; order matters because Merkle
 // proofs are sibling-ordered. Audit finding #613/#614: claim_payout
 // retries with a different `proof` override would otherwise replay
-// the cached tx_hash from the wrong claim state.
+// the cached tx_hash from the wrong claim state. Empty proof hashes
+// the empty string so single-leaf trees share one namespace with
+// multi-leaf ones.
 function proofFingerprint(proof: Hex[]): string {
-  if (proof.length === 0) return "empty";
   return createHash("sha256")
     .update(proof.join("|"))
     .digest("hex")
@@ -278,7 +258,6 @@ function getCached(key: string): unknown | null {
 // negligible. Eviction order: oldest-first by timestamp (LRU-ish —
 // Map iteration is insertion order which is close enough).
 const IDEM_CACHE_SWEEP_EVERY = 32;
-let idemWritesSinceSweep = 0;
 
 function pruneIdempotencyCache(): void {
   const now = Date.now();
@@ -287,7 +266,6 @@ function pruneIdempotencyCache(): void {
       idempotencyCache.delete(k);
     }
   }
-  // Hard cap: drop the oldest until under the limit.
   while (idempotencyCache.size > IDEM_CACHE_MAX_ENTRIES) {
     const oldest = idempotencyCache.keys().next().value;
     if (oldest === undefined) break;
@@ -295,13 +273,18 @@ function pruneIdempotencyCache(): void {
   }
 }
 
-function setCached(key: string, result: unknown): void {
-  idempotencyCache.set(key, { timestamp: Date.now(), result });
-  if (++idemWritesSinceSweep >= IDEM_CACHE_SWEEP_EVERY) {
-    idemWritesSinceSweep = 0;
-    pruneIdempotencyCache();
-  }
-}
+// Closure-scoped write counter — module-level mutable state was test
+// surface area for nothing; the counter is purely internal.
+const setCached: (key: string, result: unknown) => void = (() => {
+  let writesSinceSweep = 0;
+  return (key, result) => {
+    idempotencyCache.set(key, { timestamp: Date.now(), result });
+    if (++writesSinceSweep >= IDEM_CACHE_SWEEP_EVERY) {
+      writesSinceSweep = 0;
+      pruneIdempotencyCache();
+    }
+  };
+})();
 
 function textResponse(result: unknown, replay = false) {
   const body = typeof result === "string" ? result : JSON.stringify(result, null, 2);
@@ -1183,7 +1166,7 @@ server.tool(
         const txHash = await broadcastClaim(walletClient, {
           forgeAddress: env.router,
           questionId,
-          recipient: address as Address,
+          recipient: address,
           amount: amountWei,
           proof,
         });
