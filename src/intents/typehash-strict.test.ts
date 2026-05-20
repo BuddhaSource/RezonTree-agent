@@ -215,6 +215,153 @@ describe("encodeType — self-test", () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────
+// Quadphase v2 envelope + witness typestring fence (PA5 follow-up)
+// ─────────────────────────────────────────────────────────────────────
+//
+// Pinned strings mirror internal/signer/quadphase_envelope.go byte-for-byte
+// (Go strings are the source of truth at the Go ↔ Solidity boundary; the
+// Solidity side is fenced by typehash_drift_test.go + validator_drift_test.go).
+// A drift in any v2 SDK TYPES array — added field, reorder, type rename,
+// missing sub-struct ref — flips the encoded type string and the test fails.
+// Together with the cross-stack golden vectors in envelope-golden.test.ts,
+// this closes the loop: TS arrays produce the same typehash as Go strings,
+// which produce the same content/intent hashes Solidity does.
+
+import { ENVELOPE_TYPES } from "./envelope";
+import { SPONSOR_WITNESS_TYPES } from "./sponsor-witness";
+import { COSPONSOR_WITNESS_TYPES } from "./cosponsor-witness";
+import { COMMIT_WITNESS_TYPES } from "./commit-witness";
+import { VOTE_WITNESS_TYPES } from "./vote-witness";
+import { SETTLE_WITNESS_TYPES } from "./settle-witness";
+import { CLAIM_WITNESS_TYPES } from "./claim-witness";
+import { REFUND_WITNESS_TYPES } from "./refund-witness";
+import { ABANDON_WITNESS_TYPES } from "./abandon-witness";
+
+// Pinned typestrings — every byte matches internal/signer/quadphase_envelope.go.
+const PINNED_QPV2_TYPESTRINGS = {
+  Envelope:
+    "Envelope(address signer,bytes32 qid,uint8 action,uint256 nonce,uint256 expiresAt,bytes32 contentHash,Funds funds)" +
+    "FeeShare(address recipient,uint16 basisPoints)" +
+    "Funds(address token,uint256 poolIn,uint256 poolOut,uint256 feeAmount,uint16 feeShareBps,FeeShare[] feeShares,uint256 stakeAmount,uint8 stakeOp)",
+  SponsorWitness:
+    "SponsorWitness(uint8 actionTag,string title,string body,string criteria,string[] tags,address oracle,uint256 sponsorshipFloor,uint256 commitFee,uint256 voteFee,uint256 stakeFloor,uint16 stakeBasisPoints,uint256 fundingDeadline,uint256 noSolutionGracePeriod)",
+  CosponsorWitness: "CosponsorWitness(uint8 actionTag,uint256 amount)",
+  CommitWitness:
+    "CommitWitness(uint8 actionTag,string solutionBody,string[] references)",
+  VoteWitness:
+    "VoteWitness(uint8 actionTag,Allocation[] allocations,bytes32 salt)" +
+    "Allocation(bytes32 solutionId,uint16 basisPoints)",
+  SettleWitness:
+    "SettleWitness(uint8 actionTag,bytes32 merkleRoot,uint256 totalClaimable,uint256 dustFolded,SlashEntry[] slashes,uint256 leafCount,uint256 slashEntryOffset,uint256 totalSlashEntries)" +
+    "SlashEntry(bytes32 intentHash,uint256 amount,uint8 role)",
+  ClaimWitness:
+    "ClaimWitness(uint8 actionTag,bytes32[] proof,uint256 leafIndex,uint256 leafAmount,uint8 role,uint8 expectedStatus)",
+  RefundWitness:
+    "RefundWitness(uint8 actionTag,bytes32 sourceIntentHash,uint256 expectedAmount,uint8 expectedStatus)",
+  AbandonWitness:
+    "AbandonWitness(uint8 actionTag,uint8 expectedStatus,bytes32 reason)",
+} as const;
+
+const PINNED_QPV2_TYPEHASHES = {
+  Envelope: keccak256(stringToBytes(PINNED_QPV2_TYPESTRINGS.Envelope)),
+  SponsorWitness: keccak256(
+    stringToBytes(PINNED_QPV2_TYPESTRINGS.SponsorWitness),
+  ),
+  CosponsorWitness: keccak256(
+    stringToBytes(PINNED_QPV2_TYPESTRINGS.CosponsorWitness),
+  ),
+  CommitWitness: keccak256(stringToBytes(PINNED_QPV2_TYPESTRINGS.CommitWitness)),
+  VoteWitness: keccak256(stringToBytes(PINNED_QPV2_TYPESTRINGS.VoteWitness)),
+  SettleWitness: keccak256(stringToBytes(PINNED_QPV2_TYPESTRINGS.SettleWitness)),
+  ClaimWitness: keccak256(stringToBytes(PINNED_QPV2_TYPESTRINGS.ClaimWitness)),
+  RefundWitness: keccak256(stringToBytes(PINNED_QPV2_TYPESTRINGS.RefundWitness)),
+  AbandonWitness: keccak256(
+    stringToBytes(PINNED_QPV2_TYPESTRINGS.AbandonWitness),
+  ),
+} as const;
+
+describe("EIP-712 quadphase v2 typestrings — derived from runtime type arrays", () => {
+  // Each case computes the encoded type string from the LIVE viem
+  // type array using the same encodeType helper validated by the
+  // self-test below, then asserts byte-equality against the pinned
+  // string. Identical strings ⇒ identical keccak256 ⇒ identical
+  // chain-side typehash. Drift surfaces immediately, never reaches
+  // the chain.
+
+  it("Envelope (with FeeShare + Funds references)", () => {
+    const encoded = encodeType("Envelope", ENVELOPE_TYPES);
+    expect(encoded).toBe(PINNED_QPV2_TYPESTRINGS.Envelope);
+    expect(typehashOf("Envelope", ENVELOPE_TYPES)).toBe(
+      PINNED_QPV2_TYPEHASHES.Envelope,
+    );
+  });
+
+  it("SponsorWitness", () => {
+    const encoded = encodeType("SponsorWitness", SPONSOR_WITNESS_TYPES);
+    expect(encoded).toBe(PINNED_QPV2_TYPESTRINGS.SponsorWitness);
+    expect(typehashOf("SponsorWitness", SPONSOR_WITNESS_TYPES)).toBe(
+      PINNED_QPV2_TYPEHASHES.SponsorWitness,
+    );
+  });
+
+  it("CosponsorWitness", () => {
+    const encoded = encodeType("CosponsorWitness", COSPONSOR_WITNESS_TYPES);
+    expect(encoded).toBe(PINNED_QPV2_TYPESTRINGS.CosponsorWitness);
+    expect(typehashOf("CosponsorWitness", COSPONSOR_WITNESS_TYPES)).toBe(
+      PINNED_QPV2_TYPEHASHES.CosponsorWitness,
+    );
+  });
+
+  it("CommitWitness", () => {
+    const encoded = encodeType("CommitWitness", COMMIT_WITNESS_TYPES);
+    expect(encoded).toBe(PINNED_QPV2_TYPESTRINGS.CommitWitness);
+    expect(typehashOf("CommitWitness", COMMIT_WITNESS_TYPES)).toBe(
+      PINNED_QPV2_TYPEHASHES.CommitWitness,
+    );
+  });
+
+  it("VoteWitness (with Allocation reference)", () => {
+    const encoded = encodeType("VoteWitness", VOTE_WITNESS_TYPES);
+    expect(encoded).toBe(PINNED_QPV2_TYPESTRINGS.VoteWitness);
+    expect(typehashOf("VoteWitness", VOTE_WITNESS_TYPES)).toBe(
+      PINNED_QPV2_TYPEHASHES.VoteWitness,
+    );
+  });
+
+  it("SettleWitness (with SlashEntry reference)", () => {
+    const encoded = encodeType("SettleWitness", SETTLE_WITNESS_TYPES);
+    expect(encoded).toBe(PINNED_QPV2_TYPESTRINGS.SettleWitness);
+    expect(typehashOf("SettleWitness", SETTLE_WITNESS_TYPES)).toBe(
+      PINNED_QPV2_TYPEHASHES.SettleWitness,
+    );
+  });
+
+  it("ClaimWitness", () => {
+    const encoded = encodeType("ClaimWitness", CLAIM_WITNESS_TYPES);
+    expect(encoded).toBe(PINNED_QPV2_TYPESTRINGS.ClaimWitness);
+    expect(typehashOf("ClaimWitness", CLAIM_WITNESS_TYPES)).toBe(
+      PINNED_QPV2_TYPEHASHES.ClaimWitness,
+    );
+  });
+
+  it("RefundWitness", () => {
+    const encoded = encodeType("RefundWitness", REFUND_WITNESS_TYPES);
+    expect(encoded).toBe(PINNED_QPV2_TYPESTRINGS.RefundWitness);
+    expect(typehashOf("RefundWitness", REFUND_WITNESS_TYPES)).toBe(
+      PINNED_QPV2_TYPEHASHES.RefundWitness,
+    );
+  });
+
+  it("AbandonWitness", () => {
+    const encoded = encodeType("AbandonWitness", ABANDON_WITNESS_TYPES);
+    expect(encoded).toBe(PINNED_QPV2_TYPESTRINGS.AbandonWitness);
+    expect(typehashOf("AbandonWitness", ABANDON_WITNESS_TYPES)).toBe(
+      PINNED_QPV2_TYPEHASHES.AbandonWitness,
+    );
+  });
+});
+
 // Field-shape contract — pinned arity + ordering for each intent
 // type. A drift in the array length or first-field type tells you
 // IMMEDIATELY which intent regressed, separately from the typehash

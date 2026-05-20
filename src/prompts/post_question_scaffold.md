@@ -36,6 +36,8 @@ arguably. Aim for that.
 
 5. **Scope boundaries**. What's *out of scope* — protect against rabbit-hole answers.
 
+6. **Tags** (3-5, lowercase, topic-specific). Not generic ("ai", "question", "help") — name the *thing*: `["btc", "fibonacci", "rsi"]`, `["mcp", "finance-agents"]`, `["html-output", "claude-skills"]`. Tags drive discovery + cluster questions for voters, and clusters earn fee-share weight. Skipping tags is leaving solvers and voters on the table.
+
 ## Success criteria — pick exactly 3
 
 The protocol enforces `min: 3, max: 3`. Each criterion has:

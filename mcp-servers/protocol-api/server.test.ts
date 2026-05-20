@@ -53,6 +53,13 @@ const EXPECTED_TOOLS = new Set<string>([
   "craft_error_recovery",
   "craft_dedup_strategy",
   "craft_research_registry",
+  // Activity discovery — long-poll for new actionable questions. Local
+  // because it pairs with the local JWT issuer + the agent's
+  // wallet-scoped /v1/me view of which questions are open to them.
+  "wait_for_questions",
+  // Methodology / craft — advisory text fetched once per session, no
+  // backend dep. Pairs with the post_question composite.
+  "get_craft_advice",
 ]);
 
 // ALLOWED_API_PATHS lists the path patterns an `apiCall(...)` site may
@@ -68,14 +75,17 @@ const ALLOWED_API_PATHS: Array<RegExp> = [
   /^\/v1\/questions\/[^/]+\/solutions\/draft(\?|$)/,
   /^\/v1\/questions\/[^/]+\/votes\/draft(\?|$)/,
   /^\/v1\/questions\/[^/]+\/sponsorships\/draft(\?|$)/,
-  // Signed envelopes — POST after local sign, before broadcast.
-  /^\/v1\/questions\/[^/]+\/commit$/,
-  /^\/v1\/questions\/[^/]+\/vote-intent$/,
-  /^\/v1\/questions\/[^/]+\/sponsorships$/,
-  // Content row keyed to a staged intent_hash — POST as part of submit_solution.
-  /^\/v1\/questions\/[^/]+\/solutions$/,
   // Atomic create+sponsor — only inside post_question composite.
   /^\/v1\/questions$/,
+  // Question detail — used by fund_question's sponsor-mode orphan-draft
+  // recovery to reload title + body so the SponsorWitness content hash
+  // matches what post_question would have emitted.
+  /^\/v1\/questions\/[^/]+$/,
+  // Unified Quadphase v2 submit — universal signed-envelope POST that
+  // replaced /v1/questions/:id/{commit,vote-intent,sponsorships}. Same
+  // contract (sign-then-POST-then-broadcast); the SDK posts envelope+
+  // witness+signature here, then broadcasts submit()/sponsorSubmit().
+  /^\/v1\/quadphase\/submit$/,
   // Claim proof — fetched and immediately handed to Router.claim broadcast.
   /^\/v1\/questions\/[^/]+\/claims\/[^/]+$/,
 ];
@@ -349,3 +359,66 @@ describe("backend error envelope → MCP tool result", () => {
     expect(args.code).toBe("AUTH_HTTP_503");
   });
 });
+
+// ── Regression fences for MCP audit hotfixes (2026-05-20) ──────────
+
+describe("claim_payout — recipient binding (#613)", () => {
+  const claimBlock = sliceBetween(
+    SERVER_TS,
+    "Router enforces one claim per (qid, recipient)",
+    "await awaitReceipt(publicClient, txHash);",
+  );
+
+  it("passes recipient explicitly to broadcastClaim", () => {
+    expect(
+      claimBlock,
+      "broadcastClaim must pass recipient — Merkle leaf binds (qid, recipient, amount); omitting it reverts on chain",
+    ).toMatch(/recipient:\s*address\b/);
+  });
+
+  it("includes a proof fingerprint in the idempotency cache key", () => {
+    expect(
+      claimBlock,
+      "claim_payout cache key must include proofFingerprint(proof) so power-user overrides don't collide",
+    ).toMatch(/proofKey:\s*proofFingerprint\(proof\)/);
+  });
+});
+
+describe("idempotency cache hygiene (#614)", () => {
+  it("uses canonicalStringify for cache key derivation", () => {
+    expect(
+      SERVER_TS,
+      "idempotencyKey must use canonicalStringify so key order doesn't break the cache",
+    ).toMatch(/function idempotencyKey[\s\S]+?canonicalStringify\(params\)/);
+  });
+
+  it("imports canonicalStringify from the shared intents helper", () => {
+    // Drift fence: a local re-definition would shadow the canonical
+    // (bigint/NaN-safe) version with a weaker variant. claim_payout
+    // params include bigint-derived strings; the commit content body
+    // is nested user content — both rely on the shared strictness.
+    expect(SERVER_TS).toMatch(
+      /from\s+"\.\.\/\.\.\/src\/intents\/commit-intent\.js"/,
+    );
+    expect(SERVER_TS, "must not redefine canonicalStringify locally").not
+      .toMatch(/^function canonicalStringify/m);
+  });
+
+  it("prunes the idempotency cache to avoid unbounded growth", () => {
+    expect(
+      SERVER_TS,
+      "setCached must invoke periodic prune via pruneIdempotencyCache",
+    ).toMatch(/pruneIdempotencyCache\(\)/);
+    expect(
+      SERVER_TS,
+      "cache must have a hard size cap (IDEM_CACHE_MAX_ENTRIES)",
+    ).toMatch(/IDEM_CACHE_MAX_ENTRIES/);
+  });
+});
+
+function sliceBetween(haystack: string, start: string, end: string): string {
+  const i = haystack.indexOf(start);
+  const j = haystack.indexOf(end, i);
+  if (i < 0 || j < 0) return "";
+  return haystack.slice(i, j + end.length);
+}

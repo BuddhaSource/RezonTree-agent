@@ -1,0 +1,319 @@
+[
+  {
+    "name": "Sponsor_min",
+    "domain": {
+      "name": "RezonForge",
+      "version": "2.10",
+      "chainId": 84532,
+      "verifyingContract": "0x89e8d5b1abe6531577aaf2611cf66fa01094e8f1"
+    },
+    "envelope": {
+      "signer": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "questionId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "action": 0,
+      "nonce": 1,
+      "expiresAt": 1800000000,
+      "contentHash": "0x2ff3c6f5dea70612c93b9e4abfeb1e41d3505163545e2db8974c7df0530a0d80",
+      "funds": {
+        "token": "0x2222222222222222222222222222222222222222",
+        "poolIn": 1000,
+        "poolOut": 0,
+        "feeAmount": 0,
+        "feeShareBps": 1000,
+        "feeShares": [
+          {
+            "recipient": "0x3333333333333333333333333333333333333333",
+            "basisPoints": 10000
+          }
+        ],
+        "stakeAmount": 0,
+        "stakeOp": 0
+      }
+    },
+    "witness": {
+      "actionTag": 0,
+      "title": "T",
+      "body": "B",
+      "criteria": "C",
+      "tags": [
+        "x"
+      ],
+      "oracle": "0x5555555555555555555555555555555555555555",
+      "sponsorshipFloor": 100,
+      "commitFee": 0,
+      "voteFee": 0,
+      "stakeFloor": 0,
+      "stakeBasisPoints": 100,
+      "fundingDeadline": 1800000000,
+      "noSolutionGracePeriod": 7200
+    },
+    "expectedContentHash": "0x2ff3c6f5dea70612c93b9e4abfeb1e41d3505163545e2db8974c7df0530a0d80",
+    "expectedIntentHash": "0x1addfba0d97b5571677a7c172606992e8fee1980e1a462c478e8b456302b7c02"
+  },
+  {
+    "name": "Cosponsor_min",
+    "domain": {
+      "name": "RezonForge",
+      "version": "2.10",
+      "chainId": 84532,
+      "verifyingContract": "0x89e8d5b1abe6531577aaf2611cf66fa01094e8f1"
+    },
+    "envelope": {
+      "signer": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "questionId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "action": 1,
+      "nonce": 1,
+      "expiresAt": 1800000000,
+      "contentHash": "0x4bfd9717a4feb2d09e818d34155e526d6dc1c35c43528679584a38fee270e668",
+      "funds": {
+        "token": "0x2222222222222222222222222222222222222222",
+        "poolIn": 500,
+        "poolOut": 0,
+        "feeAmount": 0,
+        "feeShareBps": 1000,
+        "feeShares": [
+          {
+            "recipient": "0x3333333333333333333333333333333333333333",
+            "basisPoints": 10000
+          }
+        ],
+        "stakeAmount": 0,
+        "stakeOp": 0
+      }
+    },
+    "witness": {
+      "actionTag": 1,
+      "amount": 500
+    },
+    "expectedContentHash": "0x4bfd9717a4feb2d09e818d34155e526d6dc1c35c43528679584a38fee270e668",
+    "expectedIntentHash": "0xfcf7c8ba73a34ccfbcb7c914cd8564fbab0bd69a46d7ac01cf7f50394c1c1929"
+  },
+  {
+    "name": "Commit_min",
+    "domain": {
+      "name": "RezonForge",
+      "version": "2.10",
+      "chainId": 84532,
+      "verifyingContract": "0x89e8d5b1abe6531577aaf2611cf66fa01094e8f1"
+    },
+    "envelope": {
+      "signer": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "questionId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "action": 2,
+      "nonce": 1,
+      "expiresAt": 1800000000,
+      "contentHash": "0x22980ca90ac6b2bc1bccb10a598ddd375efd5fe20c2523abb48d490255c7fad6",
+      "funds": {
+        "token": "0x2222222222222222222222222222222222222222",
+        "poolIn": 0,
+        "poolOut": 0,
+        "feeAmount": 50,
+        "feeShareBps": 1000,
+        "feeShares": [
+          {
+            "recipient": "0x3333333333333333333333333333333333333333",
+            "basisPoints": 10000
+          }
+        ],
+        "stakeAmount": 500,
+        "stakeOp": 1
+      }
+    },
+    "witness": {
+      "actionTag": 2,
+      "solutionBody": "hello",
+      "references": []
+    },
+    "expectedContentHash": "0x22980ca90ac6b2bc1bccb10a598ddd375efd5fe20c2523abb48d490255c7fad6",
+    "expectedIntentHash": "0xda44ff86ae54d1da7f77f3779ee0f242fa8ab755c544652d35db82bb7a23579e"
+  },
+  {
+    "name": "Vote_min",
+    "domain": {
+      "name": "RezonForge",
+      "version": "2.10",
+      "chainId": 84532,
+      "verifyingContract": "0x89e8d5b1abe6531577aaf2611cf66fa01094e8f1"
+    },
+    "envelope": {
+      "signer": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "questionId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "action": 3,
+      "nonce": 1,
+      "expiresAt": 1800000000,
+      "contentHash": "0xddafe6bacee465c456c8be4f6718405a506a60dce347b8a738c80b2d7d3ccac0",
+      "funds": {
+        "token": "0x2222222222222222222222222222222222222222",
+        "poolIn": 0,
+        "poolOut": 0,
+        "feeAmount": 50,
+        "feeShareBps": 1000,
+        "feeShares": [
+          {
+            "recipient": "0x3333333333333333333333333333333333333333",
+            "basisPoints": 10000
+          }
+        ],
+        "stakeAmount": 500,
+        "stakeOp": 1
+      }
+    },
+    "witness": {
+      "actionTag": 3,
+      "allocations": [
+        {
+          "solutionId": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "basisPoints": 10000
+        }
+      ],
+      "salt": "0x4242424242424242424242424242424242424242424242424242424242424242"
+    },
+    "expectedContentHash": "0xddafe6bacee465c456c8be4f6718405a506a60dce347b8a738c80b2d7d3ccac0",
+    "expectedIntentHash": "0xd95e50e881e675b9456a198306b254504d62105fb0a8c8db4fb3445439ab9dab"
+  },
+  {
+    "name": "Settle_min",
+    "domain": {
+      "name": "RezonForge",
+      "version": "2.10",
+      "chainId": 84532,
+      "verifyingContract": "0x89e8d5b1abe6531577aaf2611cf66fa01094e8f1"
+    },
+    "envelope": {
+      "signer": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "questionId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "action": 4,
+      "nonce": 1,
+      "expiresAt": 1800000000,
+      "contentHash": "0xb5090c76033cd1a280903700d1bb90f991c32adb617dcba36fca867800ba17e9",
+      "funds": {
+        "token": "0x2222222222222222222222222222222222222222",
+        "poolIn": 0,
+        "poolOut": 10,
+        "feeAmount": 0,
+        "feeShareBps": 0,
+        "feeShares": [],
+        "stakeAmount": 0,
+        "stakeOp": 0
+      }
+    },
+    "witness": {
+      "actionTag": 4,
+      "merkleRoot": "0xabababababababababababababababababababababababababababababababab",
+      "totalClaimable": 100,
+      "dustFolded": 0,
+      "slashes": [],
+      "leafCount": 1,
+      "slashEntryOffset": 0,
+      "totalSlashEntries": 0
+    },
+    "expectedContentHash": "0xb5090c76033cd1a280903700d1bb90f991c32adb617dcba36fca867800ba17e9",
+    "expectedIntentHash": "0x3854c12c8af162530ee658267c425d2d005fc009344bea07c9bd11d92bf7304f"
+  },
+  {
+    "name": "Claim_min",
+    "domain": {
+      "name": "RezonForge",
+      "version": "2.10",
+      "chainId": 84532,
+      "verifyingContract": "0x89e8d5b1abe6531577aaf2611cf66fa01094e8f1"
+    },
+    "envelope": {
+      "signer": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "questionId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "action": 5,
+      "nonce": 1,
+      "expiresAt": 1800000000,
+      "contentHash": "0xa3c456a0f82751fb4dfaded3086c58c32fbc526e437f1905dddf832773ea0a91",
+      "funds": {
+        "token": "0x2222222222222222222222222222222222222222",
+        "poolIn": 0,
+        "poolOut": 1000,
+        "feeAmount": 0,
+        "feeShareBps": 0,
+        "feeShares": [],
+        "stakeAmount": 0,
+        "stakeOp": 0
+      }
+    },
+    "witness": {
+      "actionTag": 5,
+      "proof": [],
+      "leafIndex": 0,
+      "leafAmount": 1000,
+      "role": 1,
+      "expectedStatus": 4
+    },
+    "expectedContentHash": "0xa3c456a0f82751fb4dfaded3086c58c32fbc526e437f1905dddf832773ea0a91",
+    "expectedIntentHash": "0x66b98117c462225c1d87c870c0caf6bdf2e4792e501a14b0fdc6825eb064b8e2"
+  },
+  {
+    "name": "Refund_min",
+    "domain": {
+      "name": "RezonForge",
+      "version": "2.10",
+      "chainId": 84532,
+      "verifyingContract": "0x89e8d5b1abe6531577aaf2611cf66fa01094e8f1"
+    },
+    "envelope": {
+      "signer": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "questionId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "action": 6,
+      "nonce": 1,
+      "expiresAt": 1800000000,
+      "contentHash": "0x0d644f21defa1a6a7cb575395ac53fc3088e55f4f1d5937521f1017857232172",
+      "funds": {
+        "token": "0x2222222222222222222222222222222222222222",
+        "poolIn": 0,
+        "poolOut": 500,
+        "feeAmount": 0,
+        "feeShareBps": 0,
+        "feeShares": [],
+        "stakeAmount": 0,
+        "stakeOp": 0
+      }
+    },
+    "witness": {
+      "actionTag": 6,
+      "sourceIntentHash": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "expectedAmount": 500,
+      "expectedStatus": 5
+    },
+    "expectedContentHash": "0x0d644f21defa1a6a7cb575395ac53fc3088e55f4f1d5937521f1017857232172",
+    "expectedIntentHash": "0xa559f1ca20c8f7bd59d8c6a25556b2789811740e68fe5d046cb81eb2f9befad3"
+  },
+  {
+    "name": "Abandon_min",
+    "domain": {
+      "name": "RezonForge",
+      "version": "2.10",
+      "chainId": 84532,
+      "verifyingContract": "0x89e8d5b1abe6531577aaf2611cf66fa01094e8f1"
+    },
+    "envelope": {
+      "signer": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "questionId": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "action": 7,
+      "nonce": 1,
+      "expiresAt": 1800000000,
+      "contentHash": "0xf585af0057258583fb9b498d0f1459f0ff2217f260e5238b36d1a52f5e81ae39",
+      "funds": {
+        "token": "0x2222222222222222222222222222222222222222",
+        "poolIn": 0,
+        "poolOut": 0,
+        "feeAmount": 0,
+        "feeShareBps": 0,
+        "feeShares": [],
+        "stakeAmount": 0,
+        "stakeOp": 0
+      }
+    },
+    "witness": {
+      "actionTag": 7,
+      "expectedStatus": 5,
+      "reason": "0x9999999999999999999999999999999999999999999999999999999999999999"
+    },
+    "expectedContentHash": "0xf585af0057258583fb9b498d0f1459f0ff2217f260e5238b36d1a52f5e81ae39",
+    "expectedIntentHash": "0xc0737cf93dbd40449dc8a8283a900568f71a784a803f471a9e33c7e22beab6e7"
+  }
+]
