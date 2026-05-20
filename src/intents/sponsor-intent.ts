@@ -122,8 +122,8 @@ export const MAX_STAKE_BASIS_POINTS = 5000n;
 
 // ── Builder ──────────────────────────────────────────────────────
 
-export const MIN_NO_SOLUTION_GRACE = 1800n;  // 30 minutes
-export const MAX_NO_SOLUTION_GRACE = 86400n; // 24 hours
+export const MIN_NO_SOLUTION_GRACE = 86_400n;   // 1 day  (chain MIN_ORACLE_BUFFER = signer.MinNoSolutionGrace)
+export const MAX_NO_SOLUTION_GRACE = 2_592_000n; // 30 days (chain MAX_ORACLE_BUFFER = signer.MaxNoSolutionGrace)
 // Cap for the Q-level feeShareBps. Mirrors RezonForge.MAX_FEE_SHARE_BPS.
 export const MAX_FEE_SHARE_BPS = 5000n;       // 50%
 
@@ -243,7 +243,7 @@ export function buildSponsorIntentTypedData(params: {
   }
   if (noSolutionGracePeriod < MIN_NO_SOLUTION_GRACE || noSolutionGracePeriod > MAX_NO_SOLUTION_GRACE) {
     throw new Error(
-      `sponsor intent: noSolutionGracePeriod ${noSolutionGracePeriod} outside [${MIN_NO_SOLUTION_GRACE}, ${MAX_NO_SOLUTION_GRACE}]`,
+      `sponsor intent: noSolutionGracePeriod ${noSolutionGracePeriod} outside [${MIN_NO_SOLUTION_GRACE}, ${MAX_NO_SOLUTION_GRACE}] (chain MIN_ORACLE_BUFFER=1d, MAX_ORACLE_BUFFER=30d)`,
     );
   }
   // R-CLIENT-IS-TRUST-ORIGIN: refuse to sign if the platform fee
