@@ -112,6 +112,22 @@ async function apiCount(path: string): Promise<number> {
   return (j.data ?? []).length;
 }
 
+// Round 3 collapsed standalone list endpoints into ?include=<key> on the
+// parent detail endpoint. The included payload sits at body[key].data
+// with an envelope shape {data: [...], hasMore: bool}.
+//
+// includeKey vs path: the include query value and the response key are
+// the same string today (e.g. ?include=solutions → body.solutions.data).
+async function apiIncludeCount(parentPath: string, includeKey: string): Promise<number> {
+  const sep = parentPath.includes("?") ? "&" : "?";
+  const r = await fetch(`${BACKEND}${parentPath}${sep}include=${includeKey}`);
+  if (!r.ok) return -1;
+  const j = (await r.json()) as Record<string, { data?: unknown[] } | undefined>;
+  const node = j[includeKey];
+  if (!node) return -1;
+  return (node.data ?? []).length;
+}
+
 function fmt(c: RowCounts): string {
   // Ponder is chain truth; compare DB-confirmed and API against it.
   const ok = (a: number, b: number) =>
@@ -167,7 +183,8 @@ async function main() {
   const dbCommitConfirmed = dbScalar(
     `SELECT COUNT(*) FROM solutions WHERE question_id='${qidArg}' AND confirmation_status='confirmed'`,
   );
-  const apiCommit = await apiCount(`/v1/questions/${qidArg}/solutions`);
+  // Round 3: solutions list rides on ?include=solutions (#637).
+  const apiCommit = await apiIncludeCount(`/v1/questions/${qidArg}`, "solutions");
   console.log(
     `[commits]       ${fmt({ chain: chainCommit, ponder: ponderCommit, db: dbCommit, dbConfirmed: dbCommitConfirmed, api: apiCommit })}`,
   );
@@ -184,7 +201,8 @@ async function main() {
   const dbVoteConfirmed = dbScalar(
     `SELECT COUNT(*) FROM votes WHERE question_id='${qidArg}' AND confirmation_status='confirmed'`,
   );
-  const apiVote = await apiCount(`/v1/questions/${qidArg}/votes`);
+  // Round 3: votes list rides on ?include=votes (#637).
+  const apiVote = await apiIncludeCount(`/v1/questions/${qidArg}`, "votes");
   console.log(
     `[votes]         ${fmt({ chain: chainVote, ponder: ponderVote, db: dbVote, dbConfirmed: dbVoteConfirmed, api: apiVote })}`,
   );
@@ -302,8 +320,10 @@ async function main() {
 
   let derivedFails = 0;
   for (const addr of knownAddresses) {
-    const wt = (await apiCount(`/v1/accounts/${addr}/wallet/transactions`)).valueOf();
-    const pq = (await apiCount(`/v1/accounts/${addr}/participating-questions`)).valueOf();
+    // Round 3: account sub-resources ride on ?include=<key> (#637).
+    // wallet include returns -1 until backend handler lands (#634).
+    const wt = (await apiIncludeCount(`/v1/accounts/${addr}`, "wallet")).valueOf();
+    const pq = (await apiIncludeCount(`/v1/accounts/${addr}`, "activity")).valueOf();
     const ok = wt > 0 && pq > 0;
     if (!ok) derivedFails++;
     console.log(
