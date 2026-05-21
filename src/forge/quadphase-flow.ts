@@ -29,6 +29,7 @@ import {
   type WalletClient,
   encodeFunctionData,
   erc20Abi,
+  hashTypedData,
   parseAbi,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -401,8 +402,15 @@ export interface CommitFlowParams {
   forgeAddress: Address;
   chainId: number;
 
-  /** Server-asserted intentHash from the preflight response. */
-  expectedIntentHash: Hex;
+  /**
+   * Server-asserted intentHash from the preflight response.
+   * Optional for commit: the server cannot pre-compute it because the
+   * contentHash (from the solution body) is unknown at preflight time.
+   * When absent, runCommitFlow derives the hash locally from the built
+   * envelope and typed data via hashTypedData() — which is the canonical
+   * value the backend will recompute at Stage 2 anyway.
+   */
+  expectedIntentHash?: Hex;
 
   // CommitWitness fields.
   solutionBody: string;
@@ -465,6 +473,19 @@ export async function runCommitFlow(
     chainId: p.chainId,
     forgeAddress: p.forgeAddress,
   });
+  // Compute intentHash locally from the fully-specified envelope.
+  // The commit preflight cannot pre-compute this because contentHash is
+  // derived from the solution body, which is only known here.
+  // hashTypedData produces the same EIP-712 hash the backend re-derives
+  // at Stage 2 (R-FOUR-STAGE-VALIDATION), so this is the canonical value.
+  const localIntentHash = hashTypedData({
+    domain: typedData.domain,
+    types: typedData.types,
+    primaryType: typedData.primaryType,
+    message: typedData.message as never,
+  }) as Hex;
+  const intentHashToSend = p.expectedIntentHash ?? localIntentHash;
+
   const account = privateKeyToAccount(p.privateKey);
   const signature = (await account.signTypedData({
     domain: typedData.domain,
@@ -493,7 +514,7 @@ export async function runCommitFlow(
         typedData: serializeEnvelope(envelope),
         content: serializeCommitWitness(witness),
         signature,
-        expectedIntentHash: p.expectedIntentHash,
+        expectedIntentHash: intentHashToSend,
       }),
     },
   );

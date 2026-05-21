@@ -120,12 +120,12 @@ async function jwtFor(idx: number): Promise<string> {
     expiresAt: Math.floor(Date.now() / 1000) + 300,
     domain,
   });
-  const r = await fetch(`${API_URL}/auth/wallet`, {
+  const r = await fetch(`${API_URL}/v1/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error(`/auth/wallet failed: ${r.status} ${await r.text()}`);
+  if (!r.ok) throw new Error(`/v1/sessions failed: ${r.status} ${await r.text()}`);
   const j = (await r.json()) as { accessToken: string };
   tokens[idx] = { jwt: j.accessToken, exp: Date.now() + 14 * 60 * 1000 };
   return j.accessToken;

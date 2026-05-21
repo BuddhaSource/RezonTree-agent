@@ -127,6 +127,14 @@ export interface CommitPreflight {
   // Required to satisfy _validateFeeShareInvariants — the chain rejects
   // a commit whose feeShares[] omits q.platformFeeRecipient.
   platformFeeRecipient?: string;
+  // Frozen per-question fee-share policy as captured by the initial
+  // sponsor. The chain reverts a commit whose CommitWitness.feeShares
+  // doesn't bit-for-bit match these values. Both fields are absent
+  // when the question has no confirmed initial sponsor yet (pre-
+  // sponsor preflight); the client must abort rather than substitute
+  // a default. (#619)
+  feeShareBps?: number;
+  feeShares?: { recipient: string; basisPoints: number }[];
   caller?: CallerStatus;
   _actions: HypermediaAction[];
 }
@@ -148,6 +156,10 @@ export interface VotePreflight {
   // Required to satisfy _validateFeeShareInvariants — the chain rejects
   // a vote whose feeShares[] omits q.platformFeeRecipient.
   platformFeeRecipient?: string;
+  // Frozen per-question fee-share policy (same as CommitPreflight). The
+  // chain reverts a vote whose VoteWitness.feeShares doesn't match. (#619)
+  feeShareBps?: number;
+  feeShares?: { recipient: string; basisPoints: number }[];
   // voteSalt + voteSaltToken are server-issued at preflight and
   // echoed verbatim in the submit body; the salt is mixed into
   // allocationsHash to defeat on-chain rainbow-table enumeration.

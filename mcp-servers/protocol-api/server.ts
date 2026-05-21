@@ -214,15 +214,59 @@ import { StructuredMCPError, parseBackendErrorEnvelope } from "./errors.js";
 const ZERO_BYTES32 =
   "0x0000000000000000000000000000000000000000000000000000000000000000";
 
+// requireFrozenFeeShareBps + requireFrozenFeeShares pull the frozen
+// per-question fee-share policy off a commit/vote preflight response
+// (#619). The backend reads the policy from the initial sponsor's
+// contribution row and emits it on preflight so clients echo it bit-
+// for-bit into the witness; chain reverts any mismatch. Throw rather
+// than substitute defaults — a missing policy means the question
+// either has no confirmed sponsor yet (don't sign), or the backend
+// is older than the #619 fix (upgrade backend).
+function requireFrozenFeeShareBps(
+  pre: { feeShareBps?: number },
+  flow: string,
+): number {
+  if (pre.feeShareBps === undefined || pre.feeShareBps === null) {
+    throw new StructuredMCPError({
+      code: "PREFLIGHT_MISSING_FEE_SHARE_BPS",
+      message: `${flow} preflight did not return feeShareBps; cannot construct a witness whose feeShares match the chain-frozen policy.`,
+      action:
+        "Confirm the question has a confirmed initial sponsor (GET /v1/questions/:id, sponsors[].isInitial=true with confirmation_status=confirmed). If yes, upgrade the backend to a build that includes #619.",
+    });
+  }
+  return pre.feeShareBps;
+}
+
+function requireFrozenFeeShares(
+  pre: { feeShares?: { recipient: string; basisPoints: number }[] },
+  flow: string,
+): { recipient: `0x${string}`; basisPoints: number }[] {
+  if (!pre.feeShares || pre.feeShares.length === 0) {
+    throw new StructuredMCPError({
+      code: "PREFLIGHT_MISSING_FEE_SHARES",
+      message: `${flow} preflight returned no feeShares; the chain reverts a witness whose feeShares[] doesn't match the frozen policy.`,
+      action:
+        "Confirm the question has a confirmed initial sponsor (GET /v1/questions/:id, sponsors[].isInitial=true). If yes, upgrade the backend to a build that includes #619.",
+    });
+  }
+  return pre.feeShares.map((s) => ({
+    recipient: s.recipient as `0x${string}`,
+    basisPoints: s.basisPoints,
+  }));
+}
+
 function requireExpectedIntentHash(
-  pre: { expectedIntentHash?: string },
+  pre: { expectedIntentHash?: string; qid?: string },
   flow: string,
 ): `0x${string}` {
-  const v = pre.expectedIntentHash ?? "";
+  // Backend renamed expectedIntentHash → qid in preflight responses;
+  // fall back to qid so all four composite flows (commit/vote/sponsor/cosponsor)
+  // continue to work while the field name is in transition.
+  const v = pre.expectedIntentHash ?? pre.qid ?? "";
   if (!v || v.toLowerCase() === ZERO_BYTES32) {
     throw new StructuredMCPError({
       code: "PREFLIGHT_MISSING_INTENT_HASH",
-      message: `${flow} preflight did not return a populated expectedIntentHash; the backend cannot fence Stage-2 drift without it.`,
+      message: `${flow} preflight did not return a populated expectedIntentHash or qid; the backend cannot fence Stage-2 drift without it.`,
       action:
         "Re-fetch /v1/questions/:id/intents/preflight with the correct {actionType, params} body. If still empty, the backend version may be pre-Round 3 — upgrade backend.",
     });
@@ -656,7 +700,7 @@ server.tool(
       async () => {
         const pre = (await apiCall(
           "POST",
-          `/v1/questions/${params.question_id}/intents/preflight`,
+          `/v1/questions/${params.question_id}/intents/preflight?submitter=${address}`,
           { actionType: "commit", params: { submitter: address } },
         )) as CommitPreflight;
 
@@ -716,19 +760,21 @@ server.tool(
             expiresAt,
             forgeAddress: env.router,
             chainId: pre.chainId ?? CHAIN_ID,
-            expectedIntentHash: requireExpectedIntentHash(pre, "commit"),
+            // expectedIntentHash omitted: commit preflight cannot pre-compute it
+            // because contentHash depends on the solution body (unknown at preflight).
+            // runCommitFlow derives it locally via hashTypedData() — see CommitFlowParams.
             solutionBody: solutionBodyJSON,
             references: [],
             token: pre.token.contractAddress as `0x${string}`,
             feeAmount,
             stakeAmount,
-            // q.feeShareBps is frozen by the first sponsor; current
-            // questions sponsor with bps=0 + a single platform-recipient
-            // share (matches the sponsor cutover). Commit must mirror.
-            feeShareBps: 0,
-            feeShares: [
-              { recipient: platformFeeRecipient, basisPoints: 10000 },
-            ],
+            // Frozen by the first sponsor; preflight echoes the policy
+            // bit-for-bit. The chain reverts a commit whose feeShares
+            // don't match — see preflight-types.ts. Throw rather than
+            // silently substituting a default; pre-sponsor questions
+            // shouldn't be reaching submit_solution.
+            feeShareBps: requireFrozenFeeShareBps(pre, "commit"),
+            feeShares: requireFrozenFeeShares(pre, "commit"),
             walletClient,
             privateKey,
           });
@@ -790,7 +836,7 @@ server.tool(
       async () => {
         const pre = (await apiCall(
           "POST",
-          `/v1/questions/${params.question_id}/intents/preflight`,
+          `/v1/questions/${params.question_id}/intents/preflight?voter=${address}`,
           { actionType: "vote", params: { voter: address } },
         )) as VotePreflight;
 
@@ -880,10 +926,8 @@ server.tool(
             token: pre.token.contractAddress as `0x${string}`,
             feeAmount,
             stakeAmount,
-            feeShareBps: 0,
-            feeShares: [
-              { recipient: platformFeeRecipient, basisPoints: 10000 },
-            ],
+            feeShareBps: requireFrozenFeeShareBps(pre, "vote"),
+            feeShares: requireFrozenFeeShares(pre, "vote"),
             walletClient,
             privateKey,
           });
@@ -946,7 +990,7 @@ server.tool(
         // and the response.mode field tells us which flow to run.
         const pre = (await apiCall(
           "POST",
-          `/v1/questions/${params.question_id}/intents/preflight`,
+          `/v1/questions/${params.question_id}/intents/preflight?sponsor=${address}`,
           { actionType: "sponsor", params: { sponsor: address } },
         )) as FundPreflight;
 
@@ -1527,7 +1571,7 @@ server.tool(
           // Step 2 — sponsor preflight (Round-3 unified surface).
           const pre = (await apiCall(
             "POST",
-            `/v1/questions/${created.id}/intents/preflight`,
+            `/v1/questions/${created.id}/intents/preflight?sponsor=${address}`,
             { actionType: "sponsor", params: { sponsor: address } },
           )) as FundPreflight;
           if (pre.mode !== "sponsor") {
