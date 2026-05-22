@@ -1796,7 +1796,7 @@ server.tool(
     while (true) {
       attempts++;
       const path =
-        `/v1/questions?status=open&sort=created_at:desc&limit=${limit}`;
+        `/v1/questions?status=open&sort=created_at&limit=${limit}`;
       let raw: unknown;
       try {
         raw = await apiCall("GET", path);
