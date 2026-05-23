@@ -198,6 +198,105 @@ async function assertSpendableUSDC(
 // import).
 import { StructuredMCPError, parseBackendErrorEnvelope } from "./errors.js";
 
+// ─── Input safety helpers ────────────────────────────────────
+//
+// Threat model: agent-supplied identifiers (question_id, address,
+// bytes32 overrides) are interpolated directly into URL path
+// segments and query strings (e.g. `/v1/questions/${question_id}/...`).
+// A malicious or buggy agent that passes `qst_x/../accounts/admin`
+// would re-route the API call to an unintended endpoint, and one that
+// passes `addr&admin=true` would graft extra query params onto the
+// request. zod's `z.string()` alone doesn't fence these — we MUST
+// validate the shape *before* interpolation.
+//
+// Accepted shapes:
+//   QID_RE       qst_…/sol_…/vot_…/rnd_…/ctr_…  (crockford32 body)
+//   ADDR_RE      0x + 40 lowercase-or-uppercase hex chars
+//   BYTES32_RE   0x + 64 hex chars
+//
+// Reject anything else as STRUCTURED_INPUT_INVALID — the agent retries
+// with a corrected ID rather than us silently producing a malformed
+// request.
+const QID_RE = /^[a-z]{3}_[0-9A-Za-z]{1,64}$/;
+const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
+const BYTES32_RE = /^0x[0-9a-fA-F]{64}$/;
+
+function assertQuestionId(id: string, field = "question_id"): void {
+  if (!QID_RE.test(id)) {
+    throw new StructuredMCPError({
+      code: "STRUCTURED_INPUT_INVALID",
+      message: `${field}=${JSON.stringify(id)} is not a valid protocol ID (expected '<prefix>_<crockford32>' like 'qst_abc123').`,
+      action: `Pass a well-formed ID. Path-traversal characters (/, .., %, ?, &, #) and whitespace are rejected before any backend call.`,
+    });
+  }
+}
+
+function assertAddress(addr: string, field = "address"): void {
+  if (!ADDR_RE.test(addr)) {
+    throw new StructuredMCPError({
+      code: "STRUCTURED_INPUT_INVALID",
+      message: `${field}=${JSON.stringify(addr)} is not a valid 0x-prefixed 20-byte hex address.`,
+      action: `Pass an EVM address matching /^0x[0-9a-fA-F]{40}$/. The MCP rejects URL-path injection attempts at the boundary.`,
+    });
+  }
+}
+
+function assertBytes32(v: string, field: string): void {
+  if (!BYTES32_RE.test(v)) {
+    throw new StructuredMCPError({
+      code: "STRUCTURED_INPUT_INVALID",
+      message: `${field}=${JSON.stringify(v)} is not a valid 0x-prefixed 32-byte hex value.`,
+      action: `Pass a value matching /^0x[0-9a-fA-F]{64}$/.`,
+    });
+  }
+}
+
+// redactBearer is now shared with the SDK flow helpers — see
+// ../../src/utils/redact.ts. Kept as a local re-export here so the
+// existing call sites don't need import-path churn.
+import { redactBearer } from "../../src/utils/redact.js";
+
+// safeJSONStringify is the canonical encoder for tool responses.
+// Replacer (a) converts bigint → string verbatim so the JSON.stringify
+// default — which throws on bigint — never bites a tool that forgot to
+// `.toString()` a value, and (b) drops Authorization-like fields so
+// `details` payloads can't accidentally surface a captured header
+// blob. Used by textResponse so every cached + replayed response
+// passes through one funnel.
+function safeJSONStringify(value: unknown, indent = 2): string {
+  const seen = new WeakSet<object>();
+  return JSON.stringify(
+    value,
+    (key, v) => {
+      if (typeof v === "bigint") return v.toString();
+      if (typeof v === "object" && v !== null) {
+        if (seen.has(v as object)) return "[Circular]";
+        seen.add(v as object);
+      }
+      if (
+        typeof v === "string" &&
+        (key.toLowerCase() === "authorization" ||
+          key.toLowerCase() === "bearertoken" ||
+          key.toLowerCase() === "bearer_token" ||
+          key.toLowerCase() === "accesstoken" ||
+          key.toLowerCase() === "access_token" ||
+          key.toLowerCase() === "jwt")
+      ) {
+        // Note: get_session_token deliberately returns accessToken,
+        // and it constructs its JSON.stringify directly (not via this
+        // helper), so this redaction won't strip the legitimate
+        // session-token surface. snake_case + lowercase variants
+        // added per security audit H5 — third-party libraries
+        // sometimes serialize tokens under non-camelCase keys.
+        return "<redacted>";
+      }
+      if (typeof v === "string") return redactBearer(v);
+      return v;
+    },
+    indent,
+  );
+}
+
 // ─── expectedIntentHash gate ─────────────────────────────────
 //
 // Round-3 preflight responses carry `expectedIntentHash` — the
@@ -240,8 +339,18 @@ function requireFrozenFeeShareBps(
 function requireFrozenFeeShares(
   pre: { feeShares?: { recipient: string; basisPoints: number }[] },
   flow: string,
+  platformFeeRecipientFallback?: `0x${string}`,
 ): { recipient: `0x${string}`; basisPoints: number }[] {
   if (!pre.feeShares || pre.feeShares.length === 0) {
+    // Backend bug #619: preflight returns feeShareBps but omits feeShares[].
+    // When platformFeeRecipient is known, reconstruct the minimal chain-valid
+    // policy that the initial sponsor always posts (100% of fee to platform).
+    // RezonForge._validateFeeSharePolicy rejects empty arrays unconditionally,
+    // so we MUST emit at least one recipient even when feeShareBps is 0.
+    const ZERO = "0x0000000000000000000000000000000000000000";
+    if (platformFeeRecipientFallback && platformFeeRecipientFallback !== ZERO) {
+      return [{ recipient: platformFeeRecipientFallback, basisPoints: 10000 }];
+    }
     throw new StructuredMCPError({
       code: "PREFLIGHT_MISSING_FEE_SHARES",
       message: `${flow} preflight returned no feeShares; the chain reverts a witness whose feeShares[] doesn't match the frozen policy.`,
@@ -256,19 +365,22 @@ function requireFrozenFeeShares(
 }
 
 function requireExpectedIntentHash(
-  pre: { expectedIntentHash?: string; qid?: string },
+  pre: { expectedIntentHash?: string },
   flow: string,
 ): `0x${string}` {
-  // Backend renamed expectedIntentHash → qid in preflight responses;
-  // fall back to qid so all four composite flows (commit/vote/sponsor/cosponsor)
-  // continue to work while the field name is in transition.
-  const v = pre.expectedIntentHash ?? pre.qid ?? "";
+  // Audit H3: removed the `?? pre.qid` fallback. qid is the
+  // deterministic question identifier (hash of questionID+chainID);
+  // expectedIntentHash is the EIP-712 envelope hash. They are
+  // structurally different bytes32 values. Falling back conflated
+  // them and silently disabled the Stage-2 intent-hash drift gate.
+  // If preflight didn't return expectedIntentHash, fail loud.
+  const v = pre.expectedIntentHash ?? "";
   if (!v || v.toLowerCase() === ZERO_BYTES32) {
     throw new StructuredMCPError({
       code: "PREFLIGHT_MISSING_INTENT_HASH",
-      message: `${flow} preflight did not return a populated expectedIntentHash or qid; the backend cannot fence Stage-2 drift without it.`,
+      message: `${flow} preflight did not return a populated expectedIntentHash; the backend cannot fence Stage-2 drift without it.`,
       action:
-        "Re-fetch /v1/questions/:id/intents/preflight with the correct {actionType, params} body. If still empty, the backend version may be pre-Round 3 — upgrade backend.",
+        "Re-fetch /v1/questions/:id/intents/preflight with the correct {actionType, params} body. If the response still omits expectedIntentHash, the backend version may be pre-Round 3 — upgrade backend.",
     });
   }
   return v as `0x${string}`;
@@ -363,7 +475,13 @@ const setCached: (key: string, result: unknown) => void = (() => {
 })();
 
 function textResponse(result: unknown, replay = false) {
-  const body = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+  // Threat model: tool bodies sometimes return bigints (USDC wei, nonces)
+  // without an explicit `.toString()`. The default JSON.stringify throws
+  // on bigint, taking the entire tool call down. safeJSONStringify also
+  // strips bearer-token-shaped substrings so a cached error envelope that
+  // captured an upstream-proxy echo can never re-surface a JWT.
+  const body =
+    typeof result === "string" ? redactBearer(result) : safeJSONStringify(result);
   return {
     content: [
       {
@@ -517,14 +635,18 @@ async function doLogin(): Promise<string> {
     try {
       raw = JSON.parse(rawText);
     } catch {
-      raw = { _rawBody: rawText };
+      // Threat model (JWT leakage): a misbehaving upstream (proxy, LB,
+      // backend debug page) can echo the request — including its
+      // Authorization header — in a non-JSON body. Redact before
+      // surfacing into the error envelope that reaches the LLM caller.
+      raw = { _rawBody: redactBearer(rawText) };
     }
   }
   if (!resp.ok) {
     throw new StructuredMCPError(
       parseBackendErrorEnvelope({
         data: raw,
-        rawText,
+        rawText: redactBearer(rawText),
         status: resp.status,
         codePrefix: "AUTH_HTTP_",
         fallbackAction:
@@ -575,7 +697,12 @@ async function apiCall(
       try {
         data = JSON.parse(rawText);
       } catch {
-        data = { _rawBody: rawText };
+        // Threat model (JWT leakage + JSON.parse robustness): if the
+        // body is not JSON (proxy HTML, plain "Bad Gateway", etc.), we
+        // surface its text. Some misconfigured proxies echo request
+        // headers — strip any bearer-token-shaped strings before they
+        // re-enter the agent's context window.
+        data = { _rawBody: redactBearer(rawText) };
       }
     }
 
@@ -607,7 +734,7 @@ async function apiCall(
       throw new StructuredMCPError(
         parseBackendErrorEnvelope({
           data,
-          rawText,
+          rawText: redactBearer(rawText),
           status: resp.status,
           codePrefix: "HTTP_",
           fallbackAction:
@@ -685,6 +812,10 @@ server.tool(
       .describe("Claims against each success criterion"),
   },
   async (params) => {
+    // QP Stage 1 — boundary check: validate the ID shape before any
+    // URL interpolation so a `qst_x/../accounts/admin` injection can't
+    // re-route the backend call. See assertQuestionId for threat model.
+    assertQuestionId(params.question_id);
     const env = requireRouterEnv();
     const { walletClient, publicClient, privateKey, address } = getClients();
 
@@ -774,7 +905,7 @@ server.tool(
             // silently substituting a default; pre-sponsor questions
             // shouldn't be reaching submit_solution.
             feeShareBps: requireFrozenFeeShareBps(pre, "commit"),
-            feeShares: requireFrozenFeeShares(pre, "commit"),
+            feeShares: requireFrozenFeeShares(pre, "commit", platformFeeRecipient),
             walletClient,
             privateKey,
           });
@@ -827,6 +958,11 @@ server.tool(
       .describe("Point allocations across solutions"),
   },
   async (params) => {
+    // QP Stage 1 — boundary check: see assertQuestionId threat model.
+    assertQuestionId(params.question_id);
+    for (const a of params.allocations) {
+      assertQuestionId(a.solution_id, "allocations[].solution_id");
+    }
     const env = requireRouterEnv();
     const { walletClient, publicClient, privateKey, address } = getClients();
 
@@ -852,6 +988,34 @@ server.tool(
         const voteSalt = pre.voteSalt as `0x${string}`;
         const voteSaltToken = pre.voteSaltToken as `0x${string}`;
 
+        // ── Resolve sol_xxx API IDs → bytes32 intentHashes ───────────────
+        // The EIP-712 Allocation struct uses bytes32 solutionId, which is the
+        // on-chain intentHash of the committed solution — NOT the human-readable
+        // sol_xxx API ID (24 ASCII bytes → bytes24, which viem rejects as bytes32).
+        // Fetch the question's confirmed solutions to build the lookup map.
+        const solResp = (await apiCall(
+          "GET",
+          `/v1/questions/${params.question_id}?include=solutions`,
+        )) as { solutions: { data: Array<{ id: string; intentHash: string }> } };
+
+        const intentHashBySolId = new Map<string, `0x${string}`>(
+          (solResp.solutions?.data ?? []).map((s) => [
+            s.id,
+            s.intentHash as `0x${string}`,
+          ]),
+        );
+
+        // Validate every allocated solution ID resolves to a confirmed intentHash.
+        for (const a of params.allocations) {
+          if (!intentHashBySolId.has(a.solution_id)) {
+            throw new StructuredMCPError({
+              code: "VOTE_SOLUTION_NOT_FOUND",
+              message: `Allocated solution ${a.solution_id} not found in confirmed solutions for question ${params.question_id}.`,
+              action: `Verify the solution ID is confirmed via GET /v1/questions/${params.question_id}?include=solutions and retry with a valid solution_id.`,
+            });
+          }
+        }
+
         // Convert MCP conviction-points (sum=100 budget) → basis-points
         // (sum=10000). Each input point becomes 100 bps. Rejects fractional
         // points loudly — the agent must allocate whole points.
@@ -868,7 +1032,8 @@ server.tool(
           const bps = a.conviction_points * 100;
           bpsSum += bps;
           return {
-            solutionId: a.solution_id as `0x${string}`,
+            // Use intentHash (bytes32) not the sol_xxx API ID string (bytes24)
+            solutionId: intentHashBySolId.get(a.solution_id) as `0x${string}`,
             basisPoints: bps,
           };
         });
@@ -927,7 +1092,7 @@ server.tool(
             feeAmount,
             stakeAmount,
             feeShareBps: requireFrozenFeeShareBps(pre, "vote"),
-            feeShares: requireFrozenFeeShares(pre, "vote"),
+            feeShares: requireFrozenFeeShares(pre, "vote", platformFeeRecipient),
             walletClient,
             privateKey,
           });
@@ -976,6 +1141,8 @@ server.tool(
       ),
   },
   async (params) => {
+    // QP Stage 1 — boundary check: see assertQuestionId threat model.
+    assertQuestionId(params.question_id);
     const env = requireRouterEnv();
     const { walletClient, publicClient, privateKey, address } = getClients();
 
@@ -1076,10 +1243,10 @@ server.tool(
               token: pre.token.contractAddress as `0x${string}`,
               amount: amountWei,
               feeAmount: 0n,
-              feeShareBps,
-              feeShares: [
-                { recipient: platformFeeRecipient, basisPoints: 10000 },
-              ],
+              feeShareBps: amountWei > 0n ? feeShareBps : 0,
+              feeShares: amountWei > 0n
+                ? [{ recipient: platformFeeRecipient, basisPoints: 10000 }]
+                : [],
               walletClient,
               privateKey,
             });
@@ -1109,10 +1276,10 @@ server.tool(
             token: pre.token.contractAddress as `0x${string}`,
             amount: amountWei,
             feeAmount: 0n,
-            feeShareBps,
-            feeShares: [
-              { recipient: platformFeeRecipient, basisPoints: 10000 },
-            ],
+            feeShareBps: amountWei > 0n ? feeShareBps : 0,
+            feeShares: amountWei > 0n
+              ? [{ recipient: platformFeeRecipient, basisPoints: 10000 }]
+              : [],
             walletClient,
             privateKey,
           });
@@ -1164,6 +1331,25 @@ server.tool(
       ),
   },
   async (params) => {
+    // QP Stage 1 — boundary check. question_id is interpolated into
+    // the accounts include-fetch URL; qid_hex / proof items become
+    // calldata to Router.claim. Validating shape before use blocks
+    // URL-path injection AND keeps malformed hex from triggering a
+    // viem stack trace deep in the broadcast path.
+    assertQuestionId(params.question_id);
+    if (params.qid_hex !== undefined) assertBytes32(params.qid_hex, "qid_hex");
+    if (params.proof !== undefined) {
+      for (let i = 0; i < params.proof.length; i++) {
+        assertBytes32(params.proof[i], `proof[${i}]`);
+      }
+    }
+    if (params.amount_wei !== undefined && !/^[0-9]+$/.test(params.amount_wei)) {
+      throw new StructuredMCPError({
+        code: "STRUCTURED_INPUT_INVALID",
+        message: `amount_wei=${JSON.stringify(params.amount_wei)} is not a non-negative integer string.`,
+        action: "Pass amount_wei as a decimal integer string (token base units).",
+      });
+    }
     const env = requireRouterEnv();
     const { walletClient, publicClient, address } = getClients();
 
@@ -1524,6 +1710,19 @@ server.tool(
       ),
   },
   async (params) => {
+    // QP Stage 1 — boundary check. voting_deadline is passed via
+    // `new Date(...)`. If the input is malformed we'd ship NaN
+    // downstream and the backend rejects with an opaque validation
+    // failure. Loud-fail here so the agent learns the shape.
+    const deadlineMs = new Date(params.voting_deadline).getTime();
+    if (!Number.isFinite(deadlineMs)) {
+      throw new StructuredMCPError({
+        code: "STRUCTURED_INPUT_INVALID",
+        message: `voting_deadline=${JSON.stringify(params.voting_deadline)} is not a parseable ISO-8601 date.`,
+        action:
+          "Pass voting_deadline as ISO-8601, e.g. '2026-06-01T12:00:00Z'. Must be in the future.",
+      });
+    }
     const env = requireRouterEnv();
     const { walletClient, publicClient, privateKey, address } = getClients();
 
@@ -1553,7 +1752,8 @@ server.tool(
           initialBounty: initialBountyBase,
           bountyCurrency: "USD",
           // R-WIRE-ABSOLUTE-UNIX: backend expects int64 Unix seconds, not ISO-8601.
-          votingDeadline: Math.floor(new Date(params.voting_deadline).getTime() / 1000),
+          // deadlineMs was validated at tool entry (Number.isFinite gate).
+          votingDeadline: Math.floor(deadlineMs / 1000),
           successCriteria: params.success_criteria,
           assumptions: params.assumptions ?? [],
           context: params.context,
@@ -1727,7 +1927,29 @@ server.tool(
 // Reads via the same authenticated apiCall path as everything else,
 // so JWT refresh + 401 retry stay in play. No special-case caching.
 
+// Bounded "seen" set — a long-running solver agent that polls every 60s
+// for a week would otherwise accumulate ~10k IDs and grow without bound
+// (audit #617). Cap at 5000 most-recent IDs; on overflow we drop the
+// oldest entry. Set iteration is insertion order, so .values().next()
+// gives us the eviction target. Threat model: memory exhaustion of the
+// MCP host process from a multi-day agent run.
+const SEEN_QUESTION_IDS_MAX = 5000;
 const seenQuestionIds = new Set<string>();
+
+function rememberSeenQuestion(id: string): void {
+  if (seenQuestionIds.has(id)) {
+    // Refresh recency by re-inserting (delete + add keeps it newest).
+    seenQuestionIds.delete(id);
+    seenQuestionIds.add(id);
+    return;
+  }
+  seenQuestionIds.add(id);
+  while (seenQuestionIds.size > SEEN_QUESTION_IDS_MAX) {
+    const oldest = seenQuestionIds.values().next().value;
+    if (oldest === undefined) break;
+    seenQuestionIds.delete(oldest);
+  }
+}
 
 interface QuestionRow {
   id?: string;
@@ -1786,6 +2008,12 @@ server.tool(
     const pollMs = (params.poll_interval_seconds ?? 60) * 1000;
     const maxMs = (params.max_wait_seconds ?? 1800) * 1000;
     const limit = params.limit ?? 20;
+    // Validate exclude_authors at the boundary — agent-supplied
+    // strings shouldn't bypass shape checks just because they go to
+    // a local Set rather than a URL.
+    for (const a of params.exclude_authors ?? []) {
+      assertAddress(a, "exclude_authors[]");
+    }
     const wantTags = (params.tags ?? []).map((t) => t.toLowerCase());
     const excludeAuthors = new Set(
       (params.exclude_authors ?? []).map((a) => a.toLowerCase()),
@@ -1839,7 +2067,7 @@ server.tool(
         const author = (q.authorAddress ?? q.author_address ?? "").toLowerCase();
         if (author && excludeAuthors.has(author)) {
           // Mark as seen so we never bother the caller with it again.
-          seenQuestionIds.add(qid);
+          rememberSeenQuestion(qid);
           continue;
         }
         if (wantTags.length > 0) {
@@ -1851,7 +2079,7 @@ server.tool(
           }
         }
         matched.push(q);
-        seenQuestionIds.add(qid);
+        rememberSeenQuestion(qid);
       }
 
       if (matched.length > 0) {
@@ -1926,6 +2154,9 @@ server.tool(
   },
   async (params) => {
     const target = params.address ?? getClients().address;
+    // Boundary check — the faucet helper interpolates target into a
+    // Circle API URL; defend against URL-segment injection.
+    assertAddress(target, "address");
     const result = await requestUSDC(target);
     const eth_hint = ethFaucetMessage(target);
     return {

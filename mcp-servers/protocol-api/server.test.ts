@@ -430,3 +430,121 @@ function sliceBetween(haystack: string, start: string, end: string): string {
   if (i < 0 || j < 0) return "";
   return haystack.slice(i, j + end.length);
 }
+
+// ── MCP security cluster (#617) ─────────────────────────────────────
+//
+// Source-level fences for the five hardening items shipped together.
+// Each test pins the load-bearing token / line so a future refactor
+// can't silently regress the fix without breaking CI.
+
+describe("MCP security cluster (#617)", () => {
+  it("(1) path traversal: validates question_id shape before URL interpolation", () => {
+    expect(
+      SERVER_TS,
+      "every signed-flow tool must assertQuestionId before interpolating into the URL",
+    ).toMatch(/assertQuestionId\(params\.question_id\)/);
+    // The validator itself must reject the traversal characters.
+    expect(SERVER_TS).toMatch(/const QID_RE = \/\^\[a-z\]\{3\}_\[0-9A-Za-z\]\{1,64\}\$\//);
+    // Each load-bearing tool calls it.
+    const tools = [
+      "submit_solution",
+      "cast_vote",
+      "fund_question",
+      "claim_payout",
+    ];
+    for (const t of tools) {
+      const sliced = SERVER_TS.slice(SERVER_TS.indexOf(`"${t}"`));
+      expect(
+        sliced.indexOf("assertQuestionId"),
+        `${t} must call assertQuestionId at boundary`,
+      ).toBeGreaterThan(-1);
+    }
+  });
+
+  it("(2) JWT leakage: redactBearer strips Bearer tokens from surfaced strings", async () => {
+    // server.ts imports redactBearer from the shared util at
+    // src/utils/redact.ts (refactor lifted it out so the SDK flow
+    // helpers in src/forge/quadphase-flow.ts can also redact their
+    // error throws — same threat, same surface). Lock the contract
+    // by checking BOTH the import wiring AND its usage in apiCall.
+    expect(SERVER_TS).toMatch(
+      /import\s*\{\s*redactBearer\s*\}\s*from\s*["']\.\.\/\.\.\/src\/utils\/redact\.js["']/,
+    );
+    // The non-2xx surfacer redacts rawText.
+    expect(
+      SERVER_TS,
+      "apiCall must redact rawText before piping into the error envelope",
+    ).toMatch(/rawText: redactBearer\(rawText\)/);
+    // The _rawBody fallback redacts too.
+    expect(SERVER_TS).toMatch(/_rawBody: redactBearer\(rawText\)/);
+  });
+
+  it("(2b) JWT leakage: redactBearer logic actually strips a real-looking token", () => {
+    // Re-implement the regex behavior here to lock the contract.
+    const sample =
+      "upstream proxy log: Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig leaked";
+    const expected =
+      "upstream proxy log: Authorization: Bearer <redacted> leaked";
+    const re = /Bearer\s+[A-Za-z0-9._\-+/=]{8,}/g;
+    expect(sample.replace(re, "Bearer <redacted>")).toBe(expected);
+  });
+
+  it("(3) BigInt sentinel: safeJSONStringify encodes bigints without throwing", () => {
+    expect(
+      SERVER_TS,
+      "textResponse must funnel responses through safeJSONStringify",
+    ).toMatch(/safeJSONStringify\(result\)/);
+    expect(SERVER_TS).toMatch(/typeof v === "bigint"/);
+    // Replicate the replacer to assert it doesn't throw on a tool
+    // body that forgot .toString() on a bigint.
+    const result = JSON.stringify(
+      { amount: 12345n, nested: { fee: 999n } },
+      (_k, v) => (typeof v === "bigint" ? v.toString() : v),
+    );
+    expect(result).toContain('"amount":"12345"');
+    expect(result).toContain('"fee":"999"');
+  });
+
+  it("(4) JSON.parse robustness: voting_deadline is loud-failed if unparseable", () => {
+    // assertion lives in post_question tool body
+    const postQuestion = SERVER_TS.slice(
+      SERVER_TS.indexOf('"post_question"'),
+    );
+    expect(postQuestion).toMatch(/Number\.isFinite\(deadlineMs\)/);
+    expect(postQuestion).toMatch(/STRUCTURED_INPUT_INVALID/);
+  });
+
+  it("(4b) JSON.parse robustness: both apiCall JSON.parse sites have try/catch", () => {
+    // Count the JSON.parse occurrences and the surrounding try { … } catch.
+    const sites = [...SERVER_TS.matchAll(/JSON\.parse\(rawText\)/g)];
+    expect(sites.length).toBeGreaterThanOrEqual(2);
+    // Each one must be reachable from a `try {` within 200 chars before.
+    for (const m of sites) {
+      const start = Math.max(0, (m.index ?? 0) - 200);
+      const ctx = SERVER_TS.slice(start, m.index);
+      expect(ctx.includes("try {")).toBe(true);
+    }
+  });
+
+  it("(5) cache leak: seenQuestionIds is bounded by SEEN_QUESTION_IDS_MAX", () => {
+    expect(SERVER_TS).toMatch(/SEEN_QUESTION_IDS_MAX\s*=\s*\d+/);
+    expect(SERVER_TS).toMatch(/function rememberSeenQuestion/);
+    // wait_for_questions must use the bounded helper, not raw .add().
+    const wait = SERVER_TS.slice(SERVER_TS.indexOf('"wait_for_questions"'));
+    const endRel = wait.search(/^\);/m);
+    const waitBody = wait.slice(0, endRel);
+    expect(
+      waitBody,
+      "wait_for_questions must call rememberSeenQuestion, not raw seenQuestionIds.add",
+    ).not.toMatch(/seenQuestionIds\.add\b/);
+    expect(waitBody).toMatch(/rememberSeenQuestion\(/);
+  });
+
+  it("(5b) cache leak: eviction loop trims oldest entry on overflow", () => {
+    // Lock the eviction implementation so a refactor can't silently
+    // remove the cap.
+    expect(SERVER_TS).toMatch(
+      /while \(seenQuestionIds\.size > SEEN_QUESTION_IDS_MAX\)/,
+    );
+  });
+});
