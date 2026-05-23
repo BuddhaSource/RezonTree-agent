@@ -27,6 +27,14 @@ export class StructuredMCPError extends Error {
   readonly requestId?: string;
   readonly httpStatus?: number;
   readonly details?: Record<string, unknown>;
+  // `retryable` tells the agent whether the same tool call MAY succeed
+  // if re-attempted without changing inputs. Pre-#616 agents had to
+  // parse error strings ("transient", "rate limited", "503") to decide.
+  // Now the classification is computed once at the boundary so every
+  // agent sees the same answer. Computed via classifyRetryable() unless
+  // the caller passes an explicit override (e.g. broadcast/contract
+  // surfaces that know their reverts are permanent).
+  readonly retryable: boolean;
 
   constructor(opts: {
     code: string;
@@ -35,7 +43,11 @@ export class StructuredMCPError extends Error {
     requestId?: string;
     httpStatus?: number;
     details?: Record<string, unknown>;
+    retryable?: boolean;
   }) {
+    const retryable =
+      opts.retryable ??
+      classifyRetryable({ code: opts.code, httpStatus: opts.httpStatus });
     // The MCP SDK serializes the thrown Error's `.message` verbatim.
     // Setting it to the wire envelope means tools that bottom out in
     // `.message` (legacy harness) still emit structured output.
@@ -46,6 +58,7 @@ export class StructuredMCPError extends Error {
       errorAction: opts.action,
       requestId: opts.requestId ?? null,
       httpStatus: opts.httpStatus ?? null,
+      retryable,
       details: opts.details ?? null,
     };
     super(JSON.stringify(envelope));
@@ -55,7 +68,89 @@ export class StructuredMCPError extends Error {
     this.requestId = opts.requestId;
     this.httpStatus = opts.httpStatus;
     this.details = opts.details;
+    this.retryable = retryable;
   }
+}
+
+// classifyRetryable — deterministic mapping from (code, httpStatus) to
+// a retryable flag. Agents read `error.retryable` from the wire envelope
+// to decide whether to back off and retry the same call, or fail the
+// step and route to a recovery path.
+//
+// Retryable=true: transient surface conditions where the underlying
+// state may resolve without changing inputs (5xx, network blips, the
+// auth-transport blip that yields AUTH_HTTP_503).
+//
+// Retryable=false: permanent decisions (4xx client errors, validation
+// failures, contract reverts, missing config). Re-issuing the same call
+// will reach the same outcome. Caller MUST either change inputs or stop.
+//
+// Anything unknown defaults to NOT retryable — the safer floor when an
+// agent is burning budget on retry loops.
+export function classifyRetryable(opts: {
+  code: string;
+  httpStatus?: number;
+}): boolean {
+  const code = opts.code;
+  const status = opts.httpStatus ?? 0;
+
+  // Transient HTTP surfaces from upstream (LB, proxy, backend), or a
+  // backend that explicitly emits 503/504 during a brief outage. The
+  // agent's retry on the same body has a real chance of succeeding.
+  if (status === 502 || status === 503 || status === 504) return true;
+  if (status === 408 || status === 429) return true;
+
+  // Non-envelope synthetic codes minted by parseBackendErrorEnvelope
+  // for the same set of statuses (HTTP_503, AUTH_HTTP_503, etc.).
+  if (/^(?:AUTH_)?HTTP_(?:408|429|502|503|504)$/.test(code)) return true;
+
+  // Auth transport flake — DNS resolution, TCP reset on /v1/sessions.
+  // A second attempt commonly succeeds. AUTH_REFRESH_FAILED is NOT in
+  // this bucket: it's a second-consecutive 401 meaning the wallet was
+  // revoked or the JWT signing key rotated — retrying won't help.
+  if (code === "AUTH_TRANSPORT_FAILED") return true;
+
+  // Backend-emitted retryable hints — explicit list. Add new ones here
+  // (not in the call site) so the policy stays centralised.
+  if (code === "INTENT_EXPIRED_WITH_TIME_LEFT") return true;
+
+  // Permanent client surface — 4xx validation, auth refusal, conflict.
+  // Re-posting the same envelope yields the same answer. The agent must
+  // change inputs (validation), present a different identity (401/403),
+  // or skip (404/409).
+  if (status >= 400 && status < 500) return false;
+
+  // Local-MCP synthetic codes that are always permanent: missing config,
+  // bad input shape, preflight contract mismatches, AUTH_REFRESH_FAILED.
+  // Listing explicitly so a typo or new code lands as non-retryable
+  // (safe default) rather than accidentally enabling retry storms.
+  const PERMANENT_LOCAL = new Set<string>([
+    "STRUCTURED_INPUT_INVALID",
+    "AUTH_CONFIG_MISSING",
+    "AUTH_REFRESH_FAILED",
+    "INSUFFICIENT_BALANCE",
+    "PREFLIGHT_MISSING_FEE_SHARE_BPS",
+    "PREFLIGHT_MISSING_FEE_SHARES",
+    "PREFLIGHT_MISSING_INTENT_HASH",
+    "SUBMIT_SOLUTION_PARTIAL_FAILURE",
+    "CAST_VOTE_PARTIAL_FAILURE",
+    "POST_QUESTION_SPONSOR_FAILED",
+    "VOTE_SALT_MISSING",
+    "VOTE_SOLUTION_NOT_FOUND",
+    "VOTE_FRACTIONAL_POINTS",
+    "VOTE_BPS_SUM_MISMATCH",
+    "NOT_PARTICIPANT",
+    "QUESTION_NOT_ON_CHAIN",
+    "ROUND_NOT_SETTLED",
+    "STALE_DRAFT_ROW",
+    "WAIT_CONFIRMATION_TIMEOUT",
+    "WAIT_CONFIRMATION_REJECTED",
+  ]);
+  if (PERMANENT_LOCAL.has(code)) return false;
+
+  // Default floor: not retryable. Cheaper to be told "stop" once than to
+  // burn an agent's budget on a loop with no exit condition.
+  return false;
 }
 
 // parseBackendErrorEnvelope — pure / no side effects. Takes the

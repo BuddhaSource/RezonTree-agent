@@ -20,6 +20,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   StructuredMCPError,
+  classifyRetryable,
   parseBackendErrorEnvelope,
 } from "./errors.js";
 
@@ -57,6 +58,11 @@ const EXPECTED_TOOLS = new Set<string>([
   // because it pairs with the local JWT issuer + the agent's
   // wallet-scoped /v1/me view of which questions are open to them.
   "wait_for_questions",
+  // Confirmation watch — block until the reconciler reaches terminal
+  // state on an intent_hash the agent just broadcast. Local because the
+  // agent's prior tool call (submit_solution / cast_vote / etc.) already
+  // holds the wallet + JWT context this poll uses.
+  "wait_for_chain_confirmation",
   // Methodology / craft — advisory text fetched once per session, no
   // backend dep. Pairs with the post_question composite.
   "get_craft_advice",
@@ -546,5 +552,156 @@ describe("MCP security cluster (#617)", () => {
     expect(SERVER_TS).toMatch(
       /while \(seenQuestionIds\.size > SEEN_QUESTION_IDS_MAX\)/,
     );
+  });
+});
+
+// ── #616 — agent friction fixes ─────────────────────────────────────
+//
+// Three load-bearing fixes shipped together: canonical sort param,
+// wait_for_chain_confirmation tool, retryable envelope field. Each
+// gets a fence so a future refactor can't silently regress.
+
+describe("#616 wait_for_questions sort param", () => {
+  it("uses canonical sort=created_at (no :desc suffix)", () => {
+    // Backend Round-3 GET /v1/questions accepts sort ∈ {created_at,
+    // initial_bounty, solution_count}. The historical bug was
+    // `created_at:desc` (audit drift-2026-05-21 §03 line 69).
+    expect(SERVER_TS).toMatch(/sort=created_at(?!:)/);
+    expect(SERVER_TS, "must not send sort=created_at:desc").not.toMatch(
+      /sort=created_at:desc/,
+    );
+  });
+
+  it("reads canonical Round-3 list shape (data) only", () => {
+    const wait = SERVER_TS.slice(SERVER_TS.indexOf('"wait_for_questions"'));
+    const endRel = wait.search(/^\);/m);
+    const waitBody = wait.slice(0, endRel);
+    // Round-3 list response is `{data, cursor?, hasMore}`. The dead
+    // `items?` probe + `q.questionId` + `q.author_address` fallbacks
+    // were stale pre-Round-3 shapes (audit drift-2026-05-21 §03).
+    // Strip comments before pattern-matching so the call-out we leave
+    // *in* the source ("`items?` probe is stale") doesn't trip the
+    // grep that's looking for actual code.
+    const codeOnly = waitBody.replace(/\/\/[^\n]*\n/g, "\n");
+    expect(codeOnly, "items? probe is stale").not.toMatch(/\bitems\?:/);
+    expect(codeOnly, "questionId fallback is stale").not.toMatch(
+      /q\.questionId/,
+    );
+    expect(
+      codeOnly,
+      "author_address snake_case fallback is stale",
+    ).not.toMatch(/q\.author_address/);
+  });
+});
+
+describe("#616 wait_for_chain_confirmation", () => {
+  const block = SERVER_TS.slice(
+    SERVER_TS.indexOf('"wait_for_chain_confirmation"'),
+  );
+  const endRel = block.search(/^\);/m);
+  const toolBody = block.slice(0, endRel);
+
+  it("validates intent_hash shape at the boundary", () => {
+    expect(toolBody).toMatch(/assertBytes32\(params\.intent_hash/);
+  });
+
+  it("polls the canonical pending surface", () => {
+    expect(toolBody).toMatch(
+      /apiCall\(\s*"GET"\s*,\s*"\/v1\/accounts\/me\?include=pending"/,
+    );
+  });
+
+  it("surfaces Stage-4 rejection as WAIT_CONFIRMATION_REJECTED", () => {
+    expect(toolBody).toMatch(/lifecyclePhase === "rejected_revalidation"/);
+    expect(toolBody).toMatch(/WAIT_CONFIRMATION_REJECTED/);
+  });
+
+  it("times out as WAIT_CONFIRMATION_TIMEOUT with retryable=true", () => {
+    expect(toolBody).toMatch(/WAIT_CONFIRMATION_TIMEOUT/);
+    expect(toolBody).toMatch(/retryable:\s*true/);
+  });
+});
+
+describe("#616 retryable error envelope", () => {
+  it("emits retryable field on the wire", () => {
+    const err = new StructuredMCPError({
+      code: "HTTP_503",
+      message: "transient upstream",
+      action: "retry",
+      httpStatus: 503,
+    });
+    const wire = JSON.parse(err.message) as Record<string, unknown>;
+    expect(wire.retryable).toBe(true);
+    expect(err.retryable).toBe(true);
+  });
+
+  it("classifies 5xx + transport flake as retryable", () => {
+    expect(classifyRetryable({ code: "HTTP_502", httpStatus: 502 })).toBe(true);
+    expect(classifyRetryable({ code: "HTTP_503", httpStatus: 503 })).toBe(true);
+    expect(classifyRetryable({ code: "HTTP_504", httpStatus: 504 })).toBe(true);
+    expect(classifyRetryable({ code: "AUTH_HTTP_503", httpStatus: 503 })).toBe(
+      true,
+    );
+    expect(classifyRetryable({ code: "AUTH_TRANSPORT_FAILED" })).toBe(true);
+    expect(classifyRetryable({ code: "HTTP_429", httpStatus: 429 })).toBe(true);
+    expect(classifyRetryable({ code: "HTTP_408", httpStatus: 408 })).toBe(true);
+  });
+
+  it("classifies 4xx + local synthetic codes as NOT retryable", () => {
+    expect(classifyRetryable({ code: "HTTP_400", httpStatus: 400 })).toBe(false);
+    expect(classifyRetryable({ code: "HTTP_401", httpStatus: 401 })).toBe(false);
+    expect(classifyRetryable({ code: "HTTP_403", httpStatus: 403 })).toBe(false);
+    expect(classifyRetryable({ code: "HTTP_404", httpStatus: 404 })).toBe(false);
+    expect(classifyRetryable({ code: "HTTP_409", httpStatus: 409 })).toBe(false);
+    expect(classifyRetryable({ code: "HTTP_422", httpStatus: 422 })).toBe(false);
+    expect(classifyRetryable({ code: "STRUCTURED_INPUT_INVALID" })).toBe(false);
+    expect(classifyRetryable({ code: "AUTH_REFRESH_FAILED", httpStatus: 401 })).toBe(
+      false,
+    );
+    expect(classifyRetryable({ code: "AUTH_CONFIG_MISSING" })).toBe(false);
+    expect(classifyRetryable({ code: "INSUFFICIENT_BALANCE" })).toBe(false);
+    expect(classifyRetryable({ code: "PREFLIGHT_MISSING_INTENT_HASH" })).toBe(
+      false,
+    );
+    expect(classifyRetryable({ code: "WAIT_CONFIRMATION_REJECTED" })).toBe(
+      false,
+    );
+  });
+
+  it("explicit override beats default classification", () => {
+    // Caller knows better — e.g. timeout error is retryable even though
+    // WAIT_CONFIRMATION_TIMEOUT is in the permanent-local list (it would
+    // be safer-default false). The override flips it on so the agent
+    // calls back with a longer deadline.
+    const err = new StructuredMCPError({
+      code: "WAIT_CONFIRMATION_TIMEOUT",
+      message: "still pending",
+      action: "retry with larger max_wait_seconds",
+      retryable: true,
+    });
+    expect(err.retryable).toBe(true);
+  });
+
+  it("backend envelope preserves retryable through parseBackendErrorEnvelope", () => {
+    const args = parseBackendErrorEnvelope({
+      data: {
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "bad input",
+          action: "fix it",
+        },
+      },
+      rawText: "",
+      status: 422,
+      fallbackAction: "fallback",
+    });
+    const err = new StructuredMCPError(args);
+    expect(err.retryable).toBe(false);
+    const wire = JSON.parse(err.message) as Record<string, unknown>;
+    expect(wire.retryable).toBe(false);
+  });
+
+  it("unknown floor is NOT retryable (safe default)", () => {
+    expect(classifyRetryable({ code: "MYSTERY_NEVER_SEEN" })).toBe(false);
   });
 });

@@ -1951,14 +1951,19 @@ function rememberSeenQuestion(id: string): void {
   }
 }
 
+// QuestionRow — the subset of the Round-3 QuestionResponse fields this
+// tool reads. Producer is `internal/handler/question.go` (struct
+// `QuestionResponse` for full view + `QuestionCardResponse` for compact);
+// both emit camelCase `id` and `authorAddress`. The pre-Round-3 fallback
+// shape (`questionId`, `author_address`) was retired upstream — dead-
+// branch reads removed here per audit drift-2026-05-21 §03 to avoid
+// silently accepting an obsolete shape.
 interface QuestionRow {
   id?: string;
-  questionId?: string;
   title?: string;
   status?: string;
   tags?: string[];
   authorAddress?: string;
-  author_address?: string;
   createdAt?: number;
 }
 
@@ -2023,6 +2028,13 @@ server.tool(
 
     while (true) {
       attempts++;
+      // Canonical Round-3 sort values for GET /v1/questions:
+      // `created_at` (default — newest first), `initial_bounty`,
+      // `solution_count`. See `internal/handler/question.go` validation
+      // switch. The historical bug (#616 / audit drift-2026-05-21) was
+      // `created_at:desc` with a `:desc` suffix the backend 400s on.
+      // We pass `created_at` explicitly so the URL reads as a contract
+      // rather than relying on server-side defaults.
       const path =
         `/v1/questions?status=open&sort=created_at&limit=${limit}`;
       let raw: unknown;
@@ -2054,17 +2066,22 @@ server.tool(
         };
       }
 
+      // Round-3 list shape is `{data: T[], cursor?, hasMore}` (see
+      // `handler.PagedList[QuestionResponse]`). The pre-Round-3 `items?`
+      // probe + bare-array fallback were dead code per audit
+      // drift-2026-05-21 §03 — removed so a future producer that drifts
+      // to an unrelated shape surfaces an empty match (and the agent
+      // re-tries) instead of silently reading `undefined` keys.
       const list =
-        (raw as { items?: QuestionRow[]; data?: QuestionRow[] }).items ??
-        (raw as { items?: QuestionRow[]; data?: QuestionRow[] }).data ??
-        (Array.isArray(raw) ? (raw as QuestionRow[]) : []);
+        (raw as { data?: QuestionRow[] }).data ??
+        ([] as QuestionRow[]);
 
       const matched: QuestionRow[] = [];
       for (const q of list) {
-        const qid = q.id ?? q.questionId;
+        const qid = q.id;
         if (!qid) continue;
         if (seenQuestionIds.has(qid)) continue; // already returned to caller
-        const author = (q.authorAddress ?? q.author_address ?? "").toLowerCase();
+        const author = (q.authorAddress ?? "").toLowerCase();
         if (author && excludeAuthors.has(author)) {
           // Mark as seen so we never bother the caller with it again.
           rememberSeenQuestion(qid);
@@ -2091,10 +2108,10 @@ server.tool(
                 {
                   ok: true,
                   matched: matched.map((q) => ({
-                    id: q.id ?? q.questionId,
+                    id: q.id,
                     title: q.title,
                     tags: q.tags,
-                    authorAddress: q.authorAddress ?? q.author_address,
+                    authorAddress: q.authorAddress,
                     status: q.status,
                     createdAt: q.createdAt,
                   })),
@@ -2136,6 +2153,183 @@ server.tool(
         };
       }
       // Sleep min(pollMs, remainingMs) so we don't overshoot the deadline.
+      await new Promise((r) => setTimeout(r, Math.min(pollMs, remainingMs)));
+    }
+  },
+);
+
+// ── wait_for_chain_confirmation — block until reconciler confirms ────
+//
+// Closes #616's third agent-friction item: after a sign + broadcast
+// flow (submit_solution, cast_vote, fund_question, claim_payout) the
+// agent holds an `intent_hash` but can't tell when the backend's
+// reconciler has caught up with Ponder's chain ingest. Pre-fix, agents
+// hand-rolled a poll loop over GET /v1/accounts/me?include=pending,
+// often with wrong intervals or no rejection check — burning budget
+// or shipping follow-up actions on an unconfirmed row.
+//
+// Mechanism. Pending intents (`signed_intents.status='pending'`) surface
+// on /v1/accounts/me?include=pending with `intentHash` + `lifecyclePhase`.
+// The reconciler flips the row to terminal state when Ponder's chain-
+// event projector reports the broadcast tx. Two terminal outcomes:
+//   • confirmed → row drops off the pending list (status='confirmed').
+//   • rejected_revalidation → row stays but `lifecyclePhase` populates.
+//     Stage-4 caught a chain-event ↔ intent_hash mismatch; retrying
+//     the same intent will fail again. The tool surfaces this as
+//     WAIT_CONFIRMATION_REJECTED so the agent stops the flow.
+//
+// Why poll /accounts/me + filter client-side rather than a per-hash
+// endpoint? Round-3's 14-endpoint contract has no GET-by-intent-hash
+// surface (R-API-ROUND3-CONSOLIDATE-BEFORE-ADD), and adding one for a
+// progress check would be exactly the kind of bespoke read the rule
+// targets. The pending list is already authoritative — the agent owns
+// the intent_hash → membership test is O(N) where N is the caller's
+// pending count (single-digit in practice).
+
+interface PendingIntentItem {
+  intentHash?: string;
+  questionId?: string;
+  chainId?: number;
+  status?: string;
+  lifecyclePhase?: string;
+  lifecycleReason?: string;
+  createdAt?: number;
+  updatedAt?: number;
+}
+
+server.tool(
+  "wait_for_chain_confirmation",
+  "Block until the reconciler confirms (or rejects) a chain-bound intent the agent just broadcast. Pass `intent_hash` (the 0x-prefixed bytes32 returned by submit_solution / cast_vote / fund_question / claim_payout). Polls /v1/accounts/me?include=pending until the intent leaves the pending list (confirmed) or its lifecyclePhase flips to 'rejected_revalidation' (Stage-4 reject — same intent will never confirm). Defaults: 2s poll, 60s timeout. Errors: WAIT_CONFIRMATION_TIMEOUT (deadline elapsed, intent still pending — try again with longer max_wait_seconds, or check the chain manually), WAIT_CONFIRMATION_REJECTED (chain event ↔ intent mismatch; do NOT retry the same intent).",
+  {
+    intent_hash: z
+      .string()
+      .describe(
+        "0x-prefixed bytes32 intent hash returned by the chain-bound tool that broadcast this intent.",
+      ),
+    poll_interval_seconds: z
+      .number()
+      .int()
+      .min(1)
+      .max(30)
+      .optional()
+      .describe(
+        "Seconds between successive /accounts/me?include=pending polls. Default 2.",
+      ),
+    max_wait_seconds: z
+      .number()
+      .int()
+      .min(5)
+      .max(600)
+      .optional()
+      .describe(
+        "Hard ceiling on this tool call's wall-clock wait. Default 60 (covers Base Sepolia 12s finality + reconciler lag with margin).",
+      ),
+  },
+  async (params) => {
+    assertBytes32(params.intent_hash, "intent_hash");
+    const intentHash = params.intent_hash.toLowerCase();
+    const pollMs = (params.poll_interval_seconds ?? 2) * 1000;
+    const maxMs = (params.max_wait_seconds ?? 60) * 1000;
+    const startedAt = Date.now();
+    const deadline = startedAt + maxMs;
+    let attempts = 0;
+    let lastSeenItem: PendingIntentItem | undefined;
+
+    // Single helper: one /accounts/me?include=pending fetch + filter for
+    // the caller-owned row whose intentHash matches. Returns null when
+    // the hash is no longer in the pending list — interpreted by the
+    // caller as "reconciler confirmed (or never staged it; see hint)".
+    async function findPendingRow(): Promise<PendingIntentItem | null> {
+      // Round-3 surfaces /v1/me/pending via /v1/accounts/me?include=pending.
+      // The local-MCP drift fence (server.test.ts ALLOWED_API_PATHS)
+      // already accepts /v1/accounts/[^/]+ so this stays in-bounds.
+      const raw = (await apiCall(
+        "GET",
+        "/v1/accounts/me?include=pending",
+      )) as { pending?: { intents?: PendingIntentItem[] } };
+      const intents = raw?.pending?.intents ?? [];
+      for (const it of intents) {
+        if ((it.intentHash ?? "").toLowerCase() === intentHash) return it;
+      }
+      return null;
+    }
+
+    while (true) {
+      attempts++;
+      const found = await findPendingRow();
+
+      if (found === null) {
+        // Two indistinguishable cases on the wire:
+        //   (a) reconciler flipped status='confirmed' (most common — the
+        //       happy path the agent waited for), OR
+        //   (b) the backend never staged a pending row for this hash
+        //       (the broadcast happened but the POST signed-envelope
+        //       step was skipped — operator error).
+        // The hint covers (b) so an agent that miswired the flow can
+        // diagnose without us inventing a per-hash endpoint.
+        return {
+          content: [
+            {
+              type: "text",
+              text: safeJSONStringify({
+                ok: true,
+                confirmed: true,
+                intentHash,
+                attempts,
+                waitedMs: Date.now() - startedAt,
+                hint:
+                  "Intent no longer in pending list — either Stage-4 confirmed it (happy path) or no pending row ever existed for this hash (skipped /intents POST). To inspect confirmed surface, query the parent resource (e.g. GET /v1/questions/<questionId> for sponsor/commit/vote effects).",
+              }),
+            },
+          ],
+        };
+      }
+
+      lastSeenItem = found;
+
+      // Stage-4 hard reject: reconciler recomputed intent_hash from
+      // event params and it didn't match the staged row's hash (see
+      // R-CHAIN-VERIFIES-INTENT). Retrying the same intent is pointless
+      // — surface as a non-retryable error so the agent stops the flow.
+      if (found.lifecyclePhase === "rejected_revalidation") {
+        throw new StructuredMCPError({
+          code: "WAIT_CONFIRMATION_REJECTED",
+          message: `Intent ${intentHash} was rejected by Stage-4 revalidation: ${
+            found.lifecycleReason ?? "(no reason provided)"
+          }.`,
+          action:
+            "Do NOT retry this intent. The chain-emitted event params didn't match the signed envelope's hash, so the reconciler will never confirm it. Inspect the broadcast tx on-chain, then construct a fresh preflight + sign + POST cycle if you still want the action.",
+          details: {
+            intentHash,
+            lifecyclePhase: found.lifecyclePhase,
+            lifecycleReason: found.lifecycleReason ?? null,
+            questionId: found.questionId ?? null,
+            chainId: found.chainId ?? null,
+          },
+        });
+      }
+
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        // Timeout: still pending. Could be Base Sepolia finality lag,
+        // Ponder behind, or just a slow chain. Surface as retryable so
+        // the agent can call us again with a fresh deadline.
+        throw new StructuredMCPError({
+          code: "WAIT_CONFIRMATION_TIMEOUT",
+          message: `Intent ${intentHash} still pending after ${
+            Math.round(maxMs / 1000)
+          }s (${attempts} polls).`,
+          action:
+            "Call wait_for_chain_confirmation again with a larger max_wait_seconds, or check Ponder lag via the backend's /metrics. If the broadcast tx itself is on-chain but the reconciler hasn't projected it after several minutes, file a backend incident — don't re-broadcast.",
+          details: {
+            intentHash,
+            attempts,
+            waitedMs: Date.now() - startedAt,
+            lastSeen: lastSeenItem,
+          },
+          retryable: true,
+        });
+      }
       await new Promise((r) => setTimeout(r, Math.min(pollMs, remainingMs)));
     }
   },
