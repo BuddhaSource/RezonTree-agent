@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   StructuredMCPError,
@@ -36,7 +36,7 @@ const EXPECTED_TOOLS = new Set<string>([
   "submit_solution",
   "cast_vote",
   "fund_question",
-  "claim_payout",
+  "withdraw",
   "post_question",
   // Wallet identity / on-chain reads bound to the local private key.
   "me",
@@ -95,12 +95,11 @@ const ALLOWED_API_PATHS: Array<RegExp> = [
   // recovery to reload title + body so the SponsorWitness content hash
   // matches what post_question would have emitted.
   /^\/v1\/questions\/[^/]+$/,
-  // Account-include fetch — claim_payout pulls
-  // `?include=claims` to derive role + amount + Merkle proof for
-  // Router.claim. Round-3 consolidated the per-question
-  // /v1/questions/:id/claims/:address GET into this single account
-  // surface; the local MCP keeps this call because the response feeds
-  // a chain broadcast in the same orchestration step.
+  // Account-include fetch — wait_for_chain_confirmation polls
+  // `/v1/accounts/me?include=pending` to block until the reconciler
+  // reaches terminal state on an intent the agent just broadcast. The
+  // local MCP keeps this call because it pairs with the wallet + JWT
+  // context the prior sign-and-broadcast tool call already holds.
   /^\/v1\/accounts\/[^/]+(\?|$)/,
 ];
 
@@ -376,25 +375,70 @@ describe("backend error envelope → MCP tool result", () => {
 
 // ── Regression fences for MCP audit hotfixes (2026-05-20) ──────────
 
-describe("claim_payout — recipient binding (#613)", () => {
-  const claimBlock = sliceBetween(
+describe("withdraw — unified money-out door", () => {
+  const withdrawBlock = sliceBetween(
     SERVER_TS,
-    "Router enforces one claim per (qid, recipient)",
-    "await awaitReceipt(publicClient, txHash);",
+    'server.tool(\n  "withdraw"',
+    "// ── Wallet ──",
   );
 
-  it("passes recipient explicitly to broadcastClaim", () => {
+  it("preflights the unified door with actionType:'withdraw'", () => {
     expect(
-      claimBlock,
-      "broadcastClaim must pass recipient — Merkle leaf binds (qid, recipient, amount); omitting it reverts on chain",
-    ).toMatch(/recipient:\s*address\b/);
+      withdrawBlock,
+      "withdraw must POST /intents/preflight with {actionType:'withdraw'} — the preflight-only discovery door",
+    ).toMatch(/actionType:\s*"withdraw"/);
+    expect(withdrawBlock).toMatch(/\/intents\/preflight/);
   });
 
-  it("includes a proof fingerprint in the idempotency cache key", () => {
+  it("treats an empty eligible list as success, not an error", () => {
+    // eligible:[] / eligibleCount:0 is a valid 200 = owed nothing. The
+    // tool must return a textResponse (success), never throw.
     expect(
-      claimBlock,
-      "claim_payout cache key must include proofFingerprint(proof) so power-user overrides don't collide",
-    ).toMatch(/proofKey:\s*proofFingerprint\(proof\)/);
+      withdrawBlock,
+      "empty eligible list must short-circuit to a success result echoing questionStatus",
+    ).toMatch(/items\.length\s*===\s*0/);
+    expect(withdrawBlock).toMatch(/eligible_count:\s*0/);
+  });
+
+  it("uses each draft's server-allocated nonce + expectedIntentHash verbatim", () => {
+    // R-INTENT-HASH-IS-MATCH-KEY: the withdraw door pre-allocates a
+    // distinct RANDOM nonce per item; the SDK MUST pass it (and the
+    // pinned expectedIntentHash) through unchanged — never recompute.
+    expect(
+      withdrawBlock,
+      "claim leg must feed the draft's nonce verbatim",
+    ).toMatch(/nonce:\s*BigInt\(c\.nonce\)/);
+    expect(withdrawBlock).toMatch(/nonce:\s*BigInt\(r\.nonce\)/);
+    expect(
+      withdrawBlock,
+      "both legs must pass the draft's expectedIntentHash so runClaim/RefundFlow can assert no drift before signing",
+    ).toMatch(/expectedIntentHash:\s*c\.expectedIntentHash/);
+    expect(withdrawBlock).toMatch(/expectedIntentHash:\s*r\.expectedIntentHash/);
+  });
+
+  it("keys per-item idempotency so one item can't replay another's tx", () => {
+    // Mirrors the #614 claim_payout idempotency pattern: claim keyed on
+    // leafIndex, refund keyed on sourceIntentHash — so a re-call retries
+    // only the unfinished items.
+    expect(withdrawBlock).toMatch(/leafIndex:\s*item\.claim\.leafIndex/);
+    expect(withdrawBlock).toMatch(
+      /sourceIntentHash:\s*item\.refund\.sourceIntentHash/,
+    );
+  });
+
+  it("recovers the bounty token from envelopeTemplate.envelope.funds.token", () => {
+    // The draft has no top-level token field; it's nested in the signed
+    // envelope the backend hashed. tokenFromTemplate must read it there
+    // and fail loud (not sign a zero token) when absent.
+    expect(SERVER_TS).toMatch(/envelopeTemplate\?\.envelope/);
+    expect(SERVER_TS).toMatch(/funds\?\.token/);
+  });
+
+  it("one item failing does not abort the others", () => {
+    // Per-item try/catch records a failed status and continues the loop;
+    // it must NOT rethrow out of the for-loop.
+    expect(withdrawBlock).toMatch(/status:\s*"failed"/);
+    expect(withdrawBlock).toMatch(/failures\+\+/);
   });
 });
 
@@ -408,9 +452,10 @@ describe("idempotency cache hygiene (#614)", () => {
 
   it("imports canonicalStringify from the shared intents helper", () => {
     // Drift fence: a local re-definition would shadow the canonical
-    // (bigint/NaN-safe) version with a weaker variant. claim_payout
-    // params include bigint-derived strings; the commit content body
-    // is nested user content — both rely on the shared strictness.
+    // (bigint/NaN-safe) version with a weaker variant. withdraw cache
+    // keys include bigint-derived strings (leafIndex, nonce); the commit
+    // content body is nested user content — both rely on the shared
+    // strictness.
     expect(SERVER_TS).toMatch(
       /from\s+"\.\.\/\.\.\/src\/intents\/commit-intent\.js"/,
     );
@@ -456,7 +501,7 @@ describe("MCP security cluster (#617)", () => {
       "submit_solution",
       "cast_vote",
       "fund_question",
-      "claim_payout",
+      "withdraw",
     ];
     for (const t of tools) {
       const sliced = SERVER_TS.slice(SERVER_TS.indexOf(`"${t}"`));
@@ -703,5 +748,372 @@ describe("#616 retryable error envelope", () => {
 
   it("unknown floor is NOT retryable (safe default)", () => {
     expect(classifyRetryable({ code: "MYSTERY_NEVER_SEEN" })).toBe(false);
+  });
+});
+
+// ── withdraw — BEHAVIORAL test (runtime draft→flow-param mapping) ─────
+//
+// The source-grep fences above ("withdraw — unified money-out door")
+// catch a textual regression but never EXECUTE the tool: a logic bug
+// that swaps leafAmount/leafIndex, drops expectedIntentHash, or
+// recomputes the server-allocated nonce would still match the regex
+// and pass. This block actually invokes the registered `withdraw`
+// handler against a fabricated WithdrawDraftResponse (1 claim + 1
+// refund) and asserts the EXACT args handed to runClaimFlow /
+// runRefundFlow — the mapping class that previously cost real money
+// ("MCP submit_solution drift cost ~$5 of burn").
+//
+// Seams used (no production code changed):
+//   • vi.mock the chain/flow module boundary (src/forge/quadphase-flow,
+//     src/forge/client) — matches the task's "vi.mock at the module
+//     boundary" guidance. runClaimFlow/runRefundFlow become spies that
+//     capture their single params object; awaitReceipt is a no-op.
+//   • vi.mock the stdio transport so server.ts's top-level
+//     `await server.connect(transport)` resolves without touching real
+//     stdio (server.ts connects on import — the only reason this needs
+//     a module mock at all).
+//   • vi.mock wallet derivation so getClients() yields a fake wallet
+//     without a real mnemonic.
+//   • stub global.fetch to answer the two real HTTP hops the handler
+//     makes through its private apiCall/getAgentToken: POST /v1/sessions
+//     (JWT issue) and POST …/intents/preflight (the withdraw draft).
+//
+// The handler is pulled off server._registeredTools["withdraw"].handler
+// — the MCP SDK's registry — so we exercise the exact closure that ships.
+
+const flowMocks = vi.hoisted(() => ({
+  runClaimFlow: vi.fn(),
+  runRefundFlow: vi.fn(),
+  awaitReceipt: vi.fn(),
+}));
+
+vi.mock("../../src/forge/quadphase-flow.js", () => ({
+  // Only runClaimFlow / runRefundFlow are exercised by withdraw; the
+  // other exports (runCommitFlow, runVoteFlow, …) are imported by
+  // server.ts at module scope, so they must exist as callables.
+  runClaimFlow: flowMocks.runClaimFlow,
+  runRefundFlow: flowMocks.runRefundFlow,
+  runCommitFlow: vi.fn(),
+  runVoteFlow: vi.fn(),
+  runSponsorFlow: vi.fn(),
+  runCosponsorFlow: vi.fn(),
+  ensureUsdcAllowance: vi.fn(),
+}));
+
+vi.mock("../../src/forge/client.js", () => ({
+  awaitReceipt: flowMocks.awaitReceipt,
+  makeAgentWalletClient: vi.fn(() => ({ account: { address: "0xwallet" } })),
+}));
+
+vi.mock("../../src/wallet/derive.js", () => ({
+  deriveAgentWallet: vi.fn(() => ({
+    agentIndex: 1,
+    address: "0x1111111111111111111111111111111111111111",
+    privateKey:
+      "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d",
+    chainId: 84532,
+  })),
+}));
+
+// Stub the stdio transport so server.ts's top-level connect() resolves
+// without binding real stdio. connect() assigns onclose/onerror/onmessage
+// and awaits start(); a class with those slots + a resolving start()
+// satisfies it.
+vi.mock("@modelcontextprotocol/sdk/server/stdio.js", () => ({
+  StdioServerTransport: class {
+    onclose?: () => void;
+    onerror?: (e: unknown) => void;
+    onmessage?: (m: unknown) => void;
+    async start() {
+      /* no-op: nothing to bind in tests */
+    }
+    async send() {
+      /* no-op */
+    }
+    async close() {
+      /* no-op */
+    }
+  },
+}));
+
+describe("withdraw — behavioral draft→flow-param mapping", () => {
+  // A claim leaf + a refund the backend would enumerate for a settled
+  // question. Fields are deliberately distinct so a leafIndex/leafAmount
+  // swap (or any field cross-wire) shows up as a wrong assertion value.
+  const TOKEN = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+
+  const CLAIM_DRAFT = {
+    qid: "0xqidclaimqidclaimqidclaimqidclaimqidclaimqidclaimqidclaimqidclaim",
+    recipient: "0x1111111111111111111111111111111111111111",
+    leafIndex: "7",
+    leafAmount: "250000",
+    role: 1,
+    proof: ["0xaaa", "0xbbb"],
+    forgeAddress: "0xforge",
+    chainId: 84532,
+    nonce: "987654321987654321",
+    nonceSource: "random",
+    recommendedExpiresAt: 1746720000,
+    expectedIntentHash:
+      "0xCLAIMHASHCLAIMHASHCLAIMHASHCLAIMHASHCLAIMHASHCLAIMHASHCLAIMHASH00",
+    envelopeTemplate: {
+      envelope: { funds: { token: TOKEN } },
+      witness: { expectedStatus: 3 },
+      contentHash: "0xcontent",
+      intentHash: "0xih",
+      witnessTypehash: "0xwt",
+      action: "Claim",
+      actionTag: 0,
+    },
+    _actions: [],
+  };
+
+  const REFUND_DRAFT = {
+    qid: "0xqidrefundqidrefundqidrefundqidrefundqidrefundqidrefundqidrefund0",
+    signer: "0x1111111111111111111111111111111111111111",
+    sourceIntentHash:
+      "0xSOURCEHASHSOURCEHASHSOURCEHASHSOURCEHASHSOURCEHASHSOURCEHASH0000",
+    expectedAmount: "100000",
+    expectedStatus: 4,
+    forgeAddress: "0xforge",
+    chainId: 84532,
+    nonce: "123123123123123123",
+    nonceSource: "random",
+    recommendedExpiresAt: 1746720500,
+    expectedIntentHash:
+      "0xREFUNDHASHREFUNDHASHREFUNDHASHREFUNDHASHREFUNDHASHREFUNDHASH0000",
+    envelopeTemplate: {
+      envelope: { funds: { token: TOKEN } },
+      witness: {},
+      contentHash: "0xcontent2",
+      intentHash: "0xih2",
+      witnessTypehash: "0xwt2",
+      action: "Refund",
+      actionTag: 0,
+    },
+    _actions: [],
+  };
+
+  // The withdraw handler keys its per-item idempotency cache on the
+  // door qid + leafIndex/sourceIntentHash, and that cache is module-level
+  // state surviving across tests. Give every test a UNIQUE door qid so a
+  // prior test's cached claim/refund can never replay into a later one
+  // (which would skip the runClaimFlow/runRefundFlow call we assert on).
+  let doorQidSeq = 0;
+  function draftWith(eligible: unknown[]) {
+    const tag = `${doorQidSeq++}`.padStart(2, "0");
+    return {
+      qid: `0xDOORQID${tag}DOORQIDDOORQIDDOORQIDDOORQIDDOORQIDDOORQIDDOORQID00`,
+      signer: "0x1111111111111111111111111111111111111111",
+      questionStatus: "settled",
+      eligible,
+      eligibleCount: eligible.length,
+      _actions: [],
+    };
+  }
+
+  // currentDraft is swapped per-test; the fetch stub reads it so each
+  // test controls what the preflight door returns.
+  let currentDraft: ReturnType<typeof draftWith>;
+
+  // The registered withdraw closure, pulled off the MCP registry.
+  // biome-ignore lint/suspicious/noExplicitAny: handler signature is internal
+  let withdrawHandler: (params: any) => Promise<any>;
+
+  beforeAll(async () => {
+    // server.ts reads these at module-eval time. Set before import.
+    process.env.RT_FORGE_ADDRESS =
+      "0x9999999999999999999999999999999999999999";
+    process.env.RT_AGENT_MNEMONIC =
+      "test test test test test test test test test test test junk";
+    process.env.RT_AGENT_INDEX = "1";
+    process.env.RT_RPC_URL = "http://localhost:8545";
+    process.env.RT_AGENT_BACKEND_URL = "http://localhost:8080";
+    process.env.RT_AGENT_CHAIN_ID = "84532";
+
+    // Route the only two real HTTP hops the handler makes via its private
+    // apiCall/getAgentToken. Everything else is module-mocked.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL, _init?: unknown) => {
+        const u = String(url);
+        if (u.includes("/v1/sessions")) {
+          return new Response(
+            JSON.stringify({ accessToken: "test.jwt.token", expiresIn: 900 }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (u.includes("/intents/preflight")) {
+          return new Response(JSON.stringify(currentDraft), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        throw new Error(`unexpected fetch in withdraw test: ${u}`);
+      }),
+    );
+
+    const mod = await import("./server.js");
+    // server.ts exports the McpServer instance (a one-line test seam).
+    // McpServer keeps registered tools in _registeredTools[name].handler.
+    // biome-ignore lint/suspicious/noExplicitAny: SDK internal registry
+    const server = (mod as any).server;
+    expect(server, "server instance not exported from module").toBeDefined();
+    const reg = server._registeredTools as Record<
+      string,
+      { handler: (params: unknown) => Promise<unknown> }
+    >;
+    expect(reg.withdraw, "withdraw tool not registered").toBeDefined();
+    withdrawHandler = reg.withdraw.handler;
+  });
+
+  afterEach(() => {
+    flowMocks.runClaimFlow.mockReset();
+    flowMocks.runRefundFlow.mockReset();
+    flowMocks.awaitReceipt.mockReset();
+  });
+
+  it("maps the claim draft → runClaimFlow args VERBATIM", async () => {
+    currentDraft = draftWith([
+      { actionType: "claim", role: "winner_creator", claim: CLAIM_DRAFT },
+    ]);
+    flowMocks.runClaimFlow.mockResolvedValue({
+      intentHash: CLAIM_DRAFT.expectedIntentHash,
+      txHash: "0xclaimtx",
+    });
+
+    const res = await withdrawHandler({ question_id: "qst_abc" });
+
+    expect(flowMocks.runClaimFlow).toHaveBeenCalledTimes(1);
+    const arg = flowMocks.runClaimFlow.mock.calls[0][0];
+
+    // nonce + expectedIntentHash are the load-bearing pins: passed
+    // VERBATIM, never recomputed. nonce is BigInt(draft.nonce).
+    expect(arg.nonce).toBe(BigInt(CLAIM_DRAFT.nonce));
+    expect(typeof arg.nonce).toBe("bigint");
+    expect(arg.expectedIntentHash).toBe(CLAIM_DRAFT.expectedIntentHash);
+
+    // leafIndex / leafAmount are the canonical swap-bug surface.
+    expect(arg.leafIndex).toBe(BigInt(CLAIM_DRAFT.leafIndex));
+    expect(arg.leafAmount).toBe(BigInt(CLAIM_DRAFT.leafAmount));
+
+    // proof + role + expectedStatus from the witness.
+    expect(arg.proof).toEqual(CLAIM_DRAFT.proof);
+    expect(arg.role).toBe(CLAIM_DRAFT.role);
+    expect(arg.expectedStatus).toBe(3); // witness.expectedStatus
+
+    // token recovered from envelopeTemplate.envelope.funds.token.
+    expect(arg.token).toBe(TOKEN);
+
+    // qid / questionId routing.
+    expect(arg.qid).toBe(CLAIM_DRAFT.qid);
+    expect(arg.questionId).toBe("qst_abc");
+
+    // expiresAt from the draft's recommendedExpiresAt (absolute Unix).
+    expect(arg.expiresAt).toBe(BigInt(CLAIM_DRAFT.recommendedExpiresAt));
+
+    // The handler awaits the receipt and reports success.
+    expect(flowMocks.awaitReceipt).toHaveBeenCalledWith(
+      expect.anything(),
+      "0xclaimtx",
+    );
+    const body = JSON.parse(res.content[0].text);
+    expect(body.eligible_count).toBe(1);
+    expect(body.succeeded).toBe(1);
+    expect(body.failed).toBe(0);
+    expect(body.total_withdrawn_wei).toBe(CLAIM_DRAFT.leafAmount);
+  });
+
+  it("maps the refund draft → runRefundFlow args VERBATIM", async () => {
+    currentDraft = draftWith([
+      { actionType: "refund", role: "sponsor", refund: REFUND_DRAFT },
+    ]);
+    flowMocks.runRefundFlow.mockResolvedValue({
+      intentHash: REFUND_DRAFT.expectedIntentHash,
+      txHash: "0xrefundtx",
+    });
+
+    const res = await withdrawHandler({ question_id: "qst_xyz" });
+
+    expect(flowMocks.runRefundFlow).toHaveBeenCalledTimes(1);
+    const arg = flowMocks.runRefundFlow.mock.calls[0][0];
+
+    // VERBATIM pins.
+    expect(arg.nonce).toBe(BigInt(REFUND_DRAFT.nonce));
+    expect(typeof arg.nonce).toBe("bigint");
+    expect(arg.expectedIntentHash).toBe(REFUND_DRAFT.expectedIntentHash);
+
+    // Refund-specific mapping.
+    expect(arg.sourceIntentHash).toBe(REFUND_DRAFT.sourceIntentHash);
+    expect(arg.expectedAmount).toBe(BigInt(REFUND_DRAFT.expectedAmount));
+    expect(arg.expectedStatus).toBe(REFUND_DRAFT.expectedStatus); // 4 = Abandoned
+
+    // token from envelopeTemplate.envelope.funds.token.
+    expect(arg.token).toBe(TOKEN);
+
+    // qid / questionId routing + expiresAt.
+    expect(arg.qid).toBe(REFUND_DRAFT.qid);
+    expect(arg.questionId).toBe("qst_xyz");
+    expect(arg.expiresAt).toBe(BigInt(REFUND_DRAFT.recommendedExpiresAt));
+
+    expect(flowMocks.awaitReceipt).toHaveBeenCalledWith(
+      expect.anything(),
+      "0xrefundtx",
+    );
+    const body = JSON.parse(res.content[0].text);
+    expect(body.eligible_count).toBe(1);
+    expect(body.succeeded).toBe(1);
+    expect(body.total_withdrawn_wei).toBe(REFUND_DRAFT.expectedAmount);
+  });
+
+  it("drives BOTH legs in one call, each with its own verbatim nonce + hash", async () => {
+    currentDraft = draftWith([
+      { actionType: "claim", role: "winner_creator", claim: CLAIM_DRAFT },
+      { actionType: "refund", role: "sponsor", refund: REFUND_DRAFT },
+    ]);
+    flowMocks.runClaimFlow.mockResolvedValue({
+      intentHash: CLAIM_DRAFT.expectedIntentHash,
+      txHash: "0xclaimtx",
+    });
+    flowMocks.runRefundFlow.mockResolvedValue({
+      intentHash: REFUND_DRAFT.expectedIntentHash,
+      txHash: "0xrefundtx",
+    });
+
+    const res = await withdrawHandler({ question_id: "qst_both" });
+
+    const claimArg = flowMocks.runClaimFlow.mock.calls[0][0];
+    const refundArg = flowMocks.runRefundFlow.mock.calls[0][0];
+
+    // Each leg carries ITS OWN nonce + hash — not crossed, not shared.
+    expect(claimArg.nonce).toBe(BigInt(CLAIM_DRAFT.nonce));
+    expect(claimArg.expectedIntentHash).toBe(CLAIM_DRAFT.expectedIntentHash);
+    expect(refundArg.nonce).toBe(BigInt(REFUND_DRAFT.nonce));
+    expect(refundArg.expectedIntentHash).toBe(REFUND_DRAFT.expectedIntentHash);
+    expect(claimArg.nonce).not.toBe(refundArg.nonce);
+
+    const body = JSON.parse(res.content[0].text);
+    expect(body.eligible_count).toBe(2);
+    expect(body.succeeded).toBe(2);
+    // total = claim leafAmount + refund expectedAmount.
+    expect(body.total_withdrawn_wei).toBe(
+      (BigInt(CLAIM_DRAFT.leafAmount) + BigInt(REFUND_DRAFT.expectedAmount)).toString(),
+    );
+  });
+
+  it("empty eligible:[] returns a clean success (eligible_count:0), not a throw", async () => {
+    currentDraft = draftWith([]);
+
+    const res = await withdrawHandler({ question_id: "qst_empty" });
+
+    // No flow function should fire on an empty list.
+    expect(flowMocks.runClaimFlow).not.toHaveBeenCalled();
+    expect(flowMocks.runRefundFlow).not.toHaveBeenCalled();
+
+    const body = JSON.parse(res.content[0].text);
+    expect(body.eligible_count).toBe(0);
+    expect(body.withdrawn).toEqual([]);
+    expect(body.total_withdrawn_wei).toBe("0");
+    expect(body.question_status).toBe("settled");
   });
 });

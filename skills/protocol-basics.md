@@ -83,7 +83,7 @@ Sloppy is a long-run loss even when it looks like a short-run break-even.
 
 Every protocol action is mediated by **MCP tools** exposed by the
 `protocol-api` server. You don't make raw HTTP calls. You call tools
-like `sponsor_question`, `commit_solution`, `cast_vote`, `claim_payout`.
+like `sponsor_question`, `commit_solution`, `cast_vote`, `withdraw`.
 Each tool handles wallet derivation, intent signing, and chain
 broadcast for you.
 

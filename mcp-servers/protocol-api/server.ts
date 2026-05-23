@@ -25,7 +25,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import type { Address, Hex } from "viem";
-import { createPublicClient, formatUnits, http, parseUnits } from "viem";
+import { createPublicClient, formatUnits, http } from "viem";
 import { deriveAgentWallet } from "../../src/wallet/derive.js";
 import { loadLoginDomain } from "../../src/wallet/domain.js";
 import { signWalletLoginIntent } from "../../src/wallet/signer.js";
@@ -35,16 +35,19 @@ import type {
   CommitPreflight,
   FundPreflight,
   VotePreflight,
+  WithdrawDraftResponse,
+  WithdrawItem,
 } from "../../src/intents/preflight-types.js";
 import {
   awaitReceipt,
-  broadcastClaim,
   makeAgentWalletClient,
 } from "../../src/forge/client.js";
 import {
   ensureUsdcAllowance,
+  runClaimFlow,
   runCommitFlow,
   runCosponsorFlow,
+  runRefundFlow,
   runSponsorFlow,
   runVoteFlow,
 } from "../../src/forge/quadphase-flow.js";
@@ -79,7 +82,7 @@ const USDC_ADDRESS =
 function requireRouterEnv(): { router: Address; rpc: string; chainId: number } {
   if (!ROUTER_ADDRESS) {
     throw new Error(
-      "RT_FORGE_ADDRESS is not set. Chain-broadcast tools (fund_question, submit_solution, cast_vote, claim_payout) need the deployed Router address. Set it in your MCP server env; see RUNBOOK.md.",
+      "RT_FORGE_ADDRESS is not set. Chain-broadcast tools (fund_question, submit_solution, cast_vote, withdraw) need the deployed Router address. Set it in your MCP server env; see RUNBOOK.md.",
     );
   }
   return { router: ROUTER_ADDRESS, rpc: RPC_URL, chainId: CHAIN_ID };
@@ -433,7 +436,7 @@ function requireExpectedIntentHash(
 // ─── Idempotency cache ─────────────────────────────────────
 //
 // Multi-step tool flows (submit_solution, cast_vote, fund_question,
-// claim_payout) are not atomic. A network hiccup between steps
+// withdraw) are not atomic. A network hiccup between steps
 // causes the agent to retry from scratch and produce a duplicate
 // intent. The cache keys (tool_name, sha256(params)) → final result
 // so a retry within the TTL replays the first call's output.
@@ -450,22 +453,6 @@ interface CacheEntry {
 const IDEM_CACHE_TTL_MS = 15 * 60 * 1000;
 const IDEM_CACHE_MAX_ENTRIES = 1024;
 const idempotencyCache = new Map<string, CacheEntry>();
-
-// proofFingerprint returns a short stable hash of a Merkle proof
-// array so it can be folded into the idempotency cache key without
-// blowing up its size. Two proofs with the same elements in the same
-// order produce the same fingerprint; order matters because Merkle
-// proofs are sibling-ordered. Audit finding #613/#614: claim_payout
-// retries with a different `proof` override would otherwise replay
-// the cached tx_hash from the wrong claim state. Empty proof hashes
-// the empty string so single-leaf trees share one namespace with
-// multi-leaf ones.
-function proofFingerprint(proof: Hex[]): string {
-  return createHash("sha256")
-    .update(proof.join("|"))
-    .digest("hex")
-    .slice(0, 16);
-}
 
 function idempotencyKey(action: string, params: unknown): string {
   const paramsJSON = canonicalStringify(params);
@@ -798,6 +785,12 @@ const server = new McpServer({
   name: "rezontree-protocol",
   version: "1.0.0",
 });
+
+// Test seam: exported so the behavioral test in server.test.ts can pull
+// the registered tool handlers off `server._registeredTools[name].handler`
+// (the MCP SDK registry) and invoke the exact closure that ships. No
+// runtime behavior change — the export is inert outside tests.
+export { server };
 
 // ── Backend-wire-shape tools moved to hosted MCP ─────────────────────
 //
@@ -1329,178 +1322,301 @@ server.tool(
   },
 );
 
-// ── Claim (winner pulls payout via Merkle proof) ────────────────────
+// ── Withdraw (unified money-out door) ───────────────────────────────
+//
+// One tool for every money-out path. Given a question, the backend's
+// withdraw door (POST /v1/questions/:id/intents/preflight with
+// {actionType:"withdraw"}) enumerates EVERY intent the caller is owed —
+// the winner-payout CLAIM plus each unrefunded sponsor / commit-stake /
+// vote-fee REFUND — and returns them already shaped, nonce-allocated,
+// and hash-pinned. This tool signs + broadcasts each via the v2
+// quadphase-flow helpers (runClaimFlow / runRefundFlow → pullValue). It
+// replaces the old `claim_payout` tool, which rode the v1
+// broadcastClaim (Router.claim) entry point and only covered the winner
+// claim, not refunds.
+//
+// Per-item resilience: each item is staged + broadcast independently
+// under its own idempotency cache key. One item failing does NOT abort
+// the others; the per-item status lets a re-call retry only the
+// unfinished items (claims that already broadcast replay their cached
+// tx; refunds drop off the eligible list once their reconciler marks
+// them refunded).
+
+// tokenFromTemplate extracts the bounty token address from a money-out
+// draft's envelopeTemplate. The backend nests Funds (incl. token) inside
+// the serialized Envelope JSON (envelopeTemplate.envelope.funds.token) —
+// the draft has no top-level token field. Fails loud if the template or
+// token is absent/malformed so we never sign an envelope with a
+// zero/garbage token (which would revert the funds-shape gate on-chain).
+function tokenFromTemplate(
+  tmpl: WithdrawItem["claim"] | WithdrawItem["refund"],
+  kind: "claim" | "refund",
+): Address {
+  const env = tmpl?.envelopeTemplate?.envelope as
+    | { funds?: { token?: unknown } }
+    | undefined;
+  const token = env?.funds?.token;
+  if (typeof token !== "string" || !ADDR_RE.test(token)) {
+    throw new StructuredMCPError({
+      code: "WITHDRAW_DRAFT_MISSING_TOKEN",
+      message: `withdraw ${kind} draft has no usable envelopeTemplate.envelope.funds.token (got ${JSON.stringify(token)}).`,
+      action:
+        "The backend draft is malformed or pre-Round-3. Re-fetch POST /v1/questions/:id/intents/preflight with {actionType:'withdraw'}; if the token is still absent, upgrade the backend.",
+    });
+  }
+  return token as Address;
+}
+
+// claimExpectedStatus pulls expectedStatus out of the claim draft's
+// witness (the backend bakes onchainStatusSettled=3 into the
+// ClaimWitness; it's not a top-level draft field). The local recompute
+// guard inside runClaimFlow re-asserts the resulting intentHash against
+// the draft's expectedIntentHash, so a wrong value can never be signed —
+// this just reproduces the witness the backend hashed. Defaults to
+// Settled=3 if the template omits it.
+function claimExpectedStatus(claim: NonNullable<WithdrawItem["claim"]>): number {
+  const w = claim.envelopeTemplate?.witness as
+    | { expectedStatus?: unknown }
+    | undefined;
+  return typeof w?.expectedStatus === "number" ? w.expectedStatus : 3;
+}
 
 server.tool(
-  "claim_payout",
-  "Claim your share of a SETTLED question's payout pool. Pass just question_id — the tool fetches your role + amount + Merkle proof from GET /v1/accounts/:address?include=claims (filtered to this question) and broadcasts Router.claim. Optional qid_hex/amount_wei/proof overrides exist for power-user paths (manual settlement outside the standard pipeline). Router verifies the proof against the stored root and transfers USDC on success.",
+  "withdraw",
+  "Withdraw EVERY amount you're owed on a settled or abandoned question in one call. The backend enumerates your winner-payout claim AND each unrefunded sponsor/commit-stake/vote-fee refund, then this tool signs + broadcasts each (Router.pullValue) independently. Pass just question_id. If you're owed nothing here (already withdrawn, never participated, or not yet eligible) it returns a clean 'nothing to withdraw' result — that is success, not an error. Re-call it after broadcasting to confirm the eligible list shrank; already-broadcast items replay their cached tx instead of double-spending.",
   {
     question_id: z
       .string()
-      .describe("The question ID (qst_...) whose settled round you're claiming from"),
+      .describe("The question ID (qst_...) to withdraw your owed funds from"),
     qid_hex: z
       .string()
       .optional()
       .describe(
-        "Power-user override: bytes32 question_id (0x-prefixed 66-char hex). If omitted, derived from backend.",
-      ),
-    amount_wei: z
-      .string()
-      .optional()
-      .describe(
-        "Override: amount in token wei (6dp for USDC). If omitted, derived from backend (USD decimal × 10^6, truncating sub-cent).",
-      ),
-    proof: z
-      .array(z.string())
-      .optional()
-      .describe(
-        "Override: Merkle proof as array of 0x-prefixed 32-byte hex strings; [] for single-leaf trees. If omitted, derived from backend.",
+        "Optional bytes32 question_id (0x-prefixed 66-char hex) for cross-checking the chain qid the door resolves; informational only — the door always derives the canonical qid + per-item nonces server-side.",
       ),
   },
   async (params) => {
-    // QP Stage 1 — boundary check. question_id is interpolated into
-    // the accounts include-fetch URL; qid_hex / proof items become
-    // calldata to Router.claim. Validating shape before use blocks
-    // URL-path injection AND keeps malformed hex from triggering a
-    // viem stack trace deep in the broadcast path.
+    // QP Stage 1 — boundary check: question_id is interpolated into the
+    // preflight URL; reject path-traversal before any backend call.
     assertQuestionId(params.question_id);
     if (params.qid_hex !== undefined) assertBytes32(params.qid_hex, "qid_hex");
-    if (params.proof !== undefined) {
-      for (let i = 0; i < params.proof.length; i++) {
-        assertBytes32(params.proof[i], `proof[${i}]`);
-      }
-    }
-    if (params.amount_wei !== undefined && !/^[0-9]+$/.test(params.amount_wei)) {
-      throw new StructuredMCPError({
-        code: "STRUCTURED_INPUT_INVALID",
-        message: `amount_wei=${JSON.stringify(params.amount_wei)} is not a non-negative integer string.`,
-        action: "Pass amount_wei as a decimal integer string (token base units).",
+
+    const env = requireRouterEnv();
+    const { walletClient, publicClient, privateKey, address } = getClients();
+
+    // QP Stage 1 — preflight the unified money-out door. The backend
+    // pre-allocates a distinct RANDOM nonce + an expectedIntentHash per
+    // eligible item, so N intents never collide on the contract bitmap.
+    const draft = (await apiCall(
+      "POST",
+      `/v1/questions/${params.question_id}/intents/preflight`,
+      { actionType: "withdraw", params: { signer: address } },
+    )) as WithdrawDraftResponse;
+
+    const items = draft.eligible ?? [];
+
+    // Empty eligible list is a valid 200 — caller is owed nothing here.
+    // Return a clean success result (NOT an error) echoing the status so
+    // the agent can decide whether to wait for settlement or move on.
+    if (items.length === 0) {
+      return textResponse({
+        question_id: params.question_id,
+        qid: draft.qid,
+        question_status: draft.questionStatus,
+        eligible_count: 0,
+        withdrawn: [],
+        total_withdrawn_wei: "0",
+        note:
+          "Nothing to withdraw on this question. You may have already withdrawn, never participated, or the round is not yet settled/abandoned. Poll GET /v1/questions/:id for status, then re-call once settled/abandoned.",
       });
     }
-    const env = requireRouterEnv();
-    const { walletClient, publicClient, address } = getClients();
 
-    let questionId: Hex;
-    let amountWei: bigint;
-    let proof: Hex[];
-    let role = "override";
+    const bearer = await getAgentToken();
+    const qid = draft.qid as Hex;
 
-    const fullOverride =
-      params.qid_hex !== undefined &&
-      params.amount_wei !== undefined &&
-      params.proof !== undefined;
+    const results: Array<Record<string, unknown>> = [];
+    let totalWithdrawn = 0n;
+    let failures = 0;
 
-    if (fullOverride) {
-      // Power-user path: caller supplies all three. Used for manual
-      // settlements that didn't go through the standard pipeline.
-      questionId = params.qid_hex as Hex;
-      amountWei = BigInt(params.amount_wei!);
-      proof = params.proof as Hex[];
-    } else {
-      // Default path: pull the caller's claim set from
-      // GET /v1/accounts/:address?include=claims and filter to the
-      // requested question_id. The Round-3 account include flattens
-      // the per-question claim docs (qid + role + amount + proof +
-      // merkleRoot) so a single backend call serves every settled
-      // claim the caller is entitled to.
-      const account = (await apiCall(
-        "GET",
-        `/v1/accounts/${address}?include=claims`,
-      )) as {
-        claims?: Array<{
-          questionId: string;
-          qid: string | null;
-          role: string;
-          amount: string;
-          proof: string[];
-          merkleRoot: string | null;
-        }>;
-      };
-      const claims = account.claims ?? [];
-      const claim = claims.find((c) => c.questionId === params.question_id);
-
-      if (!claim) {
-        throw new StructuredMCPError({
-          code: "NOT_PARTICIPANT",
-          message: `Address ${address} has no claim row for question ${params.question_id}; nothing to claim.`,
-          action:
-            "Only sponsors, solvers, and voters of a settled question receive a claim row. Inspect the caller's settled participation via GET /v1/accounts/:address?include=claims,participating. If the question is unsettled, wait for SettlementPublished.",
-          details: { address, questionId: params.question_id },
+    for (const item of items) {
+      // Per-item idempotency key. Claim keyed on leafIndex (the leaf is
+      // keccak(qid, recipient, amount, role); one leaf per (qid, addr,
+      // role)). Refund keyed on sourceIntentHash (sponsor sentinel
+      // 0x00.. or the staked commit/vote intentHash). Mirrors the #614
+      // claim_payout idempotency-cache pattern so a re-call replays a
+      // broadcast item's tx instead of re-broadcasting.
+      let cacheKey: string;
+      if (item.actionType === "claim" && item.claim) {
+        cacheKey = idempotencyKey("withdraw", {
+          addr: address,
+          qid,
+          kind: "claim",
+          leafIndex: item.claim.leafIndex,
+          role: item.claim.role,
         });
-      }
-      if (!claim.qid) {
-        throw new StructuredMCPError({
-          code: "QUESTION_NOT_ON_CHAIN",
-          message: `Question ${params.question_id} has no chain qid yet.`,
-          action:
-            "Round may not be funded on-chain. Inspect status via the hosted MCP (rezontree_questions_get_question); fund_question if a sponsor is needed.",
-          details: { questionId: params.question_id },
+      } else if (item.actionType === "refund" && item.refund) {
+        cacheKey = idempotencyKey("withdraw", {
+          addr: address,
+          qid,
+          kind: "refund",
+          sourceIntentHash: item.refund.sourceIntentHash,
         });
-      }
-      if (claim.role === "none") {
-        throw new StructuredMCPError({
-          code: "NOT_PARTICIPANT",
-          message: `Address ${address} did not participate in question ${params.question_id}; nothing to claim.`,
-          action:
-            "Only sponsors, solvers, and voters of a settled question can claim. Check GET /v1/accounts/:address?include=participating for questions where you have a role.",
-          details: { address, questionId: params.question_id },
+      } else {
+        // Malformed item (neither claim nor refund populated, or
+        // mismatch between actionType and the populated leg). Skip it
+        // rather than abort the whole withdraw.
+        failures++;
+        results.push({
+          action_type: item.actionType,
+          role: item.role,
+          status: "skipped",
+          error: "draft item has no usable claim/refund payload",
         });
-      }
-      if (!claim.merkleRoot) {
-        throw new StructuredMCPError({
-          code: "ROUND_NOT_SETTLED",
-          message: `Round for question ${params.question_id} is not yet settled on-chain — no merkleRoot persisted.`,
-          action:
-            "Wait for SettlementPublished, then retry claim_payout. Monitor via GET /v1/questions/:id?include=settlement.",
-          details: { questionId: params.question_id },
-        });
+        continue;
       }
 
-      questionId = claim.qid as Hex;
-      amountWei = parseUnits(claim.amount as `${number}`, 6); // USDC 6dp
-      proof = claim.proof as Hex[];
-      role = claim.role;
+      const cached = getCached(cacheKey) as Record<string, unknown> | null;
+      if (cached !== null) {
+        results.push({ ...cached, replayed: true });
+        const amt = typeof cached.amount_wei === "string" ? cached.amount_wei : "0";
+        try {
+          totalWithdrawn += BigInt(amt);
+        } catch {
+          /* non-numeric cached amount — ignore in the running total */
+        }
+        continue;
+      }
+
+      try {
+        let itemResult: Record<string, unknown>;
+
+        if (item.actionType === "claim" && item.claim) {
+          const c = item.claim;
+          // Map the ClaimDraftResponse → ClaimFlowParams VERBATIM: the
+          // server-allocated random nonce, the pinned expiresAt, the
+          // proof + leaf metadata, and expectedIntentHash all flow
+          // through unchanged. runClaimFlow recomputes the intentHash
+          // locally and asserts it == c.expectedIntentHash before
+          // signing (R-INTENT-HASH-IS-MATCH-KEY) — drift is fatal there.
+          const token = tokenFromTemplate(c, "claim");
+          const flow = await runClaimFlow({
+            signer: address,
+            // Use the draft's own qid — the exact bytes32 the backend
+            // hashed into c.expectedIntentHash (identical to draft.qid,
+            // but byte-exact with this item's pinned hash).
+            qid: c.qid as Hex,
+            questionId: params.question_id,
+            nonce: BigInt(c.nonce),
+            expiresAt: BigInt(c.recommendedExpiresAt),
+            forgeAddress: env.router,
+            chainId: c.chainId ?? CHAIN_ID,
+            token,
+            proof: c.proof as Hex[],
+            leafIndex: BigInt(c.leafIndex),
+            leafAmount: BigInt(c.leafAmount),
+            role: c.role,
+            expectedStatus: claimExpectedStatus(c),
+            bearerToken: bearer,
+            baseUrl: API_URL,
+            expectedIntentHash: c.expectedIntentHash as Hex,
+            walletClient,
+            privateKey,
+          });
+          await awaitReceipt(publicClient, flow.txHash!);
+          totalWithdrawn += BigInt(c.leafAmount);
+          itemResult = {
+            action_type: "claim",
+            role: item.role,
+            status: "broadcast",
+            intent_hash: flow.intentHash,
+            tx_hash: flow.txHash!,
+            amount_wei: c.leafAmount,
+          };
+        } else {
+          // refund — guaranteed present by the cacheKey branch above.
+          const r = item.refund!;
+          // Map the RefundDraftResponse → RefundFlowParams VERBATIM.
+          // sourceIntentHash discriminates sponsor refund (bytes32(0))
+          // vs commit/vote stake refund inside runRefundFlow; expectedAmount
+          // becomes funds.poolOut. Same intentHash guard as claim.
+          const token = tokenFromTemplate(r, "refund");
+          const flow = await runRefundFlow({
+            signer: address,
+            // Use the draft's own qid (== draft.qid; byte-exact with
+            // this item's pinned r.expectedIntentHash).
+            qid: r.qid as Hex,
+            questionId: params.question_id,
+            nonce: BigInt(r.nonce),
+            expiresAt: BigInt(r.recommendedExpiresAt),
+            forgeAddress: env.router,
+            chainId: r.chainId ?? CHAIN_ID,
+            token,
+            sourceIntentHash: r.sourceIntentHash as Hex,
+            expectedAmount: BigInt(r.expectedAmount),
+            expectedStatus: r.expectedStatus,
+            bearerToken: bearer,
+            baseUrl: API_URL,
+            expectedIntentHash: r.expectedIntentHash as Hex,
+            walletClient,
+            privateKey,
+          });
+          await awaitReceipt(publicClient, flow.txHash!);
+          totalWithdrawn += BigInt(r.expectedAmount);
+          itemResult = {
+            action_type: "refund",
+            role: item.role,
+            status: "broadcast",
+            intent_hash: flow.intentHash,
+            tx_hash: flow.txHash!,
+            amount_wei: r.expectedAmount,
+            source_intent_hash: r.sourceIntentHash,
+          };
+        }
+
+        setCached(cacheKey, itemResult);
+        results.push(itemResult);
+      } catch (err) {
+        // One item failing must not abort the rest. Record a per-item
+        // error and continue; a re-call retries only the unfinished
+        // items (this one was never cached, so it's re-attempted).
+        failures++;
+        if (err instanceof StructuredMCPError) {
+          results.push({
+            action_type: item.actionType,
+            role: item.role,
+            status: "failed",
+            error_code: err.code,
+            error: err.message,
+          });
+        } else {
+          results.push({
+            action_type: item.actionType,
+            role: item.role,
+            status: "failed",
+            error: redactBearer(err instanceof Error ? err.message : String(err)),
+          });
+        }
+      }
     }
 
-    // Router enforces one claim per (qid, recipient) — a retry
-    // reverts RouterAlreadyClaimed. The cache replays the original
-    // tx_hash when the first call's response was lost in transit.
-    //
-    // Idempotency key includes a hash of the proof so power-user
-    // overrides (different proof for the same qid+amount) don't
-    // collide. The recipient is the agent's own wallet (the merkle
-    // leaf is keccak256(qid, recipient, amount); no other recipient
-    // would verify against the stored root).
-    return withIdempotency(
-      "claim_payout",
-      {
-        addr: address,
-        qid: questionId,
-        amount: amountWei.toString(),
-        proofKey: proofFingerprint(proof),
-      },
-      async () => {
-        const txHash = await broadcastClaim(walletClient, {
-          forgeAddress: env.router,
-          questionId,
-          recipient: address,
-          amount: amountWei,
-          proof,
-        });
-        await awaitReceipt(publicClient, txHash);
-        return {
-          claim_tx_hash: txHash,
-          question_id: questionId,
-          amount_wei: amountWei.toString(),
-          role,
-          proof_length: proof.length,
-          note:
-            proof.length === 0
-              ? "Single-leaf tree (one-winner-takes-all); empty proof is correct."
-              : "Multi-leaf tree; Router verified proof against stored root.",
-        };
-      },
-    );
+    const broadcastOrReplayed = results.filter(
+      (r) => r.status === "broadcast" || r.replayed === true,
+    ).length;
+
+    return textResponse({
+      question_id: params.question_id,
+      qid: draft.qid,
+      question_status: draft.questionStatus,
+      eligible_count: items.length,
+      succeeded: broadcastOrReplayed,
+      failed: failures,
+      total_withdrawn_wei: totalWithdrawn.toString(),
+      withdrawn: results,
+      note:
+        failures > 0
+          ? "Some items failed — re-call withdraw to retry only the unfinished ones (succeeded items replay their cached tx, refunds drop off once their reconciler marks them refunded)."
+          : "All eligible items broadcast. Backend rows flip pending→confirmed within one Ponder tick (~3s). Re-call withdraw to confirm the eligible list is now empty.",
+    });
   },
 );
 
@@ -1684,7 +1800,7 @@ server.tool(
     const summary = {
       address,
       balance,
-      hint: "Spendable funds shown above. For protocol state (reputation, participating questions, claimable amounts) call hosted-MCP `rezontree_accounts_list_profile` + `rezontree_accounts_list_participating-questions`. To take action: post_question / submit_solution / cast_vote / claim_payout.",
+      hint: "Spendable funds shown above. For protocol state (reputation, participating questions, claimable amounts) call hosted-MCP `rezontree_accounts_list_profile` + `rezontree_accounts_list_participating-questions`. To take action: post_question / submit_solution / cast_vote / withdraw.",
     };
     return {
       content: [{ type: "text", text: JSON.stringify(summary, null, 2) }],
@@ -2183,7 +2299,7 @@ server.tool(
 // ── wait_for_chain_confirmation — block until reconciler confirms ────
 //
 // Closes #616's third agent-friction item: after a sign + broadcast
-// flow (submit_solution, cast_vote, fund_question, claim_payout) the
+// flow (submit_solution, cast_vote, fund_question, withdraw) the
 // agent holds an `intent_hash` but can't tell when the backend's
 // reconciler has caught up with Ponder's chain ingest. Pre-fix, agents
 // hand-rolled a poll loop over GET /v1/accounts/me?include=pending,
@@ -2221,7 +2337,7 @@ interface PendingIntentItem {
 
 server.tool(
   "wait_for_chain_confirmation",
-  "Block until the reconciler confirms (or rejects) a chain-bound intent the agent just broadcast. Pass `intent_hash` (the 0x-prefixed bytes32 returned by submit_solution / cast_vote / fund_question / claim_payout). Polls /v1/accounts/me?include=pending until the intent leaves the pending list (confirmed) or its lifecyclePhase flips to 'rejected_revalidation' (Stage-4 reject — same intent will never confirm). Defaults: 2s poll, 60s timeout. Errors: WAIT_CONFIRMATION_TIMEOUT (deadline elapsed, intent still pending — try again with longer max_wait_seconds, or check the chain manually), WAIT_CONFIRMATION_REJECTED (chain event ↔ intent mismatch; do NOT retry the same intent).",
+  "Block until the reconciler confirms (or rejects) a chain-bound intent the agent just broadcast. Pass `intent_hash` (the 0x-prefixed bytes32 returned by submit_solution / cast_vote / fund_question / withdraw). Polls /v1/accounts/me?include=pending until the intent leaves the pending list (confirmed) or its lifecyclePhase flips to 'rejected_revalidation' (Stage-4 reject — same intent will never confirm). Defaults: 2s poll, 60s timeout. Errors: WAIT_CONFIRMATION_TIMEOUT (deadline elapsed, intent still pending — try again with longer max_wait_seconds, or check the chain manually), WAIT_CONFIRMATION_REJECTED (chain event ↔ intent mismatch; do NOT retry the same intent).",
   {
     intent_hash: z
       .string()
@@ -2422,7 +2538,7 @@ import { methodologyTools } from "../../src/methodology/index.js";
 // Collapse N craft_* advisories into a single tool with a topic enum.
 // Tool count matters: every tool in the listing competes for the
 // agent's selection probability and dilutes focus on the action tools
-// (submit_solution / cast_vote / fund_question / claim_payout /
+// (submit_solution / cast_vote / fund_question / withdraw /
 // post_question / wait_for_questions). Advisories are pure text — they
 // don't need their own slot. Agents reach for them by topic, not by
 // name discovery.

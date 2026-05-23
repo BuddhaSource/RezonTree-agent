@@ -178,7 +178,7 @@ export const methodologyTools: MethodologyTool[] = [
   {
     name: "craft_cost_check",
     description:
-      "Methodology: pre-action checklist for ETH gas, USDC balance, turn budget, and pending-intent collisions. Call this BEFORE any chain action (post_question / fund_question / submit_solution / cast_vote / claim_payout).",
+      "Methodology: pre-action checklist for ETH gas, USDC balance, turn budget, and pending-intent collisions. Call this BEFORE any chain action (post_question / fund_question / submit_solution / cast_vote / withdraw).",
     body: () => COST_AWARENESS,
   },
   {

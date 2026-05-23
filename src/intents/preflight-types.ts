@@ -171,3 +171,120 @@ export interface VotePreflight {
   caller?: CallerStatus;
   _actions: HypermediaAction[];
 }
+
+// ─── Quadphase v2 envelope template ──────────────────────────────────
+//
+// QuadphaseEnvelopeTemplate is the v2-additive companion block on every
+// preflight/draft response (mirrors RezonTree
+// handler.QuadphaseEnvelopeTemplate). It carries the canonical envelope
+// JSON the backend hashed to derive expectedIntentHash. `envelope` is
+// the serialized protocol.Envelope (signer / questionId / action /
+// nonce / expiresAt / contentHash / funds); the bounty token lives at
+// `envelope.funds.token`. The SDK reads it to recover the token address
+// for a claim/refund draft (the draft response has no top-level token
+// field — funds, including the token, are nested inside the envelope).
+//
+// `envelope` + `witness` are declared as `unknown` here: the backend
+// emits them as json.RawMessage and the SDK only narrows the few fields
+// it consumes (funds.token) at the read site, never the whole shape.
+export interface QuadphaseEnvelopeTemplate {
+  envelope: unknown;
+  witness: unknown;
+  contentHash: string;
+  intentHash: string;
+  witnessTypehash: string;
+  action: string;
+  actionTag: number;
+}
+
+// ─── Money-out drafts (claim / refund / withdraw) ────────────────────
+//
+// These mirror RezonTree's handler.ClaimDraftResponse,
+// handler.RefundDraftResponse, handler.WithdrawItem, and
+// handler.WithdrawDraftResponse exactly. They are the signable drafts
+// the unified money-out door (POST /v1/questions/:id/intents/preflight
+// with {actionType:"withdraw"}) returns. The SDK consumes them in the
+// MCP `withdraw` tool, mapping each draft → runClaimFlow / runRefundFlow
+// params.
+//
+// CRITICAL — each draft carries its own server-allocated RANDOM
+// `nonce` (the withdraw door pre-allocates distinct uint256 nonces so N
+// intents don't collide on the contract's Permit2-style bitmap) plus
+// its own `expectedIntentHash`. The SDK MUST use both VERBATIM and
+// never recompute or override the nonce.
+
+/** ClaimDraftResponse — a signable pullValue(Claim) draft for a
+ *  winning leaf. Mirrors handler.ClaimDraftResponse. */
+export interface ClaimDraftResponse {
+  qid: string;
+  recipient: string;
+  leafIndex: string;
+  leafAmount: string;
+  /** Role byte for dual-role disambiguation (winner_creator / voter /
+   *  sponsor — see the contract enum). */
+  role: number;
+  proof: string[];
+  forgeAddress: string;
+  chainId: number;
+  /** Server-allocated RANDOM uint256 (decimal string). Use verbatim. */
+  nonce: string;
+  /** "random" for withdraw-door items; "chain"/"db" for single-action
+   *  drafts. Informational — do not branch on it; the chain
+   *  re-validates regardless. */
+  nonceSource: string;
+  recommendedExpiresAt: number;
+  expectedIntentHash: string;
+  envelopeTemplate: QuadphaseEnvelopeTemplate | null;
+  _actions: HypermediaAction[];
+}
+
+/** RefundDraftResponse — a signable pullValue(Refund) draft. Sponsor
+ *  refund when sourceIntentHash == bytes32(0); commit/vote stake refund
+ *  otherwise. Mirrors handler.RefundDraftResponse. */
+export interface RefundDraftResponse {
+  qid: string;
+  signer: string;
+  /** bytes32(0) for sponsor refund; the committed solution/vote
+   *  intentHash for stake refunds. */
+  sourceIntentHash: string;
+  expectedAmount: string;
+  /** On-chain QuestionStatus enum the signer expects (Abandoned=4,
+   *  Settled=3). */
+  expectedStatus: number;
+  forgeAddress: string;
+  chainId: number;
+  /** Server-allocated RANDOM uint256 (decimal string). Use verbatim. */
+  nonce: string;
+  nonceSource: string;
+  recommendedExpiresAt: number;
+  expectedIntentHash: string;
+  envelopeTemplate: QuadphaseEnvelopeTemplate | null;
+  _actions: HypermediaAction[];
+}
+
+/** WithdrawItem — one signable money-out intent the caller is entitled
+ *  to on a question. Exactly one of `claim` / `refund` is set. Mirrors
+ *  handler.WithdrawItem. */
+export interface WithdrawItem {
+  /** "claim" | "refund" */
+  actionType: "claim" | "refund";
+  /** claim: winner_creator / voter / sponsor; refund: sponsor /
+   *  solver_stake / voter_fee. */
+  role: string;
+  claim?: ClaimDraftResponse;
+  refund?: RefundDraftResponse;
+}
+
+/** WithdrawDraftResponse — the unified money-out door's payload. ONE
+ *  preflight returns EVERY intent the caller is owed on the question.
+ *  An empty `eligible` list (eligibleCount === 0) is a valid 200, NOT
+ *  an error — the caller is owed nothing here. Mirrors
+ *  handler.WithdrawDraftResponse. */
+export interface WithdrawDraftResponse {
+  qid: string;
+  signer: string;
+  questionStatus: string;
+  eligible: WithdrawItem[];
+  eligibleCount: number;
+  _actions: HypermediaAction[];
+}
