@@ -181,6 +181,50 @@ async function assertSpendableUSDC(
   });
 }
 
+// ensureUsdcCoverage is the chain-write USDC prologue used by every
+// USDC-consuming tool (submit_solution, cast_vote, sponsor_question,
+// cosponsor_question). It checks the caller's balance covers the
+// required wei, then approves the forge for an unbounded allowance
+// (one approve per wallet/forge, idempotent). Extracted from the
+// four call sites where the same two-step ceremony was inlined —
+// byte-identical observable behaviour, single source of truth for
+// the assertSpendableUSDC action label, and a single seam where any
+// future preflight-bound balance check would land.
+async function ensureUsdcCoverage(
+  // biome-ignore lint/suspicious/noExplicitAny: viem PublicClient
+  publicClient: any,
+  // biome-ignore lint/suspicious/noExplicitAny: viem WalletClient
+  walletClient: any,
+  address: Address,
+  required: bigint,
+  action: string,
+  forge: Address,
+  callerFromPreflight: Parameters<typeof assertSpendableUSDC>[4],
+): Promise<void> {
+  await assertSpendableUSDC(publicClient, address, required, action, callerFromPreflight);
+  // BountyForge uses safeTransferFrom for fee + stake escrow — no
+  // inline EIP-2612 permit. One MAX_UINT256 approve per wallet/forge.
+  await ensureUsdcAllowance(walletClient, publicClient, {
+    usdc: USDC_ADDRESS,
+    forge,
+    owner: address,
+    required,
+  });
+}
+
+// resolvePlatformFeeRecipient returns the address that receives the
+// platform fee share. Preflight echoes it; absence falls back to the
+// zero address (no fee recipient → fee accrues to the pool). Duplicated
+// inline at every USDC-consuming flow site before this extraction.
+function resolvePlatformFeeRecipient(
+  pre: { platformFeeRecipient?: string | null },
+): `0x${string}` {
+  return (
+    (pre.platformFeeRecipient as `0x${string}` | undefined) ??
+    ("0x0000000000000000000000000000000000000000" as `0x${string}`)
+  );
+}
+
 // ─── Structured MCP error + backend envelope surfacing ─────
 //
 // MCP tools surface errors back to the agent as text. A bare
@@ -838,22 +882,15 @@ server.tool(
         const feeAmount = BigInt(pre.feeAmount);
         const stakeAmount = BigInt(pre.stakeAmount);
 
-        await assertSpendableUSDC(
+        await ensureUsdcCoverage(
           publicClient,
+          walletClient,
           address,
           feeAmount + stakeAmount,
           "submit_solution",
+          env.router,
           pre.caller ?? null,
         );
-
-        // BountyForge uses safeTransferFrom for fee + stake escrow — no
-        // inline EIP-2612 permit. One MAX_UINT256 approve per wallet/forge.
-        await ensureUsdcAllowance(walletClient, publicClient, {
-          usdc: USDC_ADDRESS,
-          forge: env.router,
-          owner: address,
-          required: feeAmount + stakeAmount,
-        });
 
         // CommitWitness.solutionBody is a canonical JSON string of the
         // structured body ({body, reasoningTree, claims}) — same shape the
@@ -876,9 +913,7 @@ server.tool(
           pre.recommendedExpiresAt ?? Math.floor(Date.now() / 1000) + 300,
         );
         const nonce = BigInt(pre.nonce ?? "0");
-        const platformFeeRecipient =
-          (pre.platformFeeRecipient as `0x${string}` | undefined) ??
-          ("0x0000000000000000000000000000000000000000" as `0x${string}`);
+        const platformFeeRecipient = resolvePlatformFeeRecipient(pre);
 
         try {
           const result = await runCommitFlow({
@@ -1049,19 +1084,15 @@ server.tool(
         const feeAmount = BigInt(pre.feeAmount);
         const stakeAmount = BigInt(pre.stakeAmount);
 
-        await assertSpendableUSDC(
+        await ensureUsdcCoverage(
           publicClient,
+          walletClient,
           address,
           feeAmount + stakeAmount,
           "cast_vote",
+          env.router,
           pre.caller ?? null,
         );
-        await ensureUsdcAllowance(walletClient, publicClient, {
-          usdc: USDC_ADDRESS,
-          forge: env.router,
-          owner: address,
-          required: feeAmount + stakeAmount,
-        });
 
         const bearer = await getAgentToken();
         // The vote-salt HMAC binds (voter, salt, qid, expiresAt) — the
@@ -1069,9 +1100,7 @@ server.tool(
         // backend rejects with "voteSaltToken rejected".
         const expiresAt = BigInt(pre.voteSaltExpiresAt);
         const nonce = BigInt(pre.nonce ?? "0");
-        const platformFeeRecipient =
-          (pre.platformFeeRecipient as `0x${string}` | undefined) ??
-          ("0x0000000000000000000000000000000000000000" as `0x${string}`);
+        const platformFeeRecipient = resolvePlatformFeeRecipient(pre);
 
         try {
           const result = await runVoteFlow({
@@ -1178,9 +1207,7 @@ server.tool(
         );
         const nonce = BigInt(pre.nonce ?? "0");
         const feeShareBps = Number(pre.feeShareBps ?? "0");
-        const platformFeeRecipient =
-          (pre.platformFeeRecipient as `0x${string}` | undefined) ??
-          ("0x0000000000000000000000000000000000000000" as `0x${string}`);
+        const platformFeeRecipient = resolvePlatformFeeRecipient(pre);
 
         const fundResp = await (async () => {
           if (pre.mode === "sponsor") {
@@ -1791,18 +1818,15 @@ server.tool(
             params.bounty_usd,
             pre.token.decimals,
           );
-          await assertSpendableUSDC(
+          await ensureUsdcCoverage(
             publicClient,
+            walletClient,
             address,
             amountWei,
             "post_question",
+            env.router,
+            null,
           );
-          await ensureUsdcAllowance(walletClient, publicClient, {
-            usdc: USDC_ADDRESS,
-            forge: env.router,
-            owner: address,
-            required: amountWei,
-          });
 
           // Step 4 + 5 — single helper: builds witness, builds envelope,
           // signs, POSTs /v1/quadphase/submit, then broadcasts
@@ -1823,9 +1847,7 @@ server.tool(
               Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
           );
           const feeShareBps = Number(pre.feeShareBps ?? "0");
-          const platformFeeRecipient =
-            (pre.platformFeeRecipient as `0x${string}` | undefined) ??
-            ("0x0000000000000000000000000000000000000000" as `0x${string}`);
+          const platformFeeRecipient = resolvePlatformFeeRecipient(pre);
           const expiresAt = BigInt(
             pre.recommendedExpiresAt ?? Math.floor(Date.now() / 1000) + 300,
           );
