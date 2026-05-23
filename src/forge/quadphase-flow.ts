@@ -29,7 +29,6 @@ import {
   type WalletClient,
   encodeFunctionData,
   erc20Abi,
-  hashTypedData,
   parseAbi,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -41,6 +40,7 @@ import {
   type FeeShare,
   type Funds,
   buildEnvelopeForSigning,
+  hashEnvelopeStruct,
 } from "../intents/envelope.js";
 import { buildSponsorWitness } from "../intents/sponsor-witness.js";
 import { buildCosponsorWitness } from "../intents/cosponsor-witness.js";
@@ -266,12 +266,7 @@ export async function runSponsorFlow(
     chainId: p.chainId,
     forgeAddress: p.forgeAddress,
   });
-  const localIntentHash = hashTypedData({
-    domain: typedData.domain,
-    types: typedData.types,
-    primaryType: typedData.primaryType,
-    message: typedData.message as never,
-  }) as Hex;
+  const localIntentHash = hashEnvelopeStruct(envelope);
   assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
   const account = privateKeyToAccount(p.privateKey);
   const signature = (await account.signTypedData({
@@ -406,12 +401,7 @@ export async function runCosponsorFlow(
   });
   // R-INTENT-HASH-IS-MATCH-KEY: recompute locally + assert against
   // preflight before signing.
-  const localIntentHash = hashTypedData({
-    domain: typedData.domain,
-    types: typedData.types,
-    primaryType: typedData.primaryType,
-    message: typedData.message as never,
-  }) as Hex;
+  const localIntentHash = hashEnvelopeStruct(envelope);
   assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
   const account = privateKeyToAccount(p.privateKey);
   const signature = (await account.signTypedData({
@@ -484,8 +474,8 @@ export interface CommitFlowParams {
    * Optional for commit: the server cannot pre-compute it because the
    * contentHash (from the solution body) is unknown at preflight time.
    * When absent, runCommitFlow derives the hash locally from the built
-   * envelope and typed data via hashTypedData() — which is the canonical
-   * value the backend will recompute at Stage 2 anyway.
+   * envelope via hashEnvelopeStruct() — the universal intentHash per
+   * R-INTENT-HASH-IS-MATCH-KEY, which the backend re-derives at Stage 2.
    */
   expectedIntentHash?: Hex;
 
@@ -553,14 +543,10 @@ export async function runCommitFlow(
   // Compute intentHash locally from the fully-specified envelope.
   // The commit preflight cannot pre-compute this because contentHash is
   // derived from the solution body, which is only known here.
-  // hashTypedData produces the same EIP-712 hash the backend re-derives
-  // at Stage 2 (R-FOUR-STAGE-VALIDATION), so this is the canonical value.
-  const localIntentHash = hashTypedData({
-    domain: typedData.domain,
-    types: typedData.types,
-    primaryType: typedData.primaryType,
-    message: typedData.message as never,
-  }) as Hex;
+  // hashEnvelopeStruct is the universal intentHash per
+  // R-INTENT-HASH-IS-MATCH-KEY — the same struct hash the backend
+  // re-derives at Stage 2 and the chain emits as event.intent_hash.
+  const localIntentHash = hashEnvelopeStruct(envelope);
   // R-INTENT-HASH-IS-MATCH-KEY: when preflight pre-asserted a hash
   // (rare for commit since contentHash is body-derived, but supported
   // by the API), enforce match before signing.
@@ -707,12 +693,7 @@ export async function runVoteFlow(
   });
   // R-INTENT-HASH-IS-MATCH-KEY: recompute locally + assert against
   // preflight before signing.
-  const localIntentHash = hashTypedData({
-    domain: typedData.domain,
-    types: typedData.types,
-    primaryType: typedData.primaryType,
-    message: typedData.message as never,
-  }) as Hex;
+  const localIntentHash = hashEnvelopeStruct(envelope);
   assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
   const account = privateKeyToAccount(p.privateKey);
   const signature = (await account.signTypedData({
@@ -987,12 +968,7 @@ export async function runAbandonFlow(
     chainId: p.chainId,
     forgeAddress: p.forgeAddress,
   });
-  const intentHash = hashTypedData({
-    domain: typedData.domain,
-    types: typedData.types,
-    primaryType: typedData.primaryType,
-    message: typedData.message as never,
-  }) as Hex;
+  const intentHash = hashEnvelopeStruct(envelope);
   // R-INTENT-HASH-IS-MATCH-KEY: abandon has no preflight today so the
   // local hash is the canonical value sent forward; this no-ops, but
   // keeps the assertion site uniform across every flow for future
@@ -1159,12 +1135,7 @@ export async function runRefundFlow(
     chainId: p.chainId,
     forgeAddress: p.forgeAddress,
   });
-  const localIntentHash = hashTypedData({
-    domain: typedData.domain,
-    types: typedData.types,
-    primaryType: typedData.primaryType,
-    message: typedData.message as never,
-  }) as Hex;
+  const localIntentHash = hashEnvelopeStruct(envelope);
   // R-INTENT-HASH-IS-MATCH-KEY: refund preflight (RefundDraft) returns
   // expectedIntentHash when available; assert before signing.
   assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
@@ -1300,12 +1271,7 @@ export async function runClaimFlow(
     chainId: p.chainId,
     forgeAddress: p.forgeAddress,
   });
-  const localIntentHash = hashTypedData({
-    domain: typedData.domain,
-    types: typedData.types,
-    primaryType: typedData.primaryType,
-    message: typedData.message as never,
-  }) as Hex;
+  const localIntentHash = hashEnvelopeStruct(envelope);
   // R-INTENT-HASH-IS-MATCH-KEY: claim preflight (ClaimDraft) returns
   // expectedIntentHash when available; assert before signing.
   assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
