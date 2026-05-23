@@ -54,9 +54,37 @@ import {
   type VoteWitness,
 } from "../intents/vote-witness.js";
 import {
+  buildAbandonWitness,
+  type AbandonWitness,
+} from "../intents/abandon-witness.js";
+import {
+  buildRefundWitness,
+  type RefundWitness,
+} from "../intents/refund-witness.js";
+import {
+  buildClaimWitness,
+  type ClaimWitness,
+} from "../intents/claim-witness.js";
+import {
   broadcastSponsorSubmit,
   broadcastSubmit,
+  broadcastPullValue,
+  encodeRefundWitnessBytes,
+  encodeClaimWitnessBytes,
 } from "./quadphase-broadcast.js";
+import { redactBearer } from "../utils/redact.js";
+
+// BYTES32_RE validates `0x` + 64 lowercase or uppercase hex chars.
+// Used by runRefundFlow to guard `sourceIntentHash` against malformed
+// input that would silently produce wrong stakeOp selection or chain
+// reverts with opaque errors. Audit H2.
+const BYTES32_RE = /^0x[0-9a-fA-F]{64}$/;
+
+// ZERO_BYTES32 is the canonical sentinel for "sponsor refund" mode
+// (vs stake refund where sourceIntentHash points at the
+// commit/vote intent). Compared as a constant so callers can't
+// accidentally pass a non-canonical zero hash like "0x00".
+const ZERO_BYTES32 = "0x" + "0".repeat(64);
 
 // ─── USDC allowance gate ─────────────────────────────────────────────
 
@@ -245,7 +273,7 @@ export async function runSponsorFlow(
   const text = await res.text();
   if (!res.ok) {
     throw new Error(
-      `runSponsorFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${text}`,
+      `runSponsorFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
     );
   }
   const parsed = JSON.parse(text) as {
@@ -371,7 +399,7 @@ export async function runCosponsorFlow(
   const text = await res.text();
   if (!res.ok) {
     throw new Error(
-      `runCosponsorFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${text}`,
+      `runCosponsorFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
     );
   }
   const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
@@ -521,7 +549,7 @@ export async function runCommitFlow(
   const text = await res.text();
   if (!res.ok) {
     throw new Error(
-      `runCommitFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${text}`,
+      `runCommitFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
     );
   }
   const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
@@ -660,7 +688,7 @@ export async function runVoteFlow(
   const text = await res.text();
   if (!res.ok) {
     throw new Error(
-      `runVoteFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${text}`,
+      `runVoteFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
     );
   }
   const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
@@ -755,7 +783,12 @@ function serializeEnvelope(e: Envelope): Record<string, unknown> {
     questionId: e.qid,
     action: e.action,
     nonce: encodeBigIntForWire(e.nonce),
-    expiresAt: Number(e.expiresAt),
+    // Audit H1: bigint → wire-int via the same sentinel pattern as
+    // every other uint256. `Number(bigint)` was silently lossy for
+    // values past 2^53-1, and the inconsistency with the rest of the
+    // envelope fields was a foot-gun for future deadlines that scale
+    // beyond timestamp range.
+    expiresAt: encodeBigIntForWire(e.expiresAt),
     contentHash: e.contentHash,
     funds: {
       token: e.funds.token,
@@ -768,4 +801,491 @@ function serializeEnvelope(e: Envelope): Record<string, unknown> {
       stakeOp: e.funds.stakeOp,
     },
   };
+}
+
+function serializeAbandonWitness(w: AbandonWitness): Record<string, unknown> {
+  return {
+    actionTag: w.actionTag,
+    expectedStatus: w.expectedStatus,
+    reason: w.reason,
+  };
+}
+
+function serializeRefundWitness(w: RefundWitness): Record<string, unknown> {
+  return {
+    actionTag: w.actionTag,
+    sourceIntentHash: w.sourceIntentHash,
+    expectedAmount: encodeBigIntForWire(w.expectedAmount),
+    expectedStatus: w.expectedStatus,
+  };
+}
+
+function serializeClaimWitness(w: ClaimWitness): Record<string, unknown> {
+  return {
+    actionTag: w.actionTag,
+    proof: w.proof,
+    leafIndex: encodeBigIntForWire(w.leafIndex),
+    leafAmount: encodeBigIntForWire(w.leafAmount),
+    role: w.role,
+    expectedStatus: w.expectedStatus,
+  };
+}
+
+// ─── Abandon flow ────────────────────────────────────────────────────
+//
+// Permissionless Open→Abandoned transition by the question's oracle.
+// (Note: the chain restricts Abandon to `env.signer == q.oracle`;
+//  rev2 §10.1 C1-sm. Anyone-can-abandon comes via forceRecover
+//  post-`recoverableAt`, a different path.)
+//
+// AUDIT C1 FIX — the earlier version of this flow skipped the backend
+// POST and broadcast directly. That broke the reconciler: when the
+// chain Abandon event arrived, the cycle-runner's LEFT JOIN against
+// signed_intents found no row, processOne classified the event as
+// OutcomeHeld, and the question's DB status stayed `open` forever
+// even though the chain said `Abandoned`. Exactly the R-CHAIN-IS-
+// AUTHORITY drift this codebase exists to prevent. We POST a staged
+// row first, then broadcast — mirroring runRefundFlow / runClaimFlow.
+//
+// Preflight is not available (intent.go dispatcher returns 501 for
+// `abandon` — PR2 roadmap), so the caller computes the envelope
+// fields locally. The submit endpoint accepts the staged row even
+// without preflight (per the 501's recovery action string itself).
+
+export interface AbandonFlowParams {
+  signer: Address;
+  qid: Hex;
+  questionId: string;
+  nonce: bigint;
+  expiresAt: bigint;
+  forgeAddress: Address;
+  chainId: number;
+  /** USDC (or whatever the question's bountyToken is). The chain
+   *  rejects token-zero in the funds shape gate even though Abandon
+   *  moves no funds. Pass the question's chain_token verbatim. */
+  token: Address;
+  /** Reason encoded as a bytes32 string. Common values mirror
+   *  questions.abandonment_reason: 'timeout' / 'no_solutions' /
+   *  'owner_cancelled'. Pad/zero-pad to 32 bytes via stringToHex(...,
+   *  { size: 32 }) at the call site. */
+  reason: Hex;
+  /** On-chain QuestionStatus the signer expects (the chain's enum
+   *  Open=1). The contract reverts on mismatch — defense against
+   *  signing into a status the signer didn't intend. */
+  expectedStatus: number;
+  /** Backend bearer JWT for the POST /intents stage. Required (the
+   *  staged row is the reconciler's match key — see C1 fix above). */
+  bearerToken: string;
+  /** API base url (http://localhost:8080 in dev). */
+  baseUrl: string;
+  walletClient: WalletClient;
+  privateKey: Hex;
+}
+
+export interface AbandonFlowResult {
+  intentHash: Hex;
+  signature: Hex;
+  envelope: Envelope;
+  backendStatus?: string;
+  txHash?: Hex;
+}
+
+export async function runAbandonFlow(
+  p: AbandonFlowParams,
+): Promise<AbandonFlowResult> {
+  const { witness, contentHash } = buildAbandonWitness({
+    expectedStatus: p.expectedStatus,
+    reason: p.reason,
+  });
+  // Abandon funds-shape (QuadphaseShapes.assertFundsShape): all
+  // amounts zero, stakeOp=None, but token MUST be non-zero per the
+  // shared "shape:token-must-be-nonzero" gate that fires before the
+  // per-action branch.
+  const funds: Funds = {
+    token: p.token,
+    poolIn: 0n,
+    poolOut: 0n,
+    feeAmount: 0n,
+    feeShareBps: 0,
+    feeShares: [],
+    stakeAmount: 0n,
+    stakeOp: StakeOp.None,
+  };
+  const envelope: Envelope = {
+    signer: p.signer,
+    qid: p.qid,
+    action: ActionTag.Abandon,
+    nonce: p.nonce,
+    expiresAt: p.expiresAt,
+    contentHash,
+    funds,
+  };
+  const typedData = buildEnvelopeForSigning({
+    envelope,
+    chainId: p.chainId,
+    forgeAddress: p.forgeAddress,
+  });
+  const intentHash = hashTypedData({
+    domain: typedData.domain,
+    types: typedData.types,
+    primaryType: typedData.primaryType,
+    message: typedData.message as never,
+  }) as Hex;
+  const account = privateKeyToAccount(p.privateKey);
+  const signature = (await account.signTypedData({
+    domain: typedData.domain,
+    types: typedData.types,
+    primaryType: typedData.primaryType,
+    message: typedData.message as never,
+  })) as Hex;
+
+  const result: AbandonFlowResult = {
+    intentHash,
+    signature,
+    envelope,
+  };
+
+  // C1: stage the row in the backend BEFORE broadcasting. The
+  // reconciler can only confirm chain events whose intent_hash
+  // matches a staged signed_intents row.
+  const res = await fetch(
+    `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${p.bearerToken}`,
+        Prefer: "return=minimal",
+      },
+      body: stringifyWithBigInts({
+        actionType: "abandon",
+        typedData: serializeEnvelope(envelope),
+        content: serializeAbandonWitness(witness),
+        signature,
+        expectedIntentHash: intentHash,
+      }),
+    },
+  );
+  const text = await res.text();
+  if (!res.ok) {
+    // C2: redact any echoed Authorization header before it reaches
+    // the LLM's error message.
+    throw new Error(
+      `runAbandonFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
+    );
+  }
+  const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
+  result.intentHash = (parsed.intentHash ?? intentHash) as Hex;
+  result.backendStatus = parsed.status;
+
+  const txHash = await broadcastSubmit(p.walletClient, {
+    forgeAddress: p.forgeAddress,
+    envelope,
+    signature,
+  });
+  result.txHash = txHash;
+  return result;
+}
+
+// ─── Refund flow ─────────────────────────────────────────────────────
+//
+// Per-actor "pull my money back from an Abandoned (or Settled with
+// un-slashed remainder) question" flow. Three sub-paths share this
+// shape:
+//
+//   sourceIntentHash == bytes32(0) → sponsor / cosponsor refund:
+//     contract releases sponsorContributions[qid][signer] (the
+//     signer's cumulative bounty contribution on this question).
+//   sourceIntentHash != 0 → commit / vote stake refund: contract
+//     releases stakes[ih] iff stakeOwner[ih] == env.signer.
+//
+// Backend preflight (`actionType=refund` → RefundDraft) returns the
+// envelope template + expectedAmount + sourceIntentHash. If the
+// caller already has those values (e.g. queried directly from
+// chain), they can skip preflight and pass them in — the backend
+// POST is still needed to stage the signed_intents row for
+// post-confirm projection.
+
+export interface RefundFlowParams {
+  signer: Address;
+  qid: Hex;
+  questionId: string;
+  nonce: bigint;
+  expiresAt: bigint;
+  forgeAddress: Address;
+  chainId: number;
+  token: Address;
+  /** bytes32(0) for sponsor refund; the committed solution/vote
+   *  intentHash for stake refunds. */
+  sourceIntentHash: Hex;
+  /** Exact amount the contract will release. The witness encodes
+   *  this; mismatch reverts with 'refund:amount-mismatch'. Preflight
+   *  populates it from sponsorContributions/stakes lookup. */
+  expectedAmount: bigint;
+  /** On-chain QuestionStatus enum the signer expects:
+   *  Abandoned=4, Settled=3. The contract reverts on mismatch. */
+  expectedStatus: number;
+  /** Backend bearer JWT for the POST /intents stage. */
+  bearerToken: string;
+  /** API base url (http://localhost:8080 in dev). */
+  baseUrl: string;
+  /** Optional pre-computed intent hash from preflight. When omitted,
+   *  the flow derives it locally and uses that. */
+  expectedIntentHash?: Hex;
+  walletClient: WalletClient;
+  privateKey: Hex;
+}
+
+export interface RefundFlowResult {
+  intentHash: Hex;
+  signature: Hex;
+  envelope: Envelope;
+  backendStatus?: string;
+  txHash?: Hex;
+}
+
+export async function runRefundFlow(
+  p: RefundFlowParams,
+): Promise<RefundFlowResult> {
+  // AUDIT H2: validate sourceIntentHash up-front. The chain expects
+  // bytes32 (66 chars including `0x`). Without this guard, a caller
+  // passing `0x00` (66 chars short) would silently bypass the
+  // zero-sentinel check at the StakeOp decision, set the wrong
+  // stakeOp, and produce an opaque chain revert rather than a clear
+  // client-side type error.
+  if (!BYTES32_RE.test(p.sourceIntentHash)) {
+    throw new Error(
+      `runRefundFlow: sourceIntentHash must be 0x + 64 hex chars (bytes32); got "${p.sourceIntentHash}" (${p.sourceIntentHash.length} chars)`,
+    );
+  }
+  const { witness, contentHash } = buildRefundWitness({
+    sourceIntentHash: p.sourceIntentHash,
+    expectedAmount: p.expectedAmount,
+    expectedStatus: p.expectedStatus,
+  });
+  // Refund funds-shape: poolOut = expectedAmount, everything else
+  // zero, stakeOp = None (sponsor refund) or Release (stake refund).
+  // sourceIntentHash == 0 disambiguates sponsor vs stake at the
+  // contract level, so the SDK uses None as a safe default — chain
+  // accepts both for sponsor refund per the shape gate.
+  const funds: Funds = {
+    token: p.token,
+    poolIn: 0n,
+    poolOut: p.expectedAmount,
+    feeAmount: 0n,
+    feeShareBps: 0,
+    feeShares: [],
+    stakeAmount: 0n,
+    stakeOp: p.sourceIntentHash.toLowerCase() === ZERO_BYTES32 ? StakeOp.None : StakeOp.Release,
+  };
+  const envelope: Envelope = {
+    signer: p.signer,
+    qid: p.qid,
+    action: ActionTag.Refund,
+    nonce: p.nonce,
+    expiresAt: p.expiresAt,
+    contentHash,
+    funds,
+  };
+  const typedData = buildEnvelopeForSigning({
+    envelope,
+    chainId: p.chainId,
+    forgeAddress: p.forgeAddress,
+  });
+  const localIntentHash = hashTypedData({
+    domain: typedData.domain,
+    types: typedData.types,
+    primaryType: typedData.primaryType,
+    message: typedData.message as never,
+  }) as Hex;
+  const intentHashToSend = p.expectedIntentHash ?? localIntentHash;
+  const account = privateKeyToAccount(p.privateKey);
+  const signature = (await account.signTypedData({
+    domain: typedData.domain,
+    types: typedData.types,
+    primaryType: typedData.primaryType,
+    message: typedData.message as never,
+  })) as Hex;
+
+  const result: RefundFlowResult = {
+    intentHash: localIntentHash,
+    signature,
+    envelope,
+  };
+
+  const res = await fetch(
+    `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${p.bearerToken}`,
+        Prefer: "return=minimal",
+      },
+      body: stringifyWithBigInts({
+        actionType: "refund",
+        typedData: serializeEnvelope(envelope),
+        content: serializeRefundWitness(witness),
+        signature,
+        expectedIntentHash: intentHashToSend,
+      }),
+    },
+  );
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(
+      `runRefundFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
+    );
+  }
+  const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
+  result.intentHash = (parsed.intentHash ?? localIntentHash) as Hex;
+  result.backendStatus = parsed.status;
+
+  const witnessBytes = encodeRefundWitnessBytes(witness);
+  const txHash = await broadcastPullValue(p.walletClient, {
+    forgeAddress: p.forgeAddress,
+    envelope,
+    signature,
+    witnessBytes,
+  });
+  result.txHash = txHash;
+  return result;
+}
+
+// ─── Claim flow ──────────────────────────────────────────────────────
+//
+// Winner's pull-side flow for Settled questions. Backend preflight
+// (`actionType=claim` → ClaimDraft) returns the Merkle proof +
+// leafIndex/leafAmount/role from the settlement_claims projection.
+// SDK signs the envelope verbatim and calls pullValue() — the chain
+// verifies the proof against the stored merkle root and releases
+// poolOut into the recipient (always == env.signer).
+
+export interface ClaimFlowParams {
+  signer: Address;
+  qid: Hex;
+  questionId: string;
+  nonce: bigint;
+  expiresAt: bigint;
+  forgeAddress: Address;
+  chainId: number;
+  token: Address;
+  /** Merkle proof from preflight (Round-3 ClaimDraft response). */
+  proof: Hex[];
+  leafIndex: bigint;
+  leafAmount: bigint;
+  /** Role byte for dual-role disambiguation (solver / voter /
+   *  sponsor — see contract for the enum). */
+  role: number;
+  /** On-chain QuestionStatus enum the signer expects (Settled=3). */
+  expectedStatus: number;
+  bearerToken: string;
+  baseUrl: string;
+  expectedIntentHash?: Hex;
+  walletClient: WalletClient;
+  privateKey: Hex;
+}
+
+export interface ClaimFlowResult {
+  intentHash: Hex;
+  signature: Hex;
+  envelope: Envelope;
+  backendStatus?: string;
+  txHash?: Hex;
+}
+
+export async function runClaimFlow(
+  p: ClaimFlowParams,
+): Promise<ClaimFlowResult> {
+  const { witness, contentHash } = buildClaimWitness({
+    proof: p.proof,
+    leafIndex: p.leafIndex,
+    leafAmount: p.leafAmount,
+    role: p.role,
+    expectedStatus: p.expectedStatus,
+  });
+  // Claim funds-shape: poolOut = leafAmount, everything else zero,
+  // stakeOp = None.
+  const funds: Funds = {
+    token: p.token,
+    poolIn: 0n,
+    poolOut: p.leafAmount,
+    feeAmount: 0n,
+    feeShareBps: 0,
+    feeShares: [],
+    stakeAmount: 0n,
+    stakeOp: StakeOp.None,
+  };
+  const envelope: Envelope = {
+    signer: p.signer,
+    qid: p.qid,
+    action: ActionTag.Claim,
+    nonce: p.nonce,
+    expiresAt: p.expiresAt,
+    contentHash,
+    funds,
+  };
+  const typedData = buildEnvelopeForSigning({
+    envelope,
+    chainId: p.chainId,
+    forgeAddress: p.forgeAddress,
+  });
+  const localIntentHash = hashTypedData({
+    domain: typedData.domain,
+    types: typedData.types,
+    primaryType: typedData.primaryType,
+    message: typedData.message as never,
+  }) as Hex;
+  const intentHashToSend = p.expectedIntentHash ?? localIntentHash;
+  const account = privateKeyToAccount(p.privateKey);
+  const signature = (await account.signTypedData({
+    domain: typedData.domain,
+    types: typedData.types,
+    primaryType: typedData.primaryType,
+    message: typedData.message as never,
+  })) as Hex;
+
+  const result: ClaimFlowResult = {
+    intentHash: localIntentHash,
+    signature,
+    envelope,
+  };
+
+  const res = await fetch(
+    `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${p.bearerToken}`,
+        Prefer: "return=minimal",
+      },
+      body: stringifyWithBigInts({
+        actionType: "claim",
+        typedData: serializeEnvelope(envelope),
+        content: serializeClaimWitness(witness),
+        signature,
+        expectedIntentHash: intentHashToSend,
+      }),
+    },
+  );
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(
+      `runClaimFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
+    );
+  }
+  const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
+  result.intentHash = (parsed.intentHash ?? localIntentHash) as Hex;
+  result.backendStatus = parsed.status;
+
+  const witnessBytes = encodeClaimWitnessBytes(witness);
+  const txHash = await broadcastPullValue(p.walletClient, {
+    forgeAddress: p.forgeAddress,
+    envelope,
+    signature,
+    witnessBytes,
+  });
+  result.txHash = txHash;
+  return result;
 }
