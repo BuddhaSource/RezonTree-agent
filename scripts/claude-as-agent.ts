@@ -231,26 +231,33 @@ async function actSponsor(idx: number, qid: string, amount: string) {
   });
 
   if (pre.mode === "sponsor") {
-    // Sponsor mode binds per-Q params on-chain — re-use the question's
-    // stored title/body so the contentHash matches.
-    const qDetail = (await api(idx, "GET", `/v1/questions/${qid}`)) as {
-      title: string; description: string; tags?: string[]; successCriteria?: unknown[];
-    };
+    // Sponsor binds per-Q params on-chain. The backend's preflight returns
+    // the canonical envelope+witness it hashed into expectedIntentHash;
+    // build the SponsorWitness from THAT template (not a re-derived
+    // /v1/questions read) so the client contentHash reproduces the
+    // backend's byte-for-byte. Re-deriving criteria/tags drifts the hash
+    // (R-CLIENT-IS-TRUST-ORIGIN + R-INTENT-HASH-IS-MATCH-KEY). #629.
+    const tmpl = (pre as unknown as {
+      envelopeTemplate?: { witness?: Record<string, unknown> };
+    }).envelopeTemplate;
+    const wt = tmpl?.witness;
+    if (!wt) throw new Error("sponsor preflight missing envelopeTemplate.witness — backend too old?");
     const result = await runSponsorFlow({
       baseUrl: API_URL, bearerToken: bearer, signer: address, questionId: qid,
       qid: pre.qid as Hex, nonce, expiresAt, forgeAddress: FORGE!,
       chainId: pre.chainId ?? CHAIN_ID,
       expectedIntentHash: pre.expectedIntentHash as Hex,
-      title: qDetail.title, body: qDetail.description,
-      criteria: JSON.stringify(qDetail.successCriteria ?? []), tags: qDetail.tags ?? [],
-      oracle: (pre.oracle as Address | undefined) ?? address,
-      sponsorshipFloor: BigInt(pre.sponsorshipFloor ?? pre.recommendedSponsorshipFloor ?? "0"),
-      commitFee: BigInt(pre.commitFee ?? "0"),
-      voteFee: BigInt(pre.voteFee ?? "0"),
-      stakeFloor: BigInt(pre.stakeFloor ?? "0"),
-      stakeBasisPoints: Number(pre.stakeBasisPoints ?? "0"),
-      fundingDeadline: BigInt(pre.recommendedFundingDeadline ?? Math.floor(Date.now() / 1000) + 30 * 86400),
-      noSolutionGracePeriod: BigInt(pre.noSolutionGracePeriod ?? "86400"),
+      title: String(wt.title ?? ""), body: String(wt.body ?? ""),
+      criteria: String(wt.criteria ?? ""),
+      tags: (wt.tags as string[] | null) ?? [],
+      oracle: wt.oracle as Address,
+      sponsorshipFloor: BigInt((wt.sponsorshipFloor as string | number) ?? 0),
+      commitFee: BigInt((wt.commitFee as string | number) ?? 0),
+      voteFee: BigInt((wt.voteFee as string | number) ?? 0),
+      stakeFloor: BigInt((wt.stakeFloor as string | number) ?? 0),
+      stakeBasisPoints: Number(wt.stakeBasisPoints ?? 0),
+      fundingDeadline: BigInt((wt.fundingDeadline as string | number) ?? 0),
+      noSolutionGracePeriod: BigInt((wt.noSolutionGracePeriod as string | number) ?? 0),
       token: pre.token.contractAddress as Address, amount: amountWei, feeAmount: 0n,
       feeShareBps: amountWei > 0n ? feeShareBps : 0,
       feeShares: amountWei > 0n ? [{ recipient: platformFeeRecipient, basisPoints: 10000 }] : [],
@@ -353,7 +360,11 @@ async function actVote(idx: number, qid: string, allocations: Allocation[]) {
     // expiresAt MUST equal voteSaltExpiresAt — the HMAC binds it.
     expiresAt: BigInt(pre.voteSaltExpiresAt!),
     forgeAddress: FORGE!, chainId: pre.chainId ?? CHAIN_ID,
-    expectedIntentHash: pre.expectedIntentHash as Hex,
+    // Vote intent hash is allocation-dependent; the preflight returns an
+    // empty-allocations placeholder (VotePreflight H-8), so we don't assert
+    // against it — runVoteFlow sends the real recomputed hash and the
+    // backend re-derives at Stage 2. #629.
+    expectedIntentHash: undefined,
     allocations: v2Allocations,
     voteSalt: pre.voteSalt as Hex, voteSaltToken: pre.voteSaltToken as Hex,
     token: pre.token.contractAddress as Address, feeAmount, stakeAmount,

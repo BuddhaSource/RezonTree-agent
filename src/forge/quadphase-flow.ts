@@ -448,7 +448,7 @@ export async function runCosponsorFlow(
     );
   }
   const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
-  result.intentHash = (parsed.intentHash ?? p.expectedIntentHash) as Hex;
+  result.intentHash = (parsed.intentHash ?? localIntentHash) as Hex;
   result.backendStatus = parsed.status;
 
   const txHash = await broadcastSubmit(p.walletClient, {
@@ -598,7 +598,7 @@ export async function runCommitFlow(
     );
   }
   const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
-  result.intentHash = (parsed.intentHash ?? p.expectedIntentHash) as Hex;
+  result.intentHash = (parsed.intentHash ?? localIntentHash) as Hex;
   result.backendStatus = parsed.status;
 
   const txHash = await broadcastSubmit(p.walletClient, {
@@ -697,10 +697,15 @@ export async function runVoteFlow(
     chainId: p.chainId,
     forgeAddress: p.forgeAddress,
   });
-  // R-INTENT-HASH-IS-MATCH-KEY: recompute locally + assert against
-  // preflight before signing.
+  // R-INTENT-HASH-IS-MATCH-KEY: recompute locally. A vote's intent hash
+  // is allocation-dependent, so a vote preflight can only return an
+  // empty-allocations placeholder (VotePreflight H-8) — callers therefore
+  // pass expectedIntentHash undefined and this assert no-ops. The real
+  // localIntentHash below is the claim the backend recomputes against at
+  // Stage 2 (mirrors runCommitFlow's intentHashToSend pattern).
   const localIntentHash = hashEnvelopeStruct(envelope);
   assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
+  const intentHashToSend = p.expectedIntentHash ?? localIntentHash;
   const account = privateKeyToAccount(p.privateKey);
   const signature = (await account.signTypedData({
     domain: typedData.domain,
@@ -729,7 +734,7 @@ export async function runVoteFlow(
         typedData: serializeEnvelope(envelope),
         content: serializeVoteWitness(witness),
         signature,
-        expectedIntentHash: p.expectedIntentHash,
+        expectedIntentHash: intentHashToSend,
         voteSaltToken: p.voteSaltToken,
       }),
     },
@@ -741,7 +746,7 @@ export async function runVoteFlow(
     );
   }
   const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
-  result.intentHash = (parsed.intentHash ?? p.expectedIntentHash) as Hex;
+  result.intentHash = (parsed.intentHash ?? localIntentHash) as Hex;
   result.backendStatus = parsed.status;
 
   const txHash = await broadcastSubmit(p.walletClient, {
@@ -1129,11 +1134,13 @@ export async function runRefundFlow(
     expectedAmount: p.expectedAmount,
     expectedStatus: p.expectedStatus,
   });
-  // Refund funds-shape: poolOut = expectedAmount, everything else
-  // zero, stakeOp = None (sponsor refund) or Release (stake refund).
-  // sourceIntentHash == 0 disambiguates sponsor vs stake at the
-  // contract level, so the SDK uses None as a safe default — chain
-  // accepts both for sponsor refund per the shape gate.
+  // Refund funds-shape: poolOut = expectedAmount, everything else zero,
+  // stakeOp = None for BOTH sponsor and stake refunds. The contract
+  // disambiguates sponsor-vs-stake by sourceIntentHash (== 0 ⇒ sponsor),
+  // NOT by stakeOp, and the backend's canonical refund envelope
+  // (newRefundFunds) hashes StakeOp.None unconditionally — so the client
+  // must use None too or the envelope hash drifts from the backend's
+  // expectedIntentHash on every stake refund. #629.
   const funds: Funds = {
     token: p.token,
     poolIn: 0n,
@@ -1142,7 +1149,7 @@ export async function runRefundFlow(
     feeShareBps: 0,
     feeShares: [],
     stakeAmount: 0n,
-    stakeOp: p.sourceIntentHash.toLowerCase() === ZERO_BYTES32 ? StakeOp.None : StakeOp.Release,
+    stakeOp: StakeOp.None,
   };
   const envelope: Envelope = {
     signer: p.signer,
