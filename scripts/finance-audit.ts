@@ -27,46 +27,30 @@ import {
   erc20Abi,
 } from "viem";
 
-// Local read ABI — REZON_FORGE_ABI in src/forge/abi.ts only declares
-// the writable surface plus `questions` view; we add the stake view
-// fns here without polluting that file. Mirrors src/accounting/
-// balances.ts's local-abi pattern.
-export const ROUTER_READ_ABI = [
+// v2 read ABI. The v1 per-question `questions()` getter + the
+// per-intent `solutionStake`/`voteStake` views were REMOVED in the
+// unified-envelope contract (#595). v2 exposes scalar question state via
+// `getQuestionScalars(qid) → (token, status, poolAmount, feeShareSet)`.
+//
+// Per-intent on-chain stake views no longer exist: in the unified model,
+// locked stakes are folded into the question pool and tracked off-chain
+// by the indexer/reconciler. The conservation audit therefore reconciles
+// on the question pool + wallet balances (the real on-chain invariant —
+// Σwallets + ΣforgePools is conserved across a lifecycle) and treats
+// per-intent stake held as a derived quantity (committed − refunded −
+// slashed), not a chain read.
+export const FORGE_READ_ABI = [
   {
     type: "function",
-    name: "questions",
+    name: "getQuestionScalars",
     stateMutability: "view",
-    inputs: [{ name: "", type: "bytes32" }],
+    inputs: [{ name: "qid", type: "bytes32" }],
     outputs: [
-      { name: "status", type: "uint8" },
       { name: "token", type: "address" },
-      { name: "oracle", type: "address" },
-      { name: "sponsor", type: "address" },
-      { name: "stakeFloor", type: "uint256" },
-      { name: "stakeBasisPoints", type: "uint256" },
-      { name: "sponsorshipFloor", type: "uint256" },
-      { name: "voteFee", type: "uint256" },
-      { name: "abandonmentGracePeriod", type: "uint256" },
-      { name: "solutionCount", type: "uint32" },
-      { name: "totalSponsorship", type: "uint256" },
+      { name: "status", type: "uint8" },
       { name: "poolAmount", type: "uint256" },
-      { name: "fundingDeadline", type: "uint256" },
-      { name: "totalClaimable", type: "uint256" },
+      { name: "feeShareSet", type: "bool" },
     ],
-  },
-  {
-    type: "function",
-    name: "solutionStake",
-    stateMutability: "view",
-    inputs: [{ name: "", type: "bytes32" }],
-    outputs: [{ name: "", type: "uint256" }],
-  },
-  {
-    type: "function",
-    name: "voteStake",
-    stateMutability: "view",
-    inputs: [{ name: "", type: "bytes32" }],
-    outputs: [{ name: "", type: "uint256" }],
   },
 ] as const;
 
@@ -97,8 +81,6 @@ export interface FinanceSnapshot {
   walletBalances: Record<Address, bigint>;
   forgeTotalUsdc: bigint;
   pools: Record<Hex, bigint>;
-  solutionStakes: Record<Hex, bigint>;
-  voteStakes: Record<Hex, bigint>;
   totalUsdc: bigint;
 }
 
@@ -144,8 +126,6 @@ export async function snapshotFinance(params: {
   forge: Address;
   wallets: Address[];
   qids: Hex[];
-  commitIntents: Hex[];
-  voteIntents: Hex[];
 }): Promise<FinanceSnapshot> {
   const balanceCalls = params.wallets.map((addr) =>
     params.publicClient.readContract({
@@ -165,34 +145,16 @@ export async function snapshotFinance(params: {
   const poolCalls = params.qids.map((qid) =>
     params.publicClient.readContract({
       address: params.forge,
-      abi: ROUTER_READ_ABI,
-      functionName: "questions",
+      abi: FORGE_READ_ABI,
+      functionName: "getQuestionScalars",
       args: [qid],
-    }) as Promise<readonly [number, Address, number, bigint, bigint]>,
-  );
-  const sStakeCalls = params.commitIntents.map((h) =>
-    params.publicClient.readContract({
-      address: params.forge,
-      abi: ROUTER_READ_ABI,
-      functionName: "solutionStake",
-      args: [h],
-    }) as Promise<bigint>,
-  );
-  const vStakeCalls = params.voteIntents.map((h) =>
-    params.publicClient.readContract({
-      address: params.forge,
-      abi: ROUTER_READ_ABI,
-      functionName: "voteStake",
-      args: [h],
-    }) as Promise<bigint>,
+    }) as Promise<readonly [Address, number, bigint, boolean]>,
   );
 
-  const [balances, forgeTotal, poolStates, sStakes, vStakes] = await Promise.all([
+  const [balances, forgeTotal, poolStates] = await Promise.all([
     Promise.all(balanceCalls),
     forgeTotalP,
     Promise.all(poolCalls),
-    Promise.all(sStakeCalls),
-    Promise.all(vStakeCalls),
   ]);
 
   const walletBalances: Record<Address, bigint> = {};
@@ -203,18 +165,9 @@ export async function snapshotFinance(params: {
   }
   const pools: Record<Hex, bigint> = {};
   for (let i = 0; i < params.qids.length; i++) {
-    // poolAmount is the 12th field (0-indexed 11) of QuestionState —
-    // see RezonForge.sol struct declaration. Index drift here was
-    // the previous "uint256 in safe-int range" crash.
-    pools[params.qids[i]] = poolStates[i][11];
-  }
-  const solutionStakes: Record<Hex, bigint> = {};
-  for (let i = 0; i < params.commitIntents.length; i++) {
-    solutionStakes[params.commitIntents[i]] = sStakes[i];
-  }
-  const voteStakes: Record<Hex, bigint> = {};
-  for (let i = 0; i < params.voteIntents.length; i++) {
-    voteStakes[params.voteIntents[i]] = vStakes[i];
+    // getQuestionScalars → (token, status, poolAmount, feeShareSet);
+    // poolAmount is index 2.
+    pools[params.qids[i]] = poolStates[i][2];
   }
 
   return {
@@ -222,8 +175,6 @@ export async function snapshotFinance(params: {
     walletBalances,
     forgeTotalUsdc: forgeTotal,
     pools,
-    solutionStakes,
-    voteStakes,
     totalUsdc: totalWallets + forgeTotal,
   };
 }
@@ -242,26 +193,36 @@ export interface QuestionTrace {
   protocolFeeWei: bigint;          // routed to fee_wallet
 }
 
-export function reconcileQuestion(t: QuestionTrace, finalPool: bigint, finalSolStakes: bigint, finalVoteStakes: bigint): PerQuestionAudit {
+// v2 reconciliation. In the unified-envelope model the question's
+// on-chain `poolAmount` (read via getQuestionScalars) holds BOTH the
+// bounty inflows AND every locked commit/vote stake until settlement /
+// refund moves them out. There are no separate per-intent stake views to
+// read, so the chain-readable invariant collapses to a single quantity:
+//
+//   finalPool == poolInflows + stakesCommitted + stakesSlashed
+//                - poolDistributed - feeShareDistributed - protocolFee
+//                - stakesRefunded
+//
+// i.e. everything that flowed in (bounty + stakes + slashes) minus
+// everything pulled out (payouts + fees + refunded stakes) must equal
+// what the chain still holds in the pool. Drift ≠ 0 is a conservation
+// violation.
+export function reconcileQuestion(t: QuestionTrace, finalPool: bigint): PerQuestionAudit {
   const distributed =
     t.poolDistributedWei +
     t.feeShareDistributedWei +
     t.protocolFeeWei;
 
-  const expectedPoolResidual =
-    t.poolInflowsWei + t.stakesSlashedWei - distributed;
-  const poolResidual = finalPool;
-  const poolDrift = poolResidual - expectedPoolResidual;
+  const expectedPool =
+    t.poolInflowsWei +
+    t.stakesCommittedWei +
+    t.stakesSlashedWei -
+    distributed -
+    t.stakesRefundedWei;
+  const drift = finalPool - expectedPool;
 
-  const expectedStakesHeld =
-    t.stakesCommittedWei - t.stakesRefundedWei - t.stakesSlashedWei;
-  const observedStakesHeld = finalSolStakes + finalVoteStakes;
-  const stakeDrift = observedStakesHeld - expectedStakesHeld;
-
-  const drift = poolDrift + stakeDrift;
   const notes: string[] = [];
-  if (poolDrift !== 0n) notes.push(`pool drift ${poolDrift.toString()} wei`);
-  if (stakeDrift !== 0n) notes.push(`stake drift ${stakeDrift.toString()} wei`);
+  if (drift !== 0n) notes.push(`pool drift ${drift.toString()} wei`);
   if (notes.length === 0) notes.push("conserves");
 
   return {
@@ -269,7 +230,7 @@ export function reconcileQuestion(t: QuestionTrace, finalPool: bigint, finalSolS
     qid: t.qid,
     poolFundedTotal: t.poolInflowsWei,
     poolDistributed: distributed,
-    poolResidual,
+    poolResidual: finalPool,
     stakesCommittedTotal: t.stakesCommittedWei,
     stakesRefundedTotal: t.stakesRefundedWei,
     stakesSlashedTotal: t.stakesSlashedWei,

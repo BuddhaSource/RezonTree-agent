@@ -15,60 +15,55 @@
 // Actions:
 //   balance         — print on-chain ETH+USDC + DB account exists?
 //   create          — POST /v1/questions (off-chain only, no signing)
-//   sponsor         — preflight + sign SponsorIntent + permit + chain broadcast
-//   cosponsor       — same shape, branched to CosponsorIntent on the contract
-//   commit          — preflight + sign CommitIntent + permit + chain broadcast
-//   vote            — preflight + sign VoteIntent + permit + chain broadcast
+//   sponsor         — preflight + runSponsorFlow (sign Envelope(Sponsor) →
+//                     POST /intents → sponsorSubmit)
+//   cosponsor       — preflight + runCosponsorFlow (submit env)
+//   commit          — preflight + runCommitFlow (submit env)
+//   vote            — preflight + runVoteFlow (submit env, voteSalt-bound)
 //   list-questions  — GET /v1/questions (read-only)
 //   get-question    — GET /v1/questions/:id
 //   list-solutions  — GET /v1/questions/:id/solutions
 //
 // All actions accept content as either CLI flags or stdin JSON.
+//
+// v1 → v2 rewrite (#629): the write actions moved from the removed v1
+// intent builders + signUSDCPermit (EIP-2612 is gone) + the removed
+// sponsor/cosponsor/commitSolution/castVote chain functions to the
+// Quadphase v2 unified-envelope flows, mirroring the live MCP server.
+// USDC escrow is now safeTransferFrom — pre-approve once via
+// ensureUsdcAllowance instead of an inline permit signature.
 
 import "dotenv/config";
 import { readFileSync } from "node:fs";
 import type { Address, Hex } from "viem";
 import { createPublicClient, http } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 
 import { deriveAgentWallets } from "../src/wallet/derive.js";
 import { getAgentBalance } from "../src/wallet/balance.js";
 import { loadLoginDomain } from "../src/wallet/domain.js";
 import { signWalletLoginIntent } from "../src/wallet/signer.js";
-import {
-  buildSponsorFundRequestBody,
-  buildSponsorIntentTypedData,
-  parseAmountToWei,
-} from "../src/intents/sponsor-intent.js";
-import {
-  buildCosponsorFundRequestBody,
-  buildCosponsorIntentTypedData,
-} from "../src/intents/cosponsor-intent.js";
-import {
-  buildCommitIntentTypedData,
-  buildSubmitCommitRequestBody,
-  computeContentHash,
-} from "../src/intents/commit-intent.js";
-import {
-  type Allocation,
-  buildSubmitVoteIntentRequestBody,
-  buildVoteIntentTypedData,
-  computeAllocationsHash,
-} from "../src/intents/vote-intent.js";
+import { parseAmountToWei } from "../src/intents/sponsor-intent.js";
+import { canonicalStringify } from "../src/intents/commit-intent.js";
 import type {
   CommitPreflight,
   FundPreflight,
   VotePreflight,
 } from "../src/intents/preflight-types.js";
+import { makeAgentWalletClient, awaitReceipt } from "../src/forge/quadphase-broadcast.js";
 import {
-  awaitReceipt,
-  broadcastCommit,
-  broadcastCosponsor,
-  broadcastSponsor,
-  broadcastVote,
-  makeAgentWalletClient,
-} from "../src/forge/client.js";
-import { signUSDCPermit } from "../src/forge/permit.js";
+  ensureUsdcAllowance,
+  runCommitFlow,
+  runCosponsorFlow,
+  runSponsorFlow,
+  runVoteFlow,
+} from "../src/forge/quadphase-flow.js";
+
+// MCP-allocation shape from stdin (conviction points, sum=100). Mapped to
+// v2 bps (×100) + bytes32 solutionId below.
+interface Allocation {
+  solutionId: string;
+  points: number;
+}
 
 const API_URL = process.env.RT_AGENT_BACKEND_URL ?? "http://localhost:8080";
 const RPC_URL = process.env.RT_RPC_URL ?? "https://sepolia.base.org";
@@ -153,14 +148,52 @@ function clientsFor(idx: number) {
   const mnemonic = process.env.RT_AGENT_MNEMONIC!;
   const wallets = deriveAgentWallets(mnemonic, idx + 1, CHAIN_ID);
   const wallet = wallets[idx];
-  const account = privateKeyToAccount(wallet.privateKey);
   const publicClient = createPublicClient({ transport: http(RPC_URL) });
   const walletClient = makeAgentWalletClient({
     privateKey: wallet.privateKey,
     rpcUrl: RPC_URL,
     chainId: CHAIN_ID,
   });
-  return { wallet, account, publicClient, walletClient, address: wallet.address as Address };
+  return {
+    wallet,
+    publicClient,
+    walletClient,
+    privateKey: wallet.privateKey as Hex,
+    address: wallet.address as Address,
+  };
+}
+
+// POST a unified preflight (v2 surface). `callerKey` is the query param
+// the per-action backend handler reads (sponsor / submitter / voter).
+async function preflight<T>(
+  idx: number,
+  qid: string,
+  actionType: string,
+  callerKey: string,
+  caller: Address,
+): Promise<T> {
+  return (await api(
+    idx,
+    "POST",
+    `/v1/questions/${qid}/intents/preflight?${callerKey}=${caller}`,
+    { actionType, params: { [callerKey]: caller } },
+  )) as T;
+}
+
+// Resolve the frozen fee-share policy from a preflight (#619). The chain
+// reverts a commit/vote whose feeShares[] don't match the question's
+// frozen policy; sponsor mode seeds it (100% → platform).
+function feeShareFromPreflight(
+  pre: { feeShareBps?: number | string; feeShares?: { recipient: string; basisPoints: number }[]; platformFeeRecipient?: string },
+  fallbackRecipient: Address,
+): { feeShareBps: number; feeShares: { recipient: Address; basisPoints: number }[] } {
+  const platformFeeRecipient = (pre.platformFeeRecipient as Address | undefined) ?? fallbackRecipient;
+  const feeShareBps = Number(pre.feeShareBps ?? 0);
+  const feeShares =
+    pre.feeShares && pre.feeShares.length > 0
+      ? pre.feeShares.map((s) => ({ recipient: s.recipient as Address, basisPoints: s.basisPoints }))
+      : [{ recipient: platformFeeRecipient, basisPoints: 10000 }];
+  return { feeShareBps, feeShares };
 }
 
 // ─── actions ──────────────────────────────────────────────
@@ -183,53 +216,64 @@ async function actCreate(idx: number, payload: unknown) {
 }
 
 async function actSponsor(idx: number, qid: string, amount: string) {
-  const { account, publicClient, walletClient, address } = clientsFor(idx);
-  const pre = (await api(
-    idx, "GET", `/v1/questions/${qid}/sponsorships/draft?sponsor=${address}`,
-  )) as FundPreflight;
+  const { publicClient, walletClient, privateKey, address } = clientsFor(idx);
+  const bearer = await jwtFor(idx);
+  const pre = await preflight<FundPreflight>(idx, qid, "sponsor", "sponsor", address);
   const amountWei = parseAmountToWei(amount, pre.token.decimals);
-  const TTL_SAFE = Math.floor(Date.now() / 1000) + 4 * 60;
+  const nonce = BigInt(pre.nonce ?? "0");
+  const expiresAt = BigInt(pre.recommendedExpiresAt ?? Math.floor(Date.now() / 1000) + 300);
+  const { feeShareBps } = feeShareFromPreflight(pre, address);
+  const platformFeeRecipient = (pre.platformFeeRecipient as Address | undefined) ?? address;
+
+  // BountyForge escrow uses safeTransferFrom — one MAX approve per wallet/forge.
+  await ensureUsdcAllowance(walletClient, publicClient, {
+    usdc: USDC, forge: FORGE!, owner: address, required: amountWei,
+  });
 
   if (pre.mode === "sponsor") {
-    const td = buildSponsorIntentTypedData({
-      preflight: pre, sponsor: address, amountWei, feeShareBps: 0n, feeShares: [{ recipient: address, basisPoints: 10000n }],
-      // F17 client-side workaround: backend preflight currently omits
-      // platformFeeRecipient. SDK falls back to zero address; chain
-      // rejects (PlatformFeeRecipientRequired). Default to sponsor's
-      // own address so the question creator collects any platform fees
-      // on their own question. Backend fix tracked in task #361.
-      platformFeeRecipient: ((pre as { platformFeeRecipient?: `0x${string}` }).platformFeeRecipient ?? (address as `0x${string}`)),
-      expiresAtSeconds: TTL_SAFE,
+    // Sponsor mode binds per-Q params on-chain — re-use the question's
+    // stored title/body so the contentHash matches.
+    const qDetail = (await api(idx, "GET", `/v1/questions/${qid}`)) as {
+      title: string; description: string; tags?: string[]; successCriteria?: unknown[];
+    };
+    const result = await runSponsorFlow({
+      baseUrl: API_URL, bearerToken: bearer, signer: address, questionId: qid,
+      qid: pre.qid as Hex, nonce, expiresAt, forgeAddress: FORGE!,
+      chainId: pre.chainId ?? CHAIN_ID,
+      expectedIntentHash: pre.expectedIntentHash as Hex,
+      title: qDetail.title, body: qDetail.description,
+      criteria: JSON.stringify(qDetail.successCriteria ?? []), tags: qDetail.tags ?? [],
+      oracle: (pre.oracle as Address | undefined) ?? address,
+      sponsorshipFloor: BigInt(pre.sponsorshipFloor ?? pre.recommendedSponsorshipFloor ?? "0"),
+      commitFee: BigInt(pre.commitFee ?? "0"),
+      voteFee: BigInt(pre.voteFee ?? "0"),
+      stakeFloor: BigInt(pre.stakeFloor ?? "0"),
+      stakeBasisPoints: Number(pre.stakeBasisPoints ?? "0"),
+      fundingDeadline: BigInt(pre.recommendedFundingDeadline ?? Math.floor(Date.now() / 1000) + 30 * 86400),
+      noSolutionGracePeriod: BigInt(pre.noSolutionGracePeriod ?? "86400"),
+      token: pre.token.contractAddress as Address, amount: amountWei, feeAmount: 0n,
+      feeShareBps: amountWei > 0n ? feeShareBps : 0,
+      feeShares: amountWei > 0n ? [{ recipient: platformFeeRecipient, basisPoints: 10000 }] : [],
+      walletClient, privateKey,
     });
-    const intentSig = (await account.signTypedData(td)) as Hex;
-    const resp = await api(idx, "POST", `/v1/questions/${qid}/sponsorships`,
-      buildSponsorFundRequestBody({ typedData: td, signature: intentSig }));
-    const permit = await signUSDCPermit(walletClient, publicClient, {
-      usdc: USDC, spender: FORGE!, value: amountWei, deadline: td.message.expiresAt,
-    });
-    const txHash = await broadcastSponsor(walletClient, {
-      forgeAddress: FORGE!, intent: td.message, intentSig, permit,
-    });
-    await awaitReceipt(publicClient, txHash);
-    console.log(JSON.stringify({ mode: "sponsor", txHash, ...(resp as object) }, null, 2));
+    await awaitReceipt(publicClient, result.txHash!);
+    console.log(JSON.stringify({ mode: "sponsor", txHash: result.txHash, intentHash: result.intentHash }, null, 2));
     return;
   }
-  // cosponsor
-  const td = buildCosponsorIntentTypedData({
-    preflight: pre, sponsor: address, amountWei, feeShareBps: 0n, feeShares: [{ recipient: address, basisPoints: 10000n }],
-    expiresAtSeconds: TTL_SAFE,
+
+  // cosponsor — inherits token/feeShares from chain state.
+  const result = await runCosponsorFlow({
+    baseUrl: API_URL, bearerToken: bearer, signer: address, questionId: qid,
+    qid: pre.qid as Hex, nonce, expiresAt, forgeAddress: FORGE!,
+    chainId: pre.chainId ?? CHAIN_ID,
+    expectedIntentHash: pre.expectedIntentHash as Hex,
+    token: pre.token.contractAddress as Address, amount: amountWei, feeAmount: 0n,
+    feeShareBps: amountWei > 0n ? feeShareBps : 0,
+    feeShares: amountWei > 0n ? [{ recipient: platformFeeRecipient, basisPoints: 10000 }] : [],
+    walletClient, privateKey,
   });
-  const intentSig = (await account.signTypedData(td)) as Hex;
-  const resp = await api(idx, "POST", `/v1/questions/${qid}/sponsorships`,
-    buildCosponsorFundRequestBody({ typedData: td, signature: intentSig }));
-  const permit = await signUSDCPermit(walletClient, publicClient, {
-    usdc: USDC, spender: FORGE!, value: amountWei, deadline: td.message.expiresAt,
-  });
-  const txHash = await broadcastCosponsor(walletClient, {
-    forgeAddress: FORGE!, intent: td.message, intentSig, permit,
-  });
-  await awaitReceipt(publicClient, txHash);
-  console.log(JSON.stringify({ mode: "cosponsor", txHash, ...(resp as object) }, null, 2));
+  await awaitReceipt(publicClient, result.txHash!);
+  console.log(JSON.stringify({ mode: "cosponsor", txHash: result.txHash, intentHash: result.intentHash }, null, 2));
 }
 
 async function actCommit(idx: number, qid: string, body: {
@@ -237,67 +281,87 @@ async function actCommit(idx: number, qid: string, body: {
   reasoningTree: Array<{ because: string; therefore: string }>;
   claims: Array<{ criterionId: string; value: unknown; argument: string; falsifiableBy: string }>;
 }) {
-  const { account, publicClient, walletClient, address } = clientsFor(idx);
-  const pre = (await api(
-    idx, "GET", `/v1/questions/${qid}/solutions/draft?submitter=${address}`,
-  )) as CommitPreflight;
-  const contentHash = computeContentHash(body);
-  const td = buildCommitIntentTypedData({
-    preflight: pre, submitter: address, contentHash, feeShareBps: 0n,
-    feeShares: [{ recipient: address, basisPoints: 10000n }],
-    expiresAtSeconds: Math.floor(Date.now() / 1000) + 4 * 60,
+  const { publicClient, walletClient, privateKey, address } = clientsFor(idx);
+  const bearer = await jwtFor(idx);
+  const pre = await preflight<CommitPreflight>(idx, qid, "commit", "submitter", address);
+  const feeAmount = BigInt(pre.feeAmount);
+  const stakeAmount = BigInt(pre.stakeAmount);
+  const { feeShareBps, feeShares } = feeShareFromPreflight(pre, address);
+
+  await ensureUsdcAllowance(walletClient, publicClient, {
+    usdc: USDC, forge: FORGE!, owner: address, required: feeAmount + stakeAmount,
   });
-  const intentSig = (await account.signTypedData(td)) as Hex;
-  const commitResp = (await api(idx, "POST", `/v1/questions/${qid}/commit`,
-    buildSubmitCommitRequestBody({ typedData: td, signature: intentSig }))) as { intentHash: string };
-  const solResp = await api(idx, "POST", `/v1/questions/${qid}/solutions`, {
-    intentHash: commitResp.intentHash,
+
+  // CommitWitness.solutionBody = canonical JSON of the structured body.
+  const solutionBody = canonicalStringify({
     body: body.body, reasoningTree: body.reasoningTree, claims: body.claims,
   });
-  const permitValue = BigInt(td.message.feeAmount) + BigInt(td.message.stakeAmount);
-  const permit = await signUSDCPermit(walletClient, publicClient, {
-    usdc: USDC, spender: FORGE!, value: permitValue, deadline: td.message.expiresAt,
+
+  const result = await runCommitFlow({
+    baseUrl: API_URL, bearerToken: bearer, signer: address, questionId: qid,
+    qid: pre.qid as Hex, nonce: BigInt(pre.nonce ?? "0"),
+    expiresAt: BigInt(pre.recommendedExpiresAt ?? Math.floor(Date.now() / 1000) + 300),
+    forgeAddress: FORGE!, chainId: pre.chainId ?? CHAIN_ID,
+    solutionBody, references: [],
+    token: pre.token.contractAddress as Address, feeAmount, stakeAmount,
+    feeShareBps, feeShares,
+    walletClient, privateKey,
   });
-  const txHash = await broadcastCommit(walletClient, {
-    forgeAddress: FORGE!, intent: td.message, intentSig, permit,
-  });
-  await awaitReceipt(publicClient, txHash);
+  await awaitReceipt(publicClient, result.txHash!);
   console.log(JSON.stringify({
-    txHash, intentHash: commitResp.intentHash, solution: solResp,
-    feeAmount: td.message.feeAmount.toString(), stakeAmount: td.message.stakeAmount.toString(),
+    txHash: result.txHash, intentHash: result.intentHash,
+    feeAmount: feeAmount.toString(), stakeAmount: stakeAmount.toString(),
   }, null, 2));
 }
 
 async function actVote(idx: number, qid: string, allocations: Allocation[]) {
-  const { account, publicClient, walletClient, address } = clientsFor(idx);
-  const pre = (await api(
-    idx, "GET", `/v1/questions/${qid}/votes/draft`,
-  )) as VotePreflight;
+  const { publicClient, walletClient, privateKey, address } = clientsFor(idx);
+  const bearer = await jwtFor(idx);
+  const pre = await preflight<VotePreflight>(idx, qid, "vote", "voter", address);
   if (!pre.voteSalt || !pre.voteSaltToken) {
-    throw new Error("vote preflight missing voteSalt/voteSaltToken; pass ?voter= to draft endpoint");
+    throw new Error("vote preflight missing voteSalt/voteSaltToken (passed ?voter=?)");
   }
-  const allocationsHash = computeAllocationsHash(allocations, pre.voteSalt as `0x${string}`);
-  const td = buildVoteIntentTypedData({
-    preflight: pre, voter: address, allocationsHash, feeShareBps: 0n,
-    feeShares: [{ recipient: address, basisPoints: 10000n }],
-    expiresAtSeconds: Math.floor(Date.now() / 1000) + 4 * 60,
+
+  // Resolve sol_xxx API ids → bytes32 intentHashes; map points → bps.
+  const detail = (await api(idx, "GET", `/v1/questions/${qid}?include=solutions`)) as {
+    solutions?: { data?: Array<{ id: string; intentHash: string }> };
+  };
+  const hashBySol = new Map<string, Hex>(
+    (detail.solutions?.data ?? []).map((s) => [s.id, s.intentHash as Hex]),
+  );
+  let bpsSum = 0;
+  const v2Allocations = allocations.map((a) => {
+    const intentHash = hashBySol.get(a.solutionId);
+    if (!intentHash) throw new Error(`solution ${a.solutionId} not found / not confirmed on ${qid}`);
+    const basisPoints = a.points * 100;
+    bpsSum += basisPoints;
+    return { solutionId: intentHash, basisPoints };
   });
-  const intentSig = (await account.signTypedData(td)) as Hex;
-  const resp = await api(idx, "POST", `/v1/questions/${qid}/votes`,
-    buildSubmitVoteIntentRequestBody({
-      typedData: td, signature: intentSig, allocations,
-      voteSalt: pre.voteSalt as `0x${string}`,
-      voteSaltToken: pre.voteSaltToken as `0x${string}`,
-    }));
-  const permit = await signUSDCPermit(walletClient, publicClient, {
-    usdc: USDC, spender: FORGE!, value: td.message.stakeAmount,
-    deadline: td.message.expiresAt,
+  if (bpsSum !== 10000) throw new Error(`allocation points must sum to 100 (got ${bpsSum / 100})`);
+
+  const feeAmount = BigInt(pre.feeAmount);
+  const stakeAmount = BigInt(pre.stakeAmount);
+  const { feeShareBps, feeShares } = feeShareFromPreflight(pre, address);
+
+  await ensureUsdcAllowance(walletClient, publicClient, {
+    usdc: USDC, forge: FORGE!, owner: address, required: feeAmount + stakeAmount,
   });
-  const txHash = await broadcastVote(walletClient, {
-    forgeAddress: FORGE!, intent: td.message, intentSig, permit,
+
+  const result = await runVoteFlow({
+    baseUrl: API_URL, bearerToken: bearer, signer: address, questionId: qid,
+    qid: pre.qid as Hex, nonce: BigInt(pre.nonce ?? "0"),
+    // expiresAt MUST equal voteSaltExpiresAt — the HMAC binds it.
+    expiresAt: BigInt(pre.voteSaltExpiresAt!),
+    forgeAddress: FORGE!, chainId: pre.chainId ?? CHAIN_ID,
+    expectedIntentHash: pre.expectedIntentHash as Hex,
+    allocations: v2Allocations,
+    voteSalt: pre.voteSalt as Hex, voteSaltToken: pre.voteSaltToken as Hex,
+    token: pre.token.contractAddress as Address, feeAmount, stakeAmount,
+    feeShareBps, feeShares,
+    walletClient, privateKey,
   });
-  await awaitReceipt(publicClient, txHash);
-  console.log(JSON.stringify({ txHash, ...(resp as object) }, null, 2));
+  await awaitReceipt(publicClient, result.txHash!);
+  console.log(JSON.stringify({ txHash: result.txHash, intentHash: result.intentHash }, null, 2));
 }
 
 async function actList(_idx: number) {

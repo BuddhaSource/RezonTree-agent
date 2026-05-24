@@ -33,7 +33,7 @@ import {
   runCommitFlow,
   runVoteFlow,
 } from "../src/forge/quadphase-flow.js";
-import { awaitReceipt } from "../src/forge/client.js";
+import { awaitReceipt } from "../src/forge/quadphase-broadcast.js";
 
 const API = process.env.RT_AGENT_BACKEND_URL || "http://localhost:8080";
 const FORGE = process.env.RT_FORGE_ADDRESS as Address;

@@ -41,7 +41,7 @@ import type {
 import {
   awaitReceipt,
   makeAgentWalletClient,
-} from "../../src/forge/client.js";
+} from "../../src/forge/quadphase-broadcast.js";
 import {
   ensureUsdcAllowance,
   runClaimFlow,

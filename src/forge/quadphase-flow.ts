@@ -66,6 +66,12 @@ import {
   type ClaimWitness,
 } from "../intents/claim-witness.js";
 import {
+  buildSettleWitness,
+  type SettleWitness,
+  type SlashEntry,
+} from "../intents/settle-witness.js";
+import {
+  broadcastSettle,
   broadcastSponsorSubmit,
   broadcastSubmit,
   broadcastPullValue,
@@ -772,7 +778,7 @@ export function stringifyWithBigInts(obj: unknown): string {
   );
 }
 
-function serializeSponsorWitness(
+export function serializeSponsorWitness(
   w: import("../intents/sponsor-witness.js").SponsorWitness,
 ): Record<string, unknown> {
   return {
@@ -801,7 +807,7 @@ function serializeCosponsorWitness(
   };
 }
 
-function serializeCommitWitness(w: CommitWitness): Record<string, unknown> {
+export function serializeCommitWitness(w: CommitWitness): Record<string, unknown> {
   return {
     actionTag: w.actionTag,
     solutionBody: w.solutionBody,
@@ -820,7 +826,7 @@ function serializeVoteWitness(w: VoteWitness): Record<string, unknown> {
   };
 }
 
-function serializeEnvelope(e: Envelope): Record<string, unknown> {
+export function serializeEnvelope(e: Envelope): Record<string, unknown> {
   return {
     signer: e.signer,
     questionId: e.qid,
@@ -871,6 +877,23 @@ function serializeClaimWitness(w: ClaimWitness): Record<string, unknown> {
     leafAmount: encodeBigIntForWire(w.leafAmount),
     role: w.role,
     expectedStatus: w.expectedStatus,
+  };
+}
+
+function serializeSettleWitness(w: SettleWitness): Record<string, unknown> {
+  return {
+    actionTag: w.actionTag,
+    merkleRoot: w.merkleRoot,
+    totalClaimable: encodeBigIntForWire(w.totalClaimable),
+    dustFolded: encodeBigIntForWire(w.dustFolded),
+    slashes: w.slashes.map((s: SlashEntry) => ({
+      intentHash: s.intentHash,
+      amount: encodeBigIntForWire(s.amount),
+      role: s.role,
+    })),
+    leafCount: encodeBigIntForWire(w.leafCount),
+    slashEntryOffset: encodeBigIntForWire(w.slashEntryOffset),
+    totalSlashEntries: encodeBigIntForWire(w.totalSlashEntries),
   };
 }
 
@@ -1324,6 +1347,199 @@ export async function runClaimFlow(
     envelope,
     signature,
     witnessBytes,
+  });
+  result.txHash = txHash;
+  return result;
+}
+
+// ─── Settle flow ─────────────────────────────────────────────────────
+//
+// Oracle's settlement-publication flow. The signer is the question's
+// oracle (the address bound on-chain via sponsorSubmit). The witness
+// carries the chain-critical fields the universal Envelope can't hold:
+// merkleRoot, totalClaimable, dustFolded, the slash set, and the
+// chunked-publish offsets. The contract flips Open → Settling on the
+// first chunk and Settling → Settled on the final chunk (when
+// slashEntryOffset + slashes.length == totalSlashEntries).
+//
+// Mirrors runClaimFlow / runRefundFlow exactly:
+//   1. build SettleWitness (+ contentHash) from oracle-computed inputs.
+//   2. build Envelope(action=Settle) — Settle funds-shape is all-zero
+//      with token = q.token (the funds-shape gate requires non-zero
+//      token even though settle moves no envelope-level funds; slash
+//      moves happen inside the contract).
+//   3. EIP-712 sign the envelope.
+//   4. recompute hashEnvelopeStruct + assertIntentHashMatch
+//      (R-INTENT-HASH-IS-MATCH-KEY) before signing past it.
+//   5. POST /v1/questions/:id/intents actionType="settle" to stage the
+//      signed_intents row so the reconciler can match the chain event
+//      by intent_hash (R-RECONCILER-OWNS-CONFIRMATION). The backend
+//      submit dispatcher accepts settle and returns 202 (the per-action
+//      settlement content write is reconciler-owned; the staged row IS
+//      the match key). If the POST is unavailable (older backend), pass
+//      skipBackendPost=true to broadcast-only — the chain still settles,
+//      but the reconciler can't confirm until a row exists.
+//   6. broadcastSettle → publishSettlement(env, sig, witnessBytes).
+
+export interface SettleFlowParams {
+  signer: Address; // the question's oracle
+  qid: Hex;
+  questionId: string;
+  nonce: bigint;
+  expiresAt: bigint;
+  forgeAddress: Address;
+  chainId: number;
+  /** The question's bountyToken. The funds-shape gate rejects
+   *  token-zero even though settle moves no envelope-level funds. */
+  token: Address;
+
+  // SettleWitness fields — computed by the oracle (off-chain merkle
+  // tree build + slash determination).
+  merkleRoot: Hex;
+  totalClaimable: bigint;
+  dustFolded: bigint;
+  slashes: SlashEntry[];
+  leafCount: bigint;
+  slashEntryOffset: bigint;
+  totalSlashEntries: bigint;
+
+  /** Backend bearer JWT for the POST /intents stage. Required unless
+   *  skipBackendPost is set. */
+  bearerToken?: string;
+  /** API base url (http://localhost:8080 in dev). */
+  baseUrl?: string;
+  /** Broadcast-only mode: skip the backend POST. Use only when the
+   *  backend's intent dispatcher doesn't accept actionType="settle"
+   *  (e.g. an older deploy). Leaves the row unstaged — the reconciler
+   *  can't confirm until a matching signed_intents row exists. */
+  skipBackendPost?: boolean;
+  /** Optional pre-computed intent hash. When omitted, derived locally. */
+  expectedIntentHash?: Hex;
+  walletClient: WalletClient;
+  privateKey: Hex;
+}
+
+export interface SettleFlowResult {
+  intentHash: Hex;
+  signature: Hex;
+  envelope: Envelope;
+  witness: SettleWitness;
+  backendStatus?: string;
+  /** True when the backend POST was skipped (broadcast-only mode). */
+  backendSkipped?: boolean;
+  txHash?: Hex;
+}
+
+export async function runSettleFlow(
+  p: SettleFlowParams,
+): Promise<SettleFlowResult> {
+  // 1. Witness.
+  const { witness, contentHash } = buildSettleWitness({
+    merkleRoot: p.merkleRoot,
+    totalClaimable: p.totalClaimable,
+    dustFolded: p.dustFolded,
+    slashes: p.slashes,
+    leafCount: p.leafCount,
+    slashEntryOffset: p.slashEntryOffset,
+    totalSlashEntries: p.totalSlashEntries,
+  });
+
+  // 2. Envelope — Settle funds-shape: all amounts zero, stakeOp None,
+  // token non-zero (shared funds-shape gate).
+  const funds: Funds = {
+    token: p.token,
+    poolIn: 0n,
+    poolOut: 0n,
+    feeAmount: 0n,
+    feeShareBps: 0,
+    feeShares: [],
+    stakeAmount: 0n,
+    stakeOp: StakeOp.None,
+  };
+  const envelope: Envelope = {
+    signer: p.signer,
+    qid: p.qid,
+    action: ActionTag.Settle,
+    nonce: p.nonce,
+    expiresAt: p.expiresAt,
+    contentHash,
+    funds,
+  };
+
+  // 3 + 4. Recompute + assert before signing (R-INTENT-HASH-IS-MATCH-KEY).
+  const typedData = buildEnvelopeForSigning({
+    envelope,
+    chainId: p.chainId,
+    forgeAddress: p.forgeAddress,
+  });
+  const localIntentHash = hashEnvelopeStruct(envelope);
+  assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
+  const intentHashToSend = p.expectedIntentHash ?? localIntentHash;
+  const account = privateKeyToAccount(p.privateKey);
+  const signature = (await account.signTypedData({
+    domain: typedData.domain,
+    types: typedData.types,
+    primaryType: typedData.primaryType,
+    message: typedData.message as never,
+  })) as Hex;
+
+  const result: SettleFlowResult = {
+    intentHash: localIntentHash,
+    signature,
+    envelope,
+    witness,
+  };
+
+  // 5. Backend POST — stage the signed_intents row so the reconciler
+  // matches the chain Settle event by intent_hash. Skippable for
+  // broadcast-only operation against a backend whose dispatcher
+  // doesn't route actionType="settle".
+  if (p.skipBackendPost) {
+    result.backendSkipped = true;
+  } else {
+    if (!p.bearerToken || !p.baseUrl) {
+      throw new Error(
+        "runSettleFlow: bearerToken + baseUrl are required unless skipBackendPost is set",
+      );
+    }
+    const res = await fetch(
+      `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${p.bearerToken}`,
+          Prefer: "return=minimal",
+        },
+        body: stringifyWithBigInts({
+          actionType: "settle",
+          typedData: serializeEnvelope(envelope),
+          content: serializeSettleWitness(witness),
+          signature,
+          expectedIntentHash: intentHashToSend,
+        }),
+      },
+    );
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(
+        `runSettleFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
+      );
+    }
+    const parsed = JSON.parse(text) as {
+      intentHash?: string;
+      status?: string;
+    };
+    result.intentHash = (parsed.intentHash ?? localIntentHash) as Hex;
+    result.backendStatus = parsed.status;
+  }
+
+  // 6. Chain broadcast.
+  const txHash = await broadcastSettle(p.walletClient, {
+    forgeAddress: p.forgeAddress,
+    envelope,
+    signature,
+    witness,
   });
   result.txHash = txHash;
   return result;

@@ -765,9 +765,10 @@ describe("#616 retryable error envelope", () => {
 //
 // Seams used (no production code changed):
 //   • vi.mock the chain/flow module boundary (src/forge/quadphase-flow,
-//     src/forge/client) — matches the task's "vi.mock at the module
-//     boundary" guidance. runClaimFlow/runRefundFlow become spies that
-//     capture their single params object; awaitReceipt is a no-op.
+//     src/forge/quadphase-broadcast) — matches the task's "vi.mock at
+//     the module boundary" guidance. runClaimFlow/runRefundFlow become
+//     spies that capture their single params object; awaitReceipt is a
+//     no-op.
 //   • vi.mock the stdio transport so server.ts's top-level
 //     `await server.connect(transport)` resolves without touching real
 //     stdio (server.ts connects on import — the only reason this needs
@@ -800,7 +801,10 @@ vi.mock("../../src/forge/quadphase-flow.js", () => ({
   ensureUsdcAllowance: vi.fn(),
 }));
 
-vi.mock("../../src/forge/client.js", () => ({
+// awaitReceipt + makeAgentWalletClient moved to quadphase-broadcast.js
+// in the v2 cutover (#595, the deleted v1 client.js). server.ts imports
+// them from there now, so the mock targets that module.
+vi.mock("../../src/forge/quadphase-broadcast.js", () => ({
   awaitReceipt: flowMocks.awaitReceipt,
   makeAgentWalletClient: vi.fn(() => ({ account: { address: "0xwallet" } })),
 }));

@@ -37,7 +37,6 @@ import { keccak256, stringToBytes } from "viem";
 
 import { COMMIT_INTENT_TYPES } from "./commit-intent";
 import { COSPONSOR_INTENT_TYPES } from "./cosponsor-intent";
-import { SETTLEMENT_INTENT_TYPES } from "./settlement-intent";
 import { SPONSOR_INTENT_TYPES } from "./sponsor-intent";
 import { VOTE_INTENT_TYPES } from "./vote-intent";
 
@@ -59,9 +58,6 @@ const PINNED = {
   // RezonForge.sol:254
   VoteIntent:
     "0xce846377b54778704a6c695296cc69e3ebdfc08f87a6ef80f5fa07c7db946e2a",
-  // RezonForge.sol:260
-  SettlementIntent:
-    "0x5fd3f7763a7f80bea9def70b7777f24d1891db2d630a554739eceaef073cd67c",
 } as const;
 
 // EIP-712 §"Definition of encodeType":
@@ -147,11 +143,6 @@ describe("EIP-712 typehash — derived from runtime type arrays", () => {
   it("VoteIntent", () => {
     const computed = typehashOf("VoteIntent", VOTE_INTENT_TYPES);
     expect(computed).toBe(PINNED.VoteIntent);
-  });
-
-  it("SettlementIntent", () => {
-    const computed = typehashOf("SettlementIntent", SETTLEMENT_INTENT_TYPES);
-    expect(computed).toBe(PINNED.SettlementIntent);
   });
 });
 
@@ -390,12 +381,6 @@ describe("EIP-712 type arrays — arity + first-field shape", () => {
     {
       name: "VoteIntent",
       fields: VOTE_INTENT_TYPES.VoteIntent,
-      arity: 9,
-      first: { name: "questionId", type: "bytes32" },
-    },
-    {
-      name: "SettlementIntent",
-      fields: SETTLEMENT_INTENT_TYPES.SettlementIntent,
       arity: 9,
       first: { name: "questionId", type: "bytes32" },
     },
