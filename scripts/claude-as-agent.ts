@@ -20,9 +20,13 @@
 //   cosponsor       — preflight + runCosponsorFlow (submit env)
 //   commit          — preflight + runCommitFlow (submit env)
 //   vote            — preflight + runVoteFlow (submit env, voteSalt-bound)
+//   claim           — preflight(claim) + runClaimFlow (pullValue, Merkle proof
+//                     from the persisted root-verified leaf set)
+//   refund          — preflight(refund) + runRefundFlow (pullValue; --source
+//                     <0x..> for a stake refund, omit for sponsor refund)
 //   list-questions  — GET /v1/questions (read-only)
 //   get-question    — GET /v1/questions/:id
-//   list-solutions  — GET /v1/questions/:id/solutions
+//   list-solutions  — GET /v1/questions/:id?include=solutions
 //
 // All actions accept content as either CLI flags or stdin JSON.
 //
@@ -52,8 +56,10 @@ import type {
 import { makeAgentWalletClient, awaitReceipt } from "../src/forge/quadphase-broadcast.js";
 import {
   ensureUsdcAllowance,
+  runClaimFlow,
   runCommitFlow,
   runCosponsorFlow,
+  runRefundFlow,
   runSponsorFlow,
   runVoteFlow,
 } from "../src/forge/quadphase-flow.js";
@@ -375,6 +381,105 @@ async function actVote(idx: number, qid: string, allocations: Allocation[]) {
   console.log(JSON.stringify({ txHash: result.txHash, intentHash: result.intentHash }, null, 2));
 }
 
+// Round-3 ClaimDraft / RefundDraft (actionType=claim|refund on the
+// unified /intents/preflight). Both carry the v2 envelope template.
+interface ClaimDraft {
+  qid: Hex; recipient: string; leafIndex: string; leafAmount: string;
+  role: number; proof: Hex[]; chainId?: number; nonce?: string;
+  recommendedExpiresAt?: number; expectedIntentHash?: string;
+  envelopeTemplate?: { envelope?: { funds?: { token?: string } } };
+}
+interface RefundDraft {
+  qid: Hex; signer: string; sourceIntentHash: string; expectedAmount: string;
+  expectedStatus: number; chainId?: number; nonce?: string;
+  recommendedExpiresAt?: number; expectedIntentHash?: string;
+  envelopeTemplate?: { envelope?: { funds?: { token?: string } } };
+}
+
+// Funds token lives inside the signed envelope template; the claim/refund
+// flow MUST rebuild funds with the SAME token or the contentHash drifts
+// from the backend's expectedIntentHash. Falls back to USDC (the only
+// bounty token in use today).
+function tokenFromDraft(d: { envelopeTemplate?: { envelope?: { funds?: { token?: string } } } }): Address {
+  return (d.envelopeTemplate?.envelope?.funds?.token as Address | undefined) ?? USDC;
+}
+
+// claim — winner/voter pull of a settled-question Merkle leaf. Preflight
+// returns the proof + leafIndex/leafAmount/role from the persisted,
+// root-verified leaf set (backend single-source, leafset I3b-3); the SDK
+// signs Envelope(Claim) + ClaimWitness and broadcasts pullValue().
+async function actClaim(idx: number, qid: string, dry = false) {
+  const { publicClient, walletClient, privateKey, address } = clientsFor(idx);
+  const bearer = await jwtFor(idx);
+  const pre = await preflight<ClaimDraft>(idx, qid, "claim", "recipient", address);
+  if (dry) {
+    // Preflight-only: inspect the witness the backend serves (proof from
+    // the persisted root-verified leaf set) without broadcasting.
+    console.log(JSON.stringify({
+      action: "claim-dry", recipient: address, leafAmount: pre.leafAmount,
+      leafIndex: pre.leafIndex, role: pre.role, proofLen: pre.proof?.length ?? 0,
+      proof: pre.proof, expectedIntentHash: pre.expectedIntentHash,
+    }, null, 2));
+    return;
+  }
+  const result = await runClaimFlow({
+    baseUrl: API_URL, bearerToken: bearer, signer: address, questionId: qid,
+    qid: pre.qid, nonce: BigInt(pre.nonce ?? "0"),
+    expiresAt: BigInt(pre.recommendedExpiresAt ?? Math.floor(Date.now() / 1000) + 300),
+    forgeAddress: FORGE!, chainId: pre.chainId ?? CHAIN_ID,
+    token: tokenFromDraft(pre),
+    proof: pre.proof, leafIndex: BigInt(pre.leafIndex), leafAmount: BigInt(pre.leafAmount),
+    role: pre.role, expectedStatus: 3 /* Settled */,
+    expectedIntentHash: (pre.expectedIntentHash as Hex | undefined) || undefined,
+    walletClient, privateKey,
+  });
+  await awaitReceipt(publicClient, result.txHash!);
+  console.log(JSON.stringify({
+    action: "claim", txHash: result.txHash, intentHash: result.intentHash,
+    leafAmount: pre.leafAmount, role: pre.role,
+  }, null, 2));
+}
+
+// refund — stake or sponsor pull. --source <0x..> selects the staked
+// commit/vote intentHash; omit it for a sponsor refund (sentinel 0x00…00,
+// status=Abandoned). expectedAmount comes from the preflight (the #9-refund
+// fix sources voter stake from votes.stake_amount).
+async function actRefund(idx: number, qid: string, source?: string, dry = false) {
+  const { publicClient, walletClient, privateKey, address } = clientsFor(idx);
+  const bearer = await jwtFor(idx);
+  const sourceQuery = source ? `&source_intent_hash=${source}` : "";
+  const pre = (await api(
+    idx, "POST",
+    `/v1/questions/${qid}/intents/preflight?signer=${address}${sourceQuery}`,
+    { actionType: "refund", params: { signer: address, source_intent_hash: source ?? "" } },
+  )) as RefundDraft;
+  if (dry) {
+    console.log(JSON.stringify({
+      action: "refund-dry", signer: address, expectedAmount: pre.expectedAmount,
+      sourceIntentHash: pre.sourceIntentHash, expectedStatus: pre.expectedStatus,
+      source: source ?? "sponsor", expectedIntentHash: pre.expectedIntentHash,
+    }, null, 2));
+    return;
+  }
+  const result = await runRefundFlow({
+    baseUrl: API_URL, bearerToken: bearer, signer: address, questionId: qid,
+    qid: pre.qid, nonce: BigInt(pre.nonce ?? "0"),
+    expiresAt: BigInt(pre.recommendedExpiresAt ?? Math.floor(Date.now() / 1000) + 300),
+    forgeAddress: FORGE!, chainId: pre.chainId ?? CHAIN_ID,
+    token: tokenFromDraft(pre),
+    sourceIntentHash: (pre.sourceIntentHash as Hex) ??
+      ("0x0000000000000000000000000000000000000000000000000000000000000000" as Hex),
+    expectedAmount: BigInt(pre.expectedAmount), expectedStatus: pre.expectedStatus,
+    expectedIntentHash: (pre.expectedIntentHash as Hex | undefined) || undefined,
+    walletClient, privateKey,
+  });
+  await awaitReceipt(publicClient, result.txHash!);
+  console.log(JSON.stringify({
+    action: "refund", txHash: result.txHash, intentHash: result.intentHash,
+    expectedAmount: pre.expectedAmount, source: source ?? "sponsor",
+  }, null, 2));
+}
+
 async function actList(_idx: number) {
   const r = await fetch(`${API_URL}/v1/questions`);
   console.log(JSON.stringify(await r.json(), null, 2));
@@ -386,7 +491,9 @@ async function actGet(_idx: number, qid: string) {
 }
 
 async function actListSolutions(_idx: number, qid: string) {
-  const r = await fetch(`${API_URL}/v1/questions/${qid}/solutions`);
+  // Round-3: solutions fold into question detail via ?include=solutions
+  // (the standalone /solutions route was removed in the 14-endpoint cut).
+  const r = await fetch(`${API_URL}/v1/questions/${qid}?include=solutions`);
   console.log(JSON.stringify(await r.json(), null, 2));
 }
 
@@ -405,6 +512,8 @@ const stdinJson = loadStdinJson();
     case "cosponsor":       await actSponsor(idx, argv.flags.qid, argv.flags.amount); break;
     case "commit":          await actCommit(idx, argv.flags.qid, stdinJson as { body: string; references?: string[] }); break;
     case "vote":            await actVote(idx, argv.flags.qid, stdinJson as Allocation[]); break;
+    case "claim":           await actClaim(idx, argv.flags.qid, argv.flags.dry === "true"); break;
+    case "refund":          await actRefund(idx, argv.flags.qid, argv.flags.source, argv.flags.dry === "true"); break;
     case "list-questions":  await actList(idx); break;
     case "get-question":    await actGet(idx, argv.flags.qid); break;
     case "list-solutions":  await actListSolutions(idx, argv.flags.qid); break;
