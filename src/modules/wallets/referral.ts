@@ -1,12 +1,13 @@
 // modules/wallets/referral.ts — affiliate-referrer attribution helper.
 //
-// Wires the SDK-side handshake for `POST /v1/me/referrer`. When a new
+// Wires the SDK-side handshake for binding a referrer. When a new
 // wallet is registered with an optional referral code, this module:
 //
 //   1. Signs an EIP-712 WalletLoginIntent using the wallet's viem
 //      Account (works for HD, imported, and Privy provider types).
-//   2. POSTs /auth/wallet to obtain a JWT bearer token.
-//   3. POSTs /v1/me/referrer { code } to bind the referrer.
+//   2. POSTs /v1/sessions to obtain a JWT bearer token.
+//   3. PATCHes /v1/accounts/me { referrer } to bind the referrer
+//      (Round 3 folded the legacy POST /v1/me/referrer onto this route).
 //
 // The flow is **best-effort and non-blocking** — every error is
 // logged at warn-level and returned in the result, but the caller
@@ -73,20 +74,21 @@ export async function applyReferralCode(
   if (!auth.ok) return auth;
   const { token, baseUrl } = auth;
 
-  // 3. POST /v1/me/referrer.
+  // 3. PATCH /v1/accounts/me {referrer}. Round 3 collapsed the legacy
+  // POST /v1/me/referrer into the generic self-edit endpoint; the bound
+  // referrer echoes back in the `referrer` envelope slot.
   try {
-    const resp = await fetch(`${baseUrl}/v1/me/referrer`, {
-      method: "POST",
+    const resp = await fetch(`${baseUrl}/v1/accounts/me`, {
+      method: "PATCH",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ code: normalized }),
+      body: JSON.stringify({ referrer: normalized }),
       signal: AbortSignal.timeout(10_000),
     });
     const body = (await resp.json()) as {
-      referrerWallet?: Address;
-      setAt?: number;
+      referrer?: { referrerWallet?: Address; setAt?: number };
       error?: { code?: string; message?: string; action?: string };
     };
     if (!resp.ok) {
@@ -97,7 +99,7 @@ export async function applyReferralCode(
         action: body.error?.action,
       };
     }
-    if (body.referrerWallet == null || body.setAt == null) {
+    if (body.referrer?.referrerWallet == null || body.referrer.setAt == null) {
       return {
         ok: false,
         code: "MALFORMED_RESPONSE",
@@ -106,14 +108,14 @@ export async function applyReferralCode(
     }
     return {
       ok: true,
-      referrerWallet: body.referrerWallet,
-      setAt: body.setAt,
+      referrerWallet: body.referrer.referrerWallet,
+      setAt: body.referrer.setAt,
     };
   } catch (err) {
     return {
       ok: false,
       code: "REFERRER_NETWORK_ERROR",
-      message: `Network error against ${baseUrl}/v1/me/referrer: ${errMsg(err)}`,
+      message: `Network error against ${baseUrl}/v1/accounts/me: ${errMsg(err)}`,
     };
   }
 }
@@ -238,49 +240,58 @@ async function affiliateCodeOp(args: {
   if (!auth.ok) return auth;
   const { token, baseUrl } = auth;
 
+  // Round 3 folded the /v1/me/referral-code verbs onto /v1/accounts/me:
+  //   GET   → GET   /v1/accounts/me?include=referralCode (read)
+  //   POST  → PATCH /v1/accounts/me {referralCode: desired ?? ""} (get-or-create)
+  //   PATCH → PATCH /v1/accounts/me {referralCode: desired} (one-shot upgrade)
+  // The code is read/written through the `referralCode` envelope slot.
+  const isRead = args.method === "GET";
+  const desired = (args.body?.desiredCode as string | undefined) ?? "";
+  const path = isRead
+    ? "/v1/accounts/me?include=referralCode"
+    : "/v1/accounts/me";
+
   // Audit-fix M6: Content-Type only on requests that ship a body.
-  // RFC 9110 discourages Content-Type on bodyless GETs and some strict
-  // proxies (or future backend middleware) reject the combination.
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
   };
-  if (args.method !== "GET") {
+  if (!isRead) {
     headers["Content-Type"] = "application/json";
   }
 
   try {
-    const resp = await fetch(`${baseUrl}/v1/me/referral-code`, {
-      method: args.method,
+    const resp = await fetch(`${baseUrl}${path}`, {
+      method: isRead ? "GET" : "PATCH",
       headers,
-      body: args.body !== undefined ? JSON.stringify(args.body) : undefined,
+      body: isRead ? undefined : JSON.stringify({ referralCode: desired }),
       signal: AbortSignal.timeout(10_000),
     });
-    const body = (await resp.json()) as {
-      code?: string;
-      walletAddress?: Address;
-      url?: string;
-      canUpgrade?: boolean;
-      createdAt?: number;
+    const env = (await resp.json()) as {
+      referralCode?: {
+        code?: string;
+        walletAddress?: Address;
+        url?: string;
+        canUpgrade?: boolean;
+        createdAt?: number;
+      };
       error?: { code?: string; message?: string; action?: string };
     };
     if (!resp.ok) {
       return {
         ok: false,
-        code: body.error?.code ?? `HTTP_${resp.status}`,
-        message: body.error?.message ?? `referral-code ${args.method} returned ${resp.status}`,
-        action: body.error?.action,
+        code: env.error?.code ?? `HTTP_${resp.status}`,
+        message: env.error?.message ?? `referral-code ${args.method} returned ${resp.status}`,
+        action: env.error?.action,
       };
     }
-    // Audit-fix M1: explicit `== null` (which catches undefined + null
-    // only) rather than falsy guards. `!body.code` would false-positive
-    // on `""` and `!body.createdAt` would false-positive on `0`. Neither
-    // value occurs in production (code is 5 chars, timestamp is post-1970),
-    // but the guard's intent is "field absent" and that's what `== null` says.
+    // Audit-fix M1: explicit `== null` (catches undefined + null only)
+    // rather than falsy guards — the intent is "field absent".
+    const rc = env.referralCode;
     if (
-      body.code == null ||
-      body.walletAddress == null ||
-      body.canUpgrade == null ||
-      body.createdAt == null
+      rc?.code == null ||
+      rc.walletAddress == null ||
+      rc.canUpgrade == null ||
+      rc.createdAt == null
     ) {
       return {
         ok: false,
@@ -290,18 +301,20 @@ async function affiliateCodeOp(args: {
     }
     return {
       ok: true,
-      code: body.code,
-      walletAddress: body.walletAddress,
-      url: body.url,
-      canUpgrade: body.canUpgrade,
-      createdAt: body.createdAt,
-      createdNew: resp.status === 201,
+      code: rc.code,
+      walletAddress: rc.walletAddress,
+      url: rc.url,
+      canUpgrade: rc.canUpgrade,
+      createdAt: rc.createdAt,
+      // PATCH always returns 200, so the old 201-means-newly-created
+      // signal is gone; the CLI treats get-or-create as idempotent.
+      createdNew: undefined,
     };
   } catch (err) {
     return {
       ok: false,
       code: "REFERRAL_NETWORK_ERROR",
-      message: `Network error against ${baseUrl}/v1/me/referral-code: ${errMsg(err)}`,
+      message: `Network error against ${baseUrl}${path}: ${errMsg(err)}`,
     };
   }
 }
@@ -376,7 +389,7 @@ async function authenticateWallet(
       return {
         ok: false,
         code: body.error?.code ?? `HTTP_${resp.status}`,
-        message: body.error?.message ?? `auth/wallet returned ${resp.status}`,
+        message: body.error?.message ?? `/v1/sessions returned ${resp.status}`,
         action: body.error?.action,
       };
     }
