@@ -224,8 +224,20 @@ async function actCreate(idx: number, payload: unknown) {
 async function actSponsor(idx: number, qid: string, amount: string) {
   const { publicClient, walletClient, privateKey, address } = clientsFor(idx);
   const bearer = await jwtFor(idx);
-  const pre = await preflight<FundPreflight>(idx, qid, "sponsor", "sponsor", address);
-  const amountWei = parseAmountToWei(amount, pre.token.decimals);
+  // Probe preflight (no amount) to learn token decimals, then convert the
+  // human amount → base units.
+  const probe = await preflight<FundPreflight>(idx, qid, "sponsor", "sponsor", address);
+  const amountWei = parseAmountToWei(amount, probe.token.decimals);
+  // #656: re-run the preflight BOUND to the requested amount so the backend
+  // bakes poolIn = amountWei into the template + expectedIntentHash. Without
+  // the &amount= bind the template carries only the floor and any amount !=
+  // floor drifts the intent hash (assertIntentHashMatch refuses to sign).
+  const pre = (await api(
+    idx,
+    "POST",
+    `/v1/questions/${qid}/intents/preflight?sponsor=${address}&amount=${amountWei.toString()}`,
+    { actionType: "sponsor", params: { sponsor: address } },
+  )) as FundPreflight;
   const nonce = BigInt(pre.nonce ?? "0");
   const expiresAt = BigInt(pre.recommendedExpiresAt ?? Math.floor(Date.now() / 1000) + 300);
   const { feeShareBps } = feeShareFromPreflight(pre, address);
@@ -274,15 +286,19 @@ async function actSponsor(idx: number, qid: string, amount: string) {
     return;
   }
 
-  // cosponsor — inherits token/feeShares from chain state.
+  // cosponsor — a pure pool top-up. The fee-share policy is frozen by the
+  // first sponsor; the contract enforces `shape:cosponsor:feeShares-must-be-
+  // empty`, so a cosponsor envelope MUST carry feeShares=[] + feeShareBps=0
+  // (matching the backend's cosponsor preflight). Sending the platform policy
+  // here reverts on-chain.
   const result = await runCosponsorFlow({
     baseUrl: API_URL, bearerToken: bearer, signer: address, questionId: qid,
     qid: pre.qid as Hex, nonce, expiresAt, forgeAddress: FORGE!,
     chainId: pre.chainId ?? CHAIN_ID,
     expectedIntentHash: pre.expectedIntentHash as Hex,
     token: pre.token.contractAddress as Address, amount: amountWei, feeAmount: 0n,
-    feeShareBps: amountWei > 0n ? feeShareBps : 0,
-    feeShares: amountWei > 0n ? [{ recipient: platformFeeRecipient, basisPoints: 10000 }] : [],
+    feeShareBps: 0,
+    feeShares: [],
     walletClient, privateKey,
   });
   await awaitReceipt(publicClient, result.txHash!);
