@@ -286,6 +286,20 @@ export interface BroadcastSubmitParams {
 /**
  * Broadcasts the universal `submit(env, sig)` entry point. Use for
  * Cosponsor / Commit / Vote / Abandon actions.
+ *
+ * VOTE-PRIVACY INVARIANT — DO NOT ADD THE WITNESS TO THIS CALLDATA.
+ * For a Vote, the witness holds the raw allocations (which solution got how
+ * many points). The chain must NEVER see them: `submit` is called with ONLY
+ * `(envelope, signature)`. The envelope carries an opaque `contentHash =
+ * HashVoteWitness(actionTag, allocations, salt)` where `salt` is a unique
+ * 32-byte server-issued value per voter (signer/vote_salt.go). Because each
+ * voter's salt differs, two voters who allocate IDENTICALLY still produce
+ * different contentHashes — so on-chain their votes are unlinkable and the
+ * allocations are not rainbow-table-enumerable from the public Quadphase
+ * event. The raw witness is POSTed to the backend only (off-chain), for
+ * settle-time tallying. If you ever add `witnessBytes` here for Vote, you
+ * publish every voter's choices on-chain — privacy is gone. (Claim/Refund
+ * use the separate pullValue path, where the witness is non-secret.)
  */
 export async function broadcastSubmit(
   wallet: WalletClient,
@@ -295,6 +309,7 @@ export async function broadcastSubmit(
     address: params.forgeAddress,
     abi: QUADPHASE_ENTRY_ABI,
     functionName: "submit",
+    // (envelope, signature) ONLY — never the witness (see invariant above).
     args: [envelopeAsTuple(params.envelope), params.signature],
     account: wallet.account as Account,
     chain: wallet.chain,
