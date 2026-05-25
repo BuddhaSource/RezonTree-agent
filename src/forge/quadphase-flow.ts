@@ -1060,7 +1060,7 @@ export async function runAbandonFlow(
 
 // ─── Refund flow ─────────────────────────────────────────────────────
 //
-// Per-actor "pull my money back from an Abandoned (or Settled with
+// Per-actor "pull my funds back from an Abandoned (or Settled with
 // un-slashed remainder) question" flow. Three sub-paths share this
 // shape:
 //
