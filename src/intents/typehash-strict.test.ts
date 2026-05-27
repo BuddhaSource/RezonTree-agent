@@ -244,7 +244,8 @@ const PINNED_QPV2_TYPESTRINGS = {
     "VoteWitness(uint8 actionTag,Allocation[] allocations,bytes32 salt)" +
     "Allocation(bytes32 solutionId,uint16 basisPoints)",
   SettleWitness:
-    "SettleWitness(uint8 actionTag,bytes32 merkleRoot,uint256 totalClaimable,uint256 dustFolded,SlashEntry[] slashes,uint256 leafCount,uint256 slashEntryOffset,uint256 totalSlashEntries)" +
+    "SettleWitness(uint8 actionTag,bytes32 merkleRoot,uint256 totalClaimable,uint256 feeTotal,SlashEntry[] slashes,uint256 leafCount,uint256 slashEntryOffset,uint256 totalSlashEntries,FeeDistribution[] feeDistributions)" +
+    "FeeDistribution(address recipient,uint256 amount)" +
     "SlashEntry(bytes32 intentHash,uint256 amount,uint8 role)",
   ClaimWitness:
     "ClaimWitness(uint8 actionTag,bytes32[] proof,uint256 leafIndex,uint256 leafAmount,uint8 role,uint8 expectedStatus)",

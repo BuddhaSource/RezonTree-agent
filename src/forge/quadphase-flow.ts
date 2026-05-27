@@ -67,6 +67,7 @@ import {
 } from "../intents/claim-witness.js";
 import {
   buildSettleWitness,
+  type FeeDistribution,
   type SettleWitness,
   type SlashEntry,
 } from "../intents/settle-witness.js";
@@ -890,7 +891,7 @@ function serializeSettleWitness(w: SettleWitness): Record<string, unknown> {
     actionTag: w.actionTag,
     merkleRoot: w.merkleRoot,
     totalClaimable: encodeBigIntForWire(w.totalClaimable),
-    dustFolded: encodeBigIntForWire(w.dustFolded),
+    feeTotal: encodeBigIntForWire(w.feeTotal),
     slashes: w.slashes.map((s: SlashEntry) => ({
       intentHash: s.intentHash,
       amount: encodeBigIntForWire(s.amount),
@@ -899,6 +900,10 @@ function serializeSettleWitness(w: SettleWitness): Record<string, unknown> {
     leafCount: encodeBigIntForWire(w.leafCount),
     slashEntryOffset: encodeBigIntForWire(w.slashEntryOffset),
     totalSlashEntries: encodeBigIntForWire(w.totalSlashEntries),
+    feeDistributions: w.feeDistributions.map((f: FeeDistribution) => ({
+      recipient: f.recipient,
+      amount: encodeBigIntForWire(f.amount),
+    })),
   };
 }
 
@@ -1364,8 +1369,9 @@ export async function runClaimFlow(
 // Oracle's settlement-publication flow. The signer is the question's
 // oracle (the address bound on-chain via sponsorSubmit). The witness
 // carries the chain-critical fields the universal Envelope can't hold:
-// merkleRoot, totalClaimable, dustFolded, the slash set, and the
-// chunked-publish offsets. The contract flips Open → Settling on the
+// merkleRoot, totalClaimable, feeTotal, the slash set, the per-recipient
+// feeDistributions, and the chunked-publish offsets. The contract flips
+// Open → Settling on the
 // first chunk and Settling → Settled on the final chunk (when
 // slashEntryOffset + slashes.length == totalSlashEntries).
 //
@@ -1401,14 +1407,21 @@ export interface SettleFlowParams {
   token: Address;
 
   // SettleWitness fields — computed by the oracle (off-chain merkle
-  // tree build + slash determination).
+  // tree build + slash determination + realized-outcome fee aggregation).
   merkleRoot: Hex;
   totalClaimable: bigint;
-  dustFolded: bigint;
+  /** Total fee skimmed at settlement (economics.md §0). The contract
+   *  pins it to `poolAmount × q.feeShareBps / 10000`; Σ feeDistributions
+   *  amounts must equal it. Renamed from the pre-revision `dustFolded`. */
+  feeTotal: bigint;
   slashes: SlashEntry[];
   leafCount: bigint;
   slashEntryOffset: bigint;
   totalSlashEntries: bigint;
+  /** Per-recipient fee credits (platform first, then referrers),
+   *  aggregated by the oracle. Credited to accruedFees[recipient][token]
+   *  by the contract; empty when feeTotal == 0. */
+  feeDistributions: FeeDistribution[];
 
   /** Backend bearer JWT for the POST /intents stage. Required unless
    *  skipBackendPost is set. */
@@ -1444,11 +1457,12 @@ export async function runSettleFlow(
   const { witness, contentHash } = buildSettleWitness({
     merkleRoot: p.merkleRoot,
     totalClaimable: p.totalClaimable,
-    dustFolded: p.dustFolded,
+    feeTotal: p.feeTotal,
     slashes: p.slashes,
     leafCount: p.leafCount,
     slashEntryOffset: p.slashEntryOffset,
     totalSlashEntries: p.totalSlashEntries,
+    feeDistributions: p.feeDistributions,
   });
 
   // 2. Envelope — Settle funds-shape: all amounts zero, stakeOp None,

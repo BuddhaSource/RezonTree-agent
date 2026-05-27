@@ -37,7 +37,7 @@ import type { Envelope, FeeShare, Funds } from "../intents/envelope.js";
 import type { SponsorWitness } from "../intents/sponsor-witness.js";
 import type { ClaimWitness } from "../intents/claim-witness.js";
 import type { RefundWitness } from "../intents/refund-witness.js";
-import type { SettleWitness, SlashEntry } from "../intents/settle-witness.js";
+import type { FeeDistribution, SettleWitness, SlashEntry } from "../intents/settle-witness.js";
 
 // ─── ABI fragments for the v2 envelope entry points ──────────────────
 //
@@ -251,14 +251,14 @@ export function encodeRefundWitnessBytes(w: RefundWitness): Hex {
 export function encodeSettleWitnessBytes(w: SettleWitness): Hex {
   return encodeAbiParameters(
     parseAbiParameters(
-      "(uint8 actionTag, bytes32 merkleRoot, uint256 totalClaimable, uint256 dustFolded, (bytes32 intentHash, uint256 amount, uint8 role)[] slashes, uint256 leafCount, uint256 slashEntryOffset, uint256 totalSlashEntries)",
+      "(uint8 actionTag, bytes32 merkleRoot, uint256 totalClaimable, uint256 feeTotal, (bytes32 intentHash, uint256 amount, uint8 role)[] slashes, uint256 leafCount, uint256 slashEntryOffset, uint256 totalSlashEntries, (address recipient, uint256 amount)[] feeDistributions)",
     ),
     [
       {
         actionTag: w.actionTag,
         merkleRoot: w.merkleRoot,
         totalClaimable: w.totalClaimable,
-        dustFolded: w.dustFolded,
+        feeTotal: w.feeTotal,
         slashes: w.slashes.map((s: SlashEntry) => ({
           intentHash: s.intentHash,
           amount: s.amount,
@@ -267,6 +267,10 @@ export function encodeSettleWitnessBytes(w: SettleWitness): Hex {
         leafCount: w.leafCount,
         slashEntryOffset: w.slashEntryOffset,
         totalSlashEntries: w.totalSlashEntries,
+        feeDistributions: w.feeDistributions.map((f: FeeDistribution) => ({
+          recipient: f.recipient,
+          amount: f.amount,
+        })),
       },
     ],
   );

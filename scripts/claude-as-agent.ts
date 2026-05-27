@@ -286,19 +286,25 @@ async function actSponsor(idx: number, qid: string, amount: string) {
     return;
   }
 
-  // cosponsor — a pure pool top-up. The fee-share policy is frozen by the
-  // first sponsor; the contract enforces `shape:cosponsor:feeShares-must-be-
-  // empty`, so a cosponsor envelope MUST carry feeShares=[] + feeShareBps=0
-  // (matching the backend's cosponsor preflight). Sending the platform policy
-  // here reverts on-chain.
+  // cosponsor — a pure pool top-up. Fee-model B1 flipped the cosponsor
+  // shape gate from `feeShares-must-be-empty` to `feeShares-required`
+  // (revert `shape:cosponsor:feeShares-required`): the realized-outcome
+  // fee model taxes a cosponsor's contribution at settlement, so the
+  // cosponsor signs their own feeShares (platform-first + their referrer),
+  // mirroring commit/vote. The backend's cosponsor preflight prefills the
+  // canonical array (platform recipient at 10000 bps until per-Q referral
+  // slots land); we sign THAT verbatim — Stage-2 feeSharesMatchPolicy
+  // rejects any divergence. A stale empty array reverts on-chain.
+  const { feeShareBps: coBps, feeShares: coShares } =
+    feeShareFromPreflight(pre, address);
   const result = await runCosponsorFlow({
     baseUrl: API_URL, bearerToken: bearer, signer: address, questionId: qid,
     qid: pre.qid as Hex, nonce, expiresAt, forgeAddress: FORGE!,
     chainId: pre.chainId ?? CHAIN_ID,
     expectedIntentHash: pre.expectedIntentHash as Hex,
     token: pre.token.contractAddress as Address, amount: amountWei, feeAmount: 0n,
-    feeShareBps: 0,
-    feeShares: [],
+    feeShareBps: coBps,
+    feeShares: coShares,
     walletClient, privateKey,
   });
   await awaitReceipt(publicClient, result.txHash!);

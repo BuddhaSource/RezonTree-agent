@@ -34,7 +34,7 @@ import { buildSponsorWitness } from "../sponsor-witness.js";
 import { buildCosponsorWitness } from "../cosponsor-witness.js";
 import { buildCommitWitness } from "../commit-witness.js";
 import { buildVoteWitness } from "../vote-witness.js";
-import { buildSettleWitness, type SlashEntry } from "../settle-witness.js";
+import { buildSettleWitness, type FeeDistribution, type SlashEntry } from "../settle-witness.js";
 import { buildClaimWitness } from "../claim-witness.js";
 import { buildRefundWitness } from "../refund-witness.js";
 import { buildAbandonWitness } from "../abandon-witness.js";
@@ -159,14 +159,21 @@ function recomputeContentHash(action: ActionTag, w: Record<string, unknown>): He
           role: s.role,
         }),
       );
+      const feeDistributions = ((w.feeDistributions as { recipient: string; amount: number | string }[]) ?? []).map(
+        (f): FeeDistribution => ({
+          recipient: f.recipient as Hex,
+          amount: toBigInt(f.amount),
+        }),
+      );
       const { contentHash } = buildSettleWitness({
         merkleRoot: w.merkleRoot as Hex,
         totalClaimable: toBigInt(w.totalClaimable as number | string),
-        dustFolded: toBigInt(w.dustFolded as number | string),
+        feeTotal: toBigInt(w.feeTotal as number | string),
         slashes,
         leafCount: toBigInt(w.leafCount as number | string),
         slashEntryOffset: toBigInt(w.slashEntryOffset as number | string),
         totalSlashEntries: toBigInt(w.totalSlashEntries as number | string),
+        feeDistributions,
       });
       return contentHash;
     }

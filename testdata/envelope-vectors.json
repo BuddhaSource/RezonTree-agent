@@ -185,7 +185,7 @@
       "action": 4,
       "nonce": 1,
       "expiresAt": 1800000000,
-      "contentHash": "0xb5090c76033cd1a280903700d1bb90f991c32adb617dcba36fca867800ba17e9",
+      "contentHash": "0x2c2504e454291bb959c15712cf07adb0e178898850c177a76e8384076147cd10",
       "funds": {
         "token": "0x2222222222222222222222222222222222222222",
         "poolIn": 0,
@@ -201,14 +201,15 @@
       "actionTag": 4,
       "merkleRoot": "0xabababababababababababababababababababababababababababababababab",
       "totalClaimable": 100,
-      "dustFolded": 0,
+      "feeTotal": 0,
       "slashes": [],
       "leafCount": 1,
       "slashEntryOffset": 0,
-      "totalSlashEntries": 0
+      "totalSlashEntries": 0,
+      "feeDistributions": []
     },
-    "expectedContentHash": "0xb5090c76033cd1a280903700d1bb90f991c32adb617dcba36fca867800ba17e9",
-    "expectedIntentHash": "0x3854c12c8af162530ee658267c425d2d005fc009344bea07c9bd11d92bf7304f"
+    "expectedContentHash": "0x2c2504e454291bb959c15712cf07adb0e178898850c177a76e8384076147cd10",
+    "expectedIntentHash": "0x12fcd0e7bea5f20eb69c2afe3a7aa7304a574e6669d970f3d7eefe8f1043e3d2"
   },
   {
     "name": "Claim_min",

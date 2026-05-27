@@ -469,9 +469,12 @@ program
     if (opts.witnessFile) {
       // Manual oracle settle from a supplied witness.
       const w = JSON.parse(fs.readFileSync(path.resolve(opts.witnessFile as string), "utf8")) as {
-        merkleRoot: string; totalClaimable: string | number; dustFolded?: string | number;
+        merkleRoot: string; totalClaimable: string | number;
+        // Fee-model rename: feeTotal supersedes dustFolded (economics.md §0).
+        feeTotal?: string | number; dustFolded?: string | number;
         slashes?: Array<{ intentHash: string; amount: string | number; role: number }>;
         leafCount: string | number; slashEntryOffset?: string | number; totalSlashEntries?: string | number;
+        feeDistributions?: Array<{ recipient: string; amount: string | number }>;
       };
       const oracleIdx = opts.oracleIdx as number;
       const oracle = await login(oracleIdx);
@@ -491,11 +494,15 @@ program
         token: st.token,
         merkleRoot: w.merkleRoot as Hex,
         totalClaimable: BigInt(w.totalClaimable),
-        dustFolded: BigInt(w.dustFolded ?? 0),
+        feeTotal: BigInt(w.feeTotal ?? w.dustFolded ?? 0),
         slashes,
         leafCount: BigInt(w.leafCount),
         slashEntryOffset: BigInt(w.slashEntryOffset ?? 0),
         totalSlashEntries: BigInt(w.totalSlashEntries ?? slashes.length),
+        feeDistributions: (w.feeDistributions ?? []).map((f) => ({
+          recipient: f.recipient as Hex,
+          amount: BigInt(f.amount),
+        })),
         bearerToken: oracle.token,
         baseUrl: BACKEND,
         walletClient,

@@ -75,7 +75,7 @@ import {
   makeAgentWalletClient,
 } from "../src/forge/quadphase-broadcast.js";
 import { runSettleFlow } from "../src/forge/quadphase-flow.js";
-import type { SlashEntry } from "../src/intents/settle-witness.js";
+import type { FeeDistribution, SlashEntry } from "../src/intents/settle-witness.js";
 import {
   buildWalletBank,
   loginWallet,
@@ -259,20 +259,24 @@ async function readChain(
 function parseSettleWitnessJson(raw: string): {
   merkleRoot: Hex;
   totalClaimable: bigint;
-  dustFolded: bigint;
+  feeTotal: bigint;
   slashes: SlashEntry[];
   leafCount: bigint;
   slashEntryOffset: bigint;
   totalSlashEntries: bigint;
+  feeDistributions: FeeDistribution[];
 } {
   const j = JSON.parse(raw) as {
     merkleRoot: string;
     totalClaimable: string | number;
+    // Fee-model rename: feeTotal supersedes dustFolded (economics.md §0).
+    feeTotal?: string | number;
     dustFolded?: string | number;
     slashes?: Array<{ intentHash: string; amount: string | number; role: number }>;
     leafCount: string | number;
     slashEntryOffset?: string | number;
     totalSlashEntries?: string | number;
+    feeDistributions?: Array<{ recipient: string; amount: string | number }>;
   };
   if (!/^0x[0-9a-fA-F]{64}$/.test(j.merkleRoot)) {
     throw new FatalExit(EXIT.ENV_MISSING, `RT_SETTLE_WITNESS_JSON.merkleRoot malformed: ${j.merkleRoot}`);
@@ -285,11 +289,15 @@ function parseSettleWitnessJson(raw: string): {
   return {
     merkleRoot: j.merkleRoot as Hex,
     totalClaimable: BigInt(j.totalClaimable),
-    dustFolded: BigInt(j.dustFolded ?? 0),
+    feeTotal: BigInt(j.feeTotal ?? j.dustFolded ?? 0),
     slashes,
     leafCount: BigInt(j.leafCount),
     slashEntryOffset: BigInt(j.slashEntryOffset ?? 0),
     totalSlashEntries: BigInt(j.totalSlashEntries ?? slashes.length),
+    feeDistributions: (j.feeDistributions ?? []).map((f) => ({
+      recipient: f.recipient as Hex,
+      amount: BigInt(f.amount),
+    })),
   };
 }
 
