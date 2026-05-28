@@ -1,20 +1,50 @@
 // finance-audit.ts — fund-conservation audit for the battle harness.
 //
 // Computes per-question and per-wallet USDC accounting from on-chain
-// reads only (Router state + ERC-20 balances). The DB/indexer is
-// a secondary source we cross-check against; chain is canonical.
+// reads only (Router state + ERC-20 balances + accruedFees). The
+// DB/indexer is a secondary source we cross-check against; chain is
+// canonical.
 //
-// Conservation rule (R-CHAIN-VERIFIES-INTENT):
-//   For one full lifecycle (sponsor → cosponsor* → commit* → vote*
-//   → settle → claim*) we must have:
+// ── Conservation rule — realized-outcome fee model (docs/economics.md §0) ──
 //
-//      Σ inflow(actor)   ==  pool_distributed
-//                          + fee_share_distributed
-//                          + protocol_fee_distributed
-//                          + stake_refunded
-//                          - stake_slashed
+// The fee is NO LONGER taken at commit/vote action time. Commit and
+// vote carry feeAmount=0 and a refundable stake only (§0.1 P5). The
+// platform+referral fee is skimmed ONCE, at settlement:
 //
-//   per question; and across the whole battle:
+//      feeTotal = feeShareBps × poolAtSettle / 10000
+//      poolAtSettle = sponsor + cosponsor poolIn + Σ slashed stakes
+//
+// feeTotal is credited to the per-recipient, cross-question
+// `accruedFees[recipient][token]` tab and withdrawn later via
+// `withdrawFees` (§0.2). It does NOT leave the Forge ERC-20 balance at
+// settlement — it just moves from the question pool bucket to the
+// accrued-fees bucket. Winners take `poolAtSettle − feeTotal` via the
+// merkle; winning/valid-loser stakes are refunded; slashed (orphan /
+// losing) stakes were already folded into poolAtSettle (no refund, and
+// the orphan earns no fee attribution — its stake just funds winners).
+//
+// The per-question LEDGER identity the audit reconciles (Settled):
+//
+//      poolInflows + Σ stakesCommitted
+//        ==  Σ winnerClaims(owed)        // swept + residual still-claimable
+//          + Σ stakeRefunds(owed)        // swept + escrow still-refundable
+//          + feeAccrued                  // = feeTotal, whether or not swept
+//
+// and for Abandoned / Recovered (§0.1 P5 — no fee, everything refunded):
+//
+//      poolInflows + Σ stakesCommitted
+//        ==  Σ refunds(owed)             // full; feeAccrued == 0
+//
+// The audit reconciles what is OWED, not just what has been pulled, so
+// it is tolerant of money-out timing: a winner claim that is settled
+// but not yet pulled still sits in the chain pool (`residualPool`),
+// and a stake refund not yet pulled still sits in escrow
+// (`escrowRemaining`) — both count toward the right-hand side. The fee
+// is reconciled against the ACCRUED balance (the value `withdrawFees`
+// would transfer, net of prior withdrawals + lifetime-withdrawn), not
+// against a realized transfer, for the same reason.
+//
+// Across the whole battle the global invariant still holds:
 //
 //      chain_total_USDC_before == chain_total_USDC_after
 //
@@ -52,7 +82,40 @@ export const FORGE_READ_ABI = [
       { name: "feeShareSet", type: "bool" },
     ],
   },
+  // accruedFees(recipient, token) — the public mapping getter. Returns
+  // the exact balance withdrawFees would transfer (net of prior
+  // withdrawals). Used to reconcile the settlement fee against the
+  // ACCRUED ledger, not a realized transfer (the fee may not be swept
+  // yet). Mirrors scripts/sweep-fees.ts::ACCRUED_FEES_ABI.
+  {
+    type: "function",
+    name: "accruedFees",
+    stateMutability: "view",
+    inputs: [
+      { name: "recipient", type: "address" },
+      { name: "token", type: "address" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+  },
 ] as const;
+
+// Read the on-chain accrued (withdrawable) fee balance for a recipient.
+// This is the value `withdrawFees(recipient, token)` would transfer —
+// already net of prior withdrawals — so the conservation audit can
+// reconcile the realized-outcome fee whether or not the sweeper has run.
+export async function readAccruedFees(params: {
+  publicClient: PublicClient;
+  forge: Address;
+  recipient: Address;
+  token: Address;
+}): Promise<bigint> {
+  return (await params.publicClient.readContract({
+    address: params.forge,
+    abi: FORGE_READ_ABI,
+    functionName: "accruedFees",
+    args: [params.recipient, params.token],
+  })) as bigint;
+}
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -93,6 +156,9 @@ export interface PerQuestionAudit {
   stakesCommittedTotal: bigint;
   stakesRefundedTotal: bigint;
   stakesSlashedTotal: bigint;
+  /** Fee skimmed at settlement (feeShareBps × poolAtSettle), credited to
+   *  accruedFees. Zero for abandoned/recovered (§0.1 P5). */
+  feeAccruedTotal: bigint;
   conserves: boolean;
   drift: bigint;
   notes: string[];
@@ -181,60 +247,108 @@ export async function snapshotFinance(params: {
 
 // ── Per-question reconciliation ──────────────────────────────────
 
+/** Terminal outcome of the question at audit time. Decides which side
+ *  of the realized-outcome identity applies: Settled questions accrue a
+ *  fee, Abandoned/Recovered ones refund everything with zero fee. */
+export type QuestionOutcome = "settled" | "abandoned" | "recovered";
+
 export interface QuestionTrace {
   scenarioId: string;
   qid: Hex;
-  poolInflowsWei: bigint;          // sum of sponsor + cosponsor amounts
-  stakesCommittedWei: bigint;       // sum of every commit/vote stake locked
-  stakesRefundedWei: bigint;        // sum of every claimed stake
-  stakesSlashedWei: bigint;         // sum of slashed stakes (added to pool)
-  poolDistributedWei: bigint;      // sum of claim() amounts that came out of pool
-  feeShareDistributedWei: bigint;  // routed to feeShares recipients
-  protocolFeeWei: bigint;          // routed to fee_wallet
+  /** Terminal outcome. `settled` → fee at settlement; `abandoned` /
+   *  `recovered` → full refund, zero fee (§0.1 P5). */
+  outcome: QuestionOutcome;
+  poolInflowsWei: bigint;          // sponsor + cosponsor poolIn (commit/vote fee = 0 in v2)
+  stakesCommittedWei: bigint;       // every commit + vote stake locked
+  // ── money-out, what's been PULLED (swept by the harness) ──
+  winnerClaimsPulledWei: bigint;   // Σ merkle claim() amounts pulled to winners
+  stakeRefundsPulledWei: bigint;   // Σ stake/sponsor refunds pulled
+  // ── fee, ACCRUED (settlement skim; may not be withdrawn yet) ──
+  // feeTotal = feeShareBps × poolAtSettle / 10000, credited to
+  // accruedFees. Reconciled as accrued (= what withdrawFees would pay,
+  // incl. amounts already swept), not as a realized transfer.
+  feeAccruedWei: bigint;
 }
 
-// v2 reconciliation. In the unified-envelope model the question's
-// on-chain `poolAmount` (read via getQuestionScalars) holds BOTH the
-// bounty inflows AND every locked commit/vote stake until settlement /
-// refund moves them out. There are no separate per-intent stake views to
-// read, so the chain-readable invariant collapses to a single quantity:
+// v2 realized-outcome reconciliation. `finalPool` is the question's
+// on-chain `poolAmount` (getQuestionScalars index 2) read AFTER the
+// money-out sweep — the still-claimable winner residual (settled-but-
+// not-yet-pulled merkle leaves). `escrowRemaining` is the sum of stakes
+// still locked in escrow (settled-but-not-yet-refunded). Both are
+// "owed" quantities that keep the ledger balanced regardless of pull
+// timing.
 //
-//   finalPool == poolInflows + stakesCommitted + stakesSlashed
-//                - poolDistributed - feeShareDistributed - protocolFee
-//                - stakesRefunded
+// Settled identity:
+//   poolInflows + stakesCommitted
+//     == winnerClaimsPulled + finalPool          (winner side: pulled + still-claimable)
+//      + stakeRefundsPulled  + escrowRemaining    (stake side:  pulled + still-in-escrow)
+//      + feeAccrued                               (= feeTotal, in accruedFees bucket)
 //
-// i.e. everything that flowed in (bounty + stakes + slashes) minus
-// everything pulled out (payouts + fees + refunded stakes) must equal
-// what the chain still holds in the pool. Drift ≠ 0 is a conservation
-// violation.
-export function reconcileQuestion(t: QuestionTrace, finalPool: bigint): PerQuestionAudit {
-  const distributed =
-    t.poolDistributedWei +
-    t.feeShareDistributedWei +
-    t.protocolFeeWei;
-
-  const expectedPool =
-    t.poolInflowsWei +
-    t.stakesCommittedWei +
-    t.stakesSlashedWei -
-    distributed -
-    t.stakesRefundedWei;
-  const drift = finalPool - expectedPool;
+// Abandoned / Recovered identity (no fee, full refund):
+//   poolInflows + stakesCommitted
+//     == stakeRefundsPulled + escrowRemaining     // sponsor + stake refunds
+//      + finalPool                                // any not-yet-pulled bounty refund
+//   and feeAccrued MUST be 0 (§0.1 P5).
+//
+// Drift ≠ 0 is a conservation violation.
+export function reconcileQuestion(
+  t: QuestionTrace,
+  finalPool: bigint,
+  escrowRemaining: bigint = 0n,
+): PerQuestionAudit {
+  const inflows = t.poolInflowsWei + t.stakesCommittedWei;
 
   const notes: string[] = [];
-  if (drift !== 0n) notes.push(`pool drift ${drift.toString()} wei`);
+  // A protocol-rule violation (independent of arithmetic drift) — e.g. a
+  // fee skimmed on a question that didn't settle (§0.1 P5). It must make
+  // the question NOT conserve even if the ledger sum happens to balance.
+  let ruleViolation = false;
+
+  // Right-hand side: everything OWED (pulled + still-claimable +
+  // still-in-escrow) + the fee accrued at settlement.
+  let owedOut: bigint;
+  let feeAccounted: bigint;
+  if (t.outcome === "settled") {
+    feeAccounted = t.feeAccruedWei;
+    owedOut =
+      t.winnerClaimsPulledWei +
+      finalPool +
+      t.stakeRefundsPulledWei +
+      escrowRemaining +
+      feeAccounted;
+  } else {
+    // Abandoned / Recovered: full refund, zero fee. A non-zero accrued
+    // fee on a non-settled question is itself a defect (§0.1 P5).
+    feeAccounted = 0n;
+    if (t.feeAccruedWei !== 0n) {
+      ruleViolation = true;
+      notes.push(
+        `P5 violation: ${t.outcome} question accrued fee ${t.feeAccruedWei.toString()} wei (expected 0)`,
+      );
+    }
+    owedOut =
+      t.winnerClaimsPulledWei + // 0 for non-settled, but tolerate
+      finalPool +
+      t.stakeRefundsPulledWei +
+      escrowRemaining;
+  }
+
+  const drift = inflows - owedOut;
+  if (drift !== 0n) notes.push(`ledger drift ${drift.toString()} wei`);
+  const conserves = drift === 0n && !ruleViolation;
   if (notes.length === 0) notes.push("conserves");
 
   return {
     scenarioId: t.scenarioId,
     qid: t.qid,
     poolFundedTotal: t.poolInflowsWei,
-    poolDistributed: distributed,
+    poolDistributed: t.winnerClaimsPulledWei + feeAccounted,
     poolResidual: finalPool,
     stakesCommittedTotal: t.stakesCommittedWei,
-    stakesRefundedTotal: t.stakesRefundedWei,
-    stakesSlashedTotal: t.stakesSlashedWei,
-    conserves: drift === 0n,
+    stakesRefundedTotal: t.stakeRefundsPulledWei + escrowRemaining,
+    stakesSlashedTotal: 0n, // slashes are folded into poolAtSettle, not a separate term
+    feeAccruedTotal: feeAccounted,
+    conserves,
     drift,
     notes,
   };

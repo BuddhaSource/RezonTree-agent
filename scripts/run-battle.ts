@@ -90,9 +90,11 @@ import {
   type FinanceSnapshot,
   type NamedActor,
   type PerQuestionAudit,
+  type QuestionOutcome,
   type QuestionTrace,
   FORGE_READ_ABI,
   fmtUsdc6,
+  readAccruedFees,
   reconcileQuestion,
   renderActorDeltaCsv,
   snapshotFinance,
@@ -642,7 +644,12 @@ class BattleRunner {
       // human sol_xxx id isn't needed for the vote step (it resolves via
       // ?include=solutions), so we key the map on the intentHash.
       solutionsByLetter[solverLetter] = { id: intentHash, intentHash, stake, submitter: sa };
-      poolInflows += fee; // commit fee is added to the pool
+      // Realized-outcome model: commit carries feeAmount=0 (the fee is
+      // skimmed once at settlement, docs/economics.md §0). This add is
+      // inert under the default zero commitFee; it only contributes if a
+      // sponsor set a non-zero (deprecated) commitFee, in which case that
+      // fee lands in the pool exactly as accounted here.
+      poolInflows += fee;
       stakesCommitted += stake;
     }
 
@@ -718,6 +725,9 @@ class BattleRunner {
       this.knownVotes.push(intentHash);
       ok(`vote ${voterLetter} stake=${fmtUsdc6(stake)}`);
       votesByLetter[voterLetter] = { intentHash, stake };
+      // Realized-outcome model: vote carries feeAmount=0 (fee at
+      // settlement only). Inert under the default zero voteFee — see the
+      // matching note in the commit step.
       poolInflows += fee;
       voteStakesCommitted += stake;
     }
@@ -727,6 +737,21 @@ class BattleRunner {
     //    publishSettlement). The harness no longer computes a merkle
     //    tree client-side; it awaits the keeper flipping the question to
     //    Settled on chain (poll getQuestionScalars.status == 3).
+    //
+    // Realized-outcome fee: the fee is skimmed ONCE at settlement and
+    // credited to the platform recipient's cross-question accruedFees
+    // tab (docs/economics.md §0). accruedFees is a GLOBAL mapping, so we
+    // snapshot the platform recipient's balance BEFORE settle and diff
+    // it AFTER the sweep to isolate THIS question's feeTotal. Scenarios
+    // run serially, so no concurrent question pollutes the delta. The
+    // delta is the value `withdrawFees` would pay (net of prior
+    // withdrawals) — the audit reconciles against accrued, not a
+    // realized transfer (the sweeper may not have run yet).
+    const settleToken = sponsorPre.token.contractAddress as Address;
+    const platformFeeRecipient = sponsorFees.platformFeeRecipient;
+    const accruedBefore = await readAccruedFees({
+      publicClient, forge: FORGE!, recipient: platformFeeRecipient, token: settleToken,
+    });
     const STATUS_SETTLED = 3;
     const settleDeadline = Date.now() + this.settleWaitMs;
     let settledStatus = 0;
@@ -748,9 +773,15 @@ class BattleRunner {
     //       (runClaimFlow winner payout + runRefundFlow stake/sponsor
     //       refunds). One door call enumerates everything each wallet is
     //       owed. Soft-fail so a payout revert doesn't abort the battle.
-    let stakesRefunded = 0n;
-    let poolDistributed = 0n;
-    let feeDistributed = 0n;
+    // Money-out, split by what's OWED (from the withdraw-door draft) vs
+    // PULLED (broadcast succeeded). The realized-outcome ledger
+    // reconciles owed quantities so an unpulled refund (timing) doesn't
+    // read as drift: unpulled winner claims stay in the chain pool
+    // (finalPool), unpulled stake refunds stay in escrow (escrowRemaining
+    // = owed − pulled).
+    let stakeRefundsPulled = 0n;
+    let stakeRefundsOwed = 0n;
+    let winnerClaimsPulled = 0n;
     if (settledStatus === STATUS_SETTLED) {
       const sweepOpts: SweepOptions = {
         apiBase: BACKEND, forgeAddress: FORGE!, rpcUrl: RPC, chainId: CHAIN_ID, dryRun: false,
@@ -772,20 +803,23 @@ class BattleRunner {
             question.id,
           );
           for (const item of r.items) {
-            if (item.status !== "broadcast") continue;
             if (item.actionType === "claim") {
-              poolDistributed += item.amountWei;
+              // Unpulled claims remain in the chain pool → counted via
+              // finalPool, so only ACCUMULATE pulled claims here.
+              if (item.status === "broadcast") winnerClaimsPulled += item.amountWei;
             } else {
-              // refund: sponsor refund or commit/vote stake-back.
-              if (item.role === "sponsor") feeDistributed += 0n; // sponsor refund returns bounty, not a fee
-              stakesRefunded += item.amountWei;
+              // refund: sponsor bounty refund or commit/vote stake-back.
+              // owedWei is from the draft (independent of broadcast) so
+              // a not-yet-pulled refund still balances via escrowRemaining.
+              stakeRefundsOwed += item.owedWei;
+              if (item.status === "broadcast") stakeRefundsPulled += item.amountWei;
             }
           }
         } catch (err) {
           warn(`withdraw ${addrLower.slice(0, 10)}… failed (lifecycle still recorded): ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`);
         }
       }
-      ok(`money-out swept: claims ${fmtUsdc6(poolDistributed)} + refunds ${fmtUsdc6(stakesRefunded)} USDC`);
+      ok(`money-out swept: claims ${fmtUsdc6(winnerClaimsPulled)} + refunds ${fmtUsdc6(stakeRefundsPulled)}/${fmtUsdc6(stakeRefundsOwed)} owed USDC`);
     }
 
     // Sybil flag.
@@ -796,28 +830,49 @@ class BattleRunner {
       }
     }
 
-    // Reconcile per-question against the v2 on-chain pool
-    // (getQuestionScalars.poolAmount). The pool is the single
-    // chain-readable conservation quantity in the unified model.
+    // Reconcile per-question with the realized-outcome ledger
+    // (docs/economics.md §0). Read the post-sweep chain state:
+    //   - getQuestionScalars: status (terminal outcome) + poolAmount
+    //     (the still-claimable winner residual for unpulled merkle leaves).
+    //   - accruedFees delta: the feeTotal skimmed at settlement and
+    //     credited to the platform recipient's tab (the value
+    //     withdrawFees would pay), reconciled as ACCRUED, not transferred.
     const finalScalars = (await publicClient.readContract({
       address: FORGE!, abi: FORGE_READ_ABI, functionName: "getQuestionScalars", args: [qid],
     })) as readonly [Address, number, bigint, boolean];
+    const finalStatus = Number(finalScalars[1]);
     const finalPool = finalScalars[2];
+
+    const accruedAfter = await readAccruedFees({
+      publicClient, forge: FORGE!, recipient: platformFeeRecipient, token: settleToken,
+    });
+    const feeAccrued = accruedAfter - accruedBefore;
+
+    // Map the on-chain terminal status to the audit outcome. Settled=3 →
+    // fee at settlement; Abandoned=4 / Recovered=5 → full refund, zero
+    // fee. Anything else (didn't reach a terminal state within the
+    // settle-wait window) is treated as settled-pending so an unsettled
+    // question doesn't masquerade as abandoned.
+    const outcome: QuestionOutcome =
+      finalStatus === 4 ? "abandoned" : finalStatus === 5 ? "recovered" : "settled";
+
+    // Stakes still owed-but-not-pulled remain in escrow; they keep the
+    // ledger balanced regardless of money-out timing.
+    const escrowRemaining = stakeRefundsOwed - stakeRefundsPulled;
 
     const trace: QuestionTrace = {
       scenarioId: s.id,
       qid,
+      outcome,
       poolInflowsWei: poolInflows,
       stakesCommittedWei: stakesCommitted + voteStakesCommitted,
-      stakesRefundedWei: stakesRefunded,
-      stakesSlashedWei: 0n,
-      poolDistributedWei: poolDistributed,
-      feeShareDistributedWei: feeDistributed,
-      protocolFeeWei: 0n,
+      winnerClaimsPulledWei: winnerClaimsPulled,
+      stakeRefundsPulledWei: stakeRefundsPulled,
+      feeAccruedWei: feeAccrued,
     };
-    const audit = reconcileQuestion(trace, finalPool);
+    const audit = reconcileQuestion(trace, finalPool, escrowRemaining);
     this.auditedScenarios.push(audit);
-    if (audit.conserves) ok(`conserves ✓ (drift 0)`);
+    if (audit.conserves) ok(`conserves ✓ (drift 0, fee accrued ${fmtUsdc6(feeAccrued)})`);
     else fail(`drift ${audit.drift.toString()} wei — ${audit.notes.join("; ")}`);
 
     this.results.push({

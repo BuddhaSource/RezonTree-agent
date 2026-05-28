@@ -3,8 +3,8 @@
 //
 // For a given question_id, reports state at each truth layer:
 //
-//   L1 CHAIN     — cast for QuestionSponsored / SolutionCommitted /
-//                  VoteCast / SettlementPublished events with our qid
+//   L1 CHAIN     — cast for the unified Quadphase event (discriminated by
+//                  the indexed `action` byte) with our qid
 //   L2 PONDER    — ponder_indexer rows projecting those events
 //   L3 DB        — backend's questions/solutions/votes/contributions
 //                  with their confirmation_status
@@ -89,14 +89,29 @@ interface RowCounts {
   api: number;
 }
 
-async function chainCount(_qidBytes: Hex, _eventSig: string): Promise<number> {
+// Action tags discriminate the unified Quadphase event. The contract no
+// longer emits per-action events (QuestionSponsored / SolutionCommitted /
+// VoteCast / SettlementPublished are all gone) — every submit/pull/settle
+// action emits a single `Quadphase(qid, signer, action, intentHash, ...)`
+// and the off-band terminals emit `ForcedAbandonment` / `Recovered` /
+// `FeesWithdrawn`. The `action` byte selects which lifecycle step a log
+// represents; see contracts/src/RezonForge.sol event Quadphase + the
+// QuadphaseTypes action-tag enum.
+type ChainAction = "sponsor" | "cosponsor" | "commit" | "vote" | "settle";
+
+async function chainCount(_qidBytes: Hex, _action: ChainAction): Promise<number> {
   // Per R-CHAIN-IS-PUBLIC-TRUTH: Ponder IS chain truth. Once Ponder is
   // healthy + caught up to head, querying ponder_indexer.* is
   // semantically equivalent to scanning the chain logs — and avoids
   // public RPC's 10k-block window limit. We surface "L1 chain" via
   // Ponder tables and report Ponder's checkpoint block at the top.
   // If you want raw chain verification (e.g., suspect Ponder is wrong),
-  // run `cast logs --address $FORGE --topic <eventSig> ...` separately.
+  // run `cast logs --address $FORGE --event 'Quadphase(...)' ...` and
+  // filter on the indexed `action` topic separately.
+  //
+  // TODO(#435): wire a real chain-side count by filtering `Quadphase`
+  // logs on (qid, action) once we want a raw-RPC oracle independent of
+  // Ponder. Today this is a stub — Ponder's count is treated as L1 truth.
   return -1; // sentinel: "use Ponder's count as the L1 truth"
 }
 
@@ -144,14 +159,8 @@ async function main() {
   console.log(`Question: ${qidArg}  qid=${qid}\n`);
 
   // ── Sponsor / Cosponsor (treated as "contributions" in app) ─────
-  const chainSponsor = await chainCount(
-    qid,
-    "event QuestionSponsored(bytes32 indexed questionId, address indexed sponsor, uint256 amount, bytes32 intentHash)",
-  );
-  const chainCosponsor = await chainCount(
-    qid,
-    "event QuestionCosponsored(bytes32 indexed questionId, address indexed sponsor, uint256 amount, bytes32 intentHash)",
-  );
+  const chainSponsor = await chainCount(qid, "sponsor");
+  const chainCosponsor = await chainCount(qid, "cosponsor");
   // contributions joins through rounds — schema uses round_id, not question_id
   const ponderSponsor = dbScalar(
     `SELECT COUNT(*) FROM ponder_indexer.confirmations WHERE intent_hash IN (
@@ -172,10 +181,7 @@ async function main() {
   );
 
   // ── Solution commits ────────────────────────────────────────────
-  const chainCommit = await chainCount(
-    qid,
-    "event SolutionCommitted(bytes32 indexed questionId, address indexed solver, bytes32 intentHash, uint256 stake, uint256 fee)",
-  );
+  const chainCommit = await chainCount(qid, "commit");
   const ponderCommit = dbScalar(
     `SELECT COUNT(*) FROM ponder_indexer.commits WHERE question_id='${qid}'`,
   );
@@ -190,10 +196,7 @@ async function main() {
   );
 
   // ── Votes ───────────────────────────────────────────────────────
-  const chainVote = await chainCount(
-    qid,
-    "event VoteCast(bytes32 indexed questionId, address indexed voter, bytes32 intentHash, uint256 stake, uint256 fee, bytes32 allocationsHash)",
-  );
+  const chainVote = await chainCount(qid, "vote");
   const ponderVote = dbScalar(
     `SELECT COUNT(*) FROM ponder_indexer.votes_cast WHERE question_id='${qid}'`,
   );
@@ -208,10 +211,7 @@ async function main() {
   );
 
   // ── Settlement ──────────────────────────────────────────────────
-  const chainSettle = await chainCount(
-    qid,
-    "event SettlementPublished(bytes32 indexed questionId, bytes32 merkleRoot, uint256 totalClaimable, uint256 dustFolded)",
-  );
+  const chainSettle = await chainCount(qid, "settle");
   const ponderSettle = dbScalar(
     `SELECT COUNT(*) FROM ponder_indexer.settlements WHERE question_id='${qid}'`,
   );

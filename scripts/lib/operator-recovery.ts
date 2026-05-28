@@ -177,7 +177,13 @@ export interface WithdrawnItemResult {
   status: "broadcast" | "failed";
   intentHash?: Hex;
   txHash?: Hex;
+  /** Amount actually pulled (0 on a failed broadcast). */
   amountWei: bigint;
+  /** Amount the withdraw door said was OWED for this item, taken from
+   *  the preflight draft (leafAmount / expectedAmount). Populated even
+   *  when the broadcast fails, so a finance audit can distinguish
+   *  "owed-but-not-yet-pulled" (timing) from a genuine shortfall. */
+  owedWei: bigint;
   error?: string;
 }
 
@@ -248,6 +254,14 @@ export async function sweepWalletQuestion(
     : (createPublicClient({ transport: http(opts.rpcUrl) }) as PublicClient);
 
   for (const item of items as WithdrawItem[]) {
+    // Owed amount from the draft (independent of broadcast success), so a
+    // failed pull still reports what the door said was owed.
+    const owedWei =
+      item.actionType === "claim" && item.claim
+        ? BigInt(item.claim.leafAmount)
+        : item.actionType === "refund" && item.refund
+          ? BigInt(item.refund.expectedAmount)
+          : 0n;
     try {
       if (item.actionType === "claim" && item.claim) {
         const c = item.claim;
@@ -258,6 +272,7 @@ export async function sweepWalletQuestion(
             role: item.role,
             status: "broadcast",
             amountWei: amount,
+            owedWei,
           });
           result.totalWithdrawnWei += amount;
           continue;
@@ -292,6 +307,7 @@ export async function sweepWalletQuestion(
           intentHash: flow.intentHash,
           txHash: flow.txHash,
           amountWei: amount,
+          owedWei,
         });
       } else if (item.actionType === "refund" && item.refund) {
         const r = item.refund;
@@ -302,6 +318,7 @@ export async function sweepWalletQuestion(
             role: item.role,
             status: "broadcast",
             amountWei: amount,
+            owedWei,
           });
           result.totalWithdrawnWei += amount;
           continue;
@@ -334,6 +351,7 @@ export async function sweepWalletQuestion(
           intentHash: flow.intentHash,
           txHash: flow.txHash,
           amountWei: amount,
+          owedWei,
         });
       } else {
         // Malformed item — neither leg populated. Record + continue.
@@ -343,6 +361,7 @@ export async function sweepWalletQuestion(
           role: item.role,
           status: "failed",
           amountWei: 0n,
+          owedWei,
           error: "draft item has no usable claim/refund payload",
         });
       }
@@ -353,6 +372,7 @@ export async function sweepWalletQuestion(
         role: item.role,
         status: "failed",
         amountWei: 0n,
+        owedWei,
         error: err instanceof Error ? err.message : String(err),
       });
     }
