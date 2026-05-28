@@ -37,7 +37,6 @@ import { keccak256, stringToBytes } from "viem";
 
 import { COMMIT_INTENT_TYPES } from "./commit-intent";
 import { COSPONSOR_INTENT_TYPES } from "./cosponsor-intent";
-import { SETTLEMENT_INTENT_TYPES } from "./settlement-intent";
 import { SPONSOR_INTENT_TYPES } from "./sponsor-intent";
 import { VOTE_INTENT_TYPES } from "./vote-intent";
 
@@ -59,9 +58,6 @@ const PINNED = {
   // RezonForge.sol:254
   VoteIntent:
     "0xce846377b54778704a6c695296cc69e3ebdfc08f87a6ef80f5fa07c7db946e2a",
-  // RezonForge.sol:260
-  SettlementIntent:
-    "0x5fd3f7763a7f80bea9def70b7777f24d1891db2d630a554739eceaef073cd67c",
 } as const;
 
 // EIP-712 §"Definition of encodeType":
@@ -147,11 +143,6 @@ describe("EIP-712 typehash — derived from runtime type arrays", () => {
   it("VoteIntent", () => {
     const computed = typehashOf("VoteIntent", VOTE_INTENT_TYPES);
     expect(computed).toBe(PINNED.VoteIntent);
-  });
-
-  it("SettlementIntent", () => {
-    const computed = typehashOf("SettlementIntent", SETTLEMENT_INTENT_TYPES);
-    expect(computed).toBe(PINNED.SettlementIntent);
   });
 });
 
@@ -253,7 +244,8 @@ const PINNED_QPV2_TYPESTRINGS = {
     "VoteWitness(uint8 actionTag,Allocation[] allocations,bytes32 salt)" +
     "Allocation(bytes32 solutionId,uint16 basisPoints)",
   SettleWitness:
-    "SettleWitness(uint8 actionTag,bytes32 merkleRoot,uint256 totalClaimable,uint256 dustFolded,SlashEntry[] slashes,uint256 leafCount,uint256 slashEntryOffset,uint256 totalSlashEntries)" +
+    "SettleWitness(uint8 actionTag,bytes32 merkleRoot,uint256 totalClaimable,uint256 feeTotal,SlashEntry[] slashes,uint256 leafCount,uint256 slashEntryOffset,uint256 totalSlashEntries,FeeDistribution[] feeDistributions)" +
+    "FeeDistribution(address recipient,uint256 amount)" +
     "SlashEntry(bytes32 intentHash,uint256 amount,uint8 role)",
   ClaimWitness:
     "ClaimWitness(uint8 actionTag,bytes32[] proof,uint256 leafIndex,uint256 leafAmount,uint8 role,uint8 expectedStatus)",
@@ -390,12 +382,6 @@ describe("EIP-712 type arrays — arity + first-field shape", () => {
     {
       name: "VoteIntent",
       fields: VOTE_INTENT_TYPES.VoteIntent,
-      arity: 9,
-      first: { name: "questionId", type: "bytes32" },
-    },
-    {
-      name: "SettlementIntent",
-      fields: SETTLEMENT_INTENT_TYPES.SettlementIntent,
       arity: 9,
       first: { name: "questionId", type: "bytes32" },
     },

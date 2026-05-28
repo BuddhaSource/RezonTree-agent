@@ -17,3 +17,7 @@ votes/
 
 # Oracle event-matrix simulator (task #529)
 .matrix-run/
+
+# Local env backups — never commit (potential secrets)
+.env.*.bak
+.env.bak

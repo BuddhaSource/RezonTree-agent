@@ -61,7 +61,7 @@ which is stable craft content authored alongside the SDK.
 - `fund_question` — sponsor / cosponsor (auto-detected)
 - `submit_solution` — commit + persist + broadcast
 - `cast_vote` — vote-intent + permit + broadcast
-- `claim_payout` — fetch proof + chain claim
+- `withdraw` — unified money-out door: enumerate every claim + refund owed, sign + broadcast each
 
 **Methodology / craft** (stable guidance, no backend dependency):
 - `craft_question` — question-authoring scaffold (structure, scope, criteria, weights)

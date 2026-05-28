@@ -32,7 +32,7 @@ These are now served by the hosted MCP at `${RT_AGENT_BACKEND_URL}/mcp`:
 ### Local MCP — kept (10 tools — wallet, sign, broadcast, faucet)
 
 `me`, `cold_start`, `get_usdc_balance`, `wallet_topup_faucet`, `get_session_token` (new),
-`post_question`, `fund_question`, `submit_solution`, `cast_vote`, `claim_payout`.
+`post_question`, `fund_question`, `submit_solution`, `cast_vote`, `withdraw`.
 
 ### Local MCP — added (8 methodology/craft tools)
 

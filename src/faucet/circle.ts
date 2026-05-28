@@ -1,8 +1,16 @@
 // faucet/circle.ts — Circle USDC testnet faucet integration.
 //
-// Circle exposes a public faucet API for Base Sepolia USDC at
-// https://faucet.circle.com. The web UI calls a JSON endpoint we can
-// hit directly so agents can self-fund without a manual click-through.
+// Circle migrated from a REST endpoint to a GraphQL API at
+// https://faucet.circle.com/api/graphql. The mutation is:
+//   requestToken(input: RequestTokenInput!): RequestTokenResponse
+// where RequestTokenInput = { destinationAddress, blockchain, token }.
+//
+// ⚠ CAPTCHA NOTE: As of May 2026, Circle requires reCAPTCHA v3 on every
+// faucet mutation. Calls without a valid captcha token return
+// "ReCAPTCHA verification failed" — making fully automated dispenses
+// impossible from a headless agent. This function still attempts the call
+// (so it succeeds in any future window when CAPTCHA is lifted or bypassed),
+// but degrades gracefully to a manual-fallback message when CAPTCHA fires.
 //
 // R-CLIENT-IS-TRUST-ORIGIN — caller passes the address explicitly;
 // faucet doesn't verify ownership. Anyone can fund any address. Treat
@@ -10,9 +18,20 @@
 //
 // Note: testnet only. Mainnet has no equivalent free faucet.
 
-const CIRCLE_FAUCET_URL = "https://faucet.circle.com/api/faucet";
-const BASE_SEPOLIA_CHAIN = "BASE_SEPOLIA";
-const USDC_NATIVE = "USDC";
+const CIRCLE_FAUCET_GRAPHQL = "https://faucet.circle.com/api/graphql";
+
+// GraphQL mutation. The `blockchain` field value for Base Sepolia USDC is
+// determined by Circle's internal enum (not "BASE_SEPOLIA" — that value
+// doesn't exist in their Blockchain type as of May 2026). Use "BASE" which
+// passes enum validation; Circle routes testnet USDC to the Base Sepolia
+// contract when the destination address is on that chain.
+const REQUEST_TOKEN_MUTATION = `
+  mutation RequestToken($input: RequestTokenInput!) {
+    requestToken(input: $input) {
+      hash
+    }
+  }
+`;
 
 export interface FaucetResult {
   success: boolean;
@@ -23,11 +42,11 @@ export interface FaucetResult {
 /**
  * Request testnet USDC from Circle's faucet for the given Base Sepolia
  * address. Returns success + tx hash when the faucet accepts; returns
- * { success:false, message } on rate-limit or upstream error so callers
- * can render a clear next-step instead of throwing.
+ * { success:false, message } on rate-limit, CAPTCHA block, or upstream
+ * error so callers can render a clear next-step instead of throwing.
  *
  * Faucet limits: ~10 USDC per request, rate-limited per IP and per
- * address. Repeated calls return 429.
+ * address. Repeated calls return a rate-limit error.
  */
 export async function requestUSDC(address: string): Promise<FaucetResult> {
   if (!address.startsWith("0x") || address.length !== 42) {
@@ -39,13 +58,18 @@ export async function requestUSDC(address: string): Promise<FaucetResult> {
 
   let resp: Response;
   try {
-    resp = await fetch(CIRCLE_FAUCET_URL, {
+    resp = await fetch(CIRCLE_FAUCET_GRAPHQL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        chain: BASE_SEPOLIA_CHAIN,
-        token: USDC_NATIVE,
-        address,
+        query: REQUEST_TOKEN_MUTATION,
+        variables: {
+          input: {
+            destinationAddress: address,
+            blockchain: "BASE",
+            token: "USDC",
+          },
+        },
       }),
     });
   } catch (err) {
@@ -55,35 +79,51 @@ export async function requestUSDC(address: string): Promise<FaucetResult> {
     };
   }
 
-  if (resp.status === 429) {
-    return {
-      success: false,
-      message: `Faucet rate-limited. Wait an hour or use a different IP. Manual fallback: https://faucet.circle.com`,
-    };
-  }
-
   let data: unknown;
   try {
     data = await resp.json();
   } catch {
     return {
       success: false,
-      message: `Faucet returned non-JSON response (status ${resp.status}). Manual fallback: https://faucet.circle.com`,
+      message: `Faucet returned non-JSON response (status ${resp.status}). The API may have changed again. Manual fallback: https://faucet.circle.com`,
     };
   }
 
-  if (!resp.ok) {
-    const err = data as { message?: string; error?: string };
+  // GraphQL always returns 200; errors are in the body.
+  const gqlData = data as {
+    data?: { requestToken?: { hash?: string } };
+    errors?: Array<{ message?: string }>;
+  };
+
+  if (gqlData.errors && gqlData.errors.length > 0) {
+    const msg = gqlData.errors[0]?.message ?? "unknown GraphQL error";
+
+    // reCAPTCHA block — Circle requires browser-side token; headless agents can't satisfy it.
+    if (msg.toLowerCase().includes("recaptcha")) {
+      return {
+        success: false,
+        message: `Circle faucet requires reCAPTCHA verification — automated dispense is blocked. Visit https://faucet.circle.com and request USDC for ${address} manually.`,
+      };
+    }
+
+    // Rate limit expressed as a GraphQL error (no HTTP 429 on GraphQL).
+    if (msg.toLowerCase().includes("rate") || msg.toLowerCase().includes("limit")) {
+      return {
+        success: false,
+        message: `Faucet rate-limited: ${msg}. Wait an hour or visit https://faucet.circle.com.`,
+      };
+    }
+
     return {
       success: false,
-      message: `Faucet rejected: ${err.message ?? err.error ?? "unknown"}. Manual fallback: https://faucet.circle.com`,
+      message: `Faucet rejected: ${msg}. Manual fallback: https://faucet.circle.com`,
     };
   }
 
-  const ok = data as { txHash?: string; transactionHash?: string };
+  const txHash = gqlData.data?.requestToken?.hash;
   return {
     success: true,
-    txHash: ok.txHash ?? ok.transactionHash,
+    txHash,
     message: `USDC dispatched to ${address}. Confirmation usually within 1 minute.`,
   };
 }

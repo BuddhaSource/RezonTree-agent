@@ -40,6 +40,7 @@ import {
   type FeeShare,
   type Funds,
   buildEnvelopeForSigning,
+  hashEnvelopeStruct,
 } from "../intents/envelope.js";
 import { buildSponsorWitness } from "../intents/sponsor-witness.js";
 import { buildCosponsorWitness } from "../intents/cosponsor-witness.js";
@@ -53,9 +54,74 @@ import {
   type VoteWitness,
 } from "../intents/vote-witness.js";
 import {
+  buildAbandonWitness,
+  type AbandonWitness,
+} from "../intents/abandon-witness.js";
+import {
+  buildRefundWitness,
+  type RefundWitness,
+} from "../intents/refund-witness.js";
+import {
+  buildClaimWitness,
+  type ClaimWitness,
+} from "../intents/claim-witness.js";
+import {
+  buildSettleWitness,
+  type FeeDistribution,
+  type SettleWitness,
+  type SlashEntry,
+} from "../intents/settle-witness.js";
+import {
+  broadcastSettle,
   broadcastSponsorSubmit,
   broadcastSubmit,
+  broadcastPullValue,
+  encodeRefundWitnessBytes,
+  encodeClaimWitnessBytes,
 } from "./quadphase-broadcast.js";
+import { redactBearer } from "../utils/redact.js";
+
+// BYTES32_RE validates `0x` + 64 lowercase or uppercase hex chars.
+// Used by runRefundFlow to guard `sourceIntentHash` against malformed
+// input that would silently produce wrong stakeOp selection or chain
+// reverts with opaque errors. Audit H2.
+const BYTES32_RE = /^0x[0-9a-fA-F]{64}$/;
+
+// ZERO_BYTES32 is the canonical sentinel for "sponsor refund" mode
+// (vs stake refund where sourceIntentHash points at the
+// commit/vote intent). Compared as a constant so callers can't
+// accidentally pass a non-canonical zero hash like "0x00".
+const ZERO_BYTES32 = "0x" + "0".repeat(64);
+
+// ─── Intent-hash drift fence ────────────────────────────────────────
+//
+// R-INTENT-HASH-IS-MATCH-KEY: the client MUST locally recompute the
+// EIP-712 intent hash from the constructed envelope and assert it
+// matches the preflight-asserted `expectedIntentHash` BEFORE signing.
+// Mismatch is fatal — a signature past a drifted hash will reconcile
+// onto a row the backend can't match, burning gas and leaving the
+// chain ahead of the DB. Both sides recompute from the same EIP-712
+// shape; any divergence indicates the client built a different
+// envelope (wrong nonce, wrong amounts, stale feeShares, etc.).
+//
+// Called from every runXxxFlow that takes an `expectedIntentHash`
+// from preflight. Flows that don't have a preflight (abandon today,
+// or refund/claim/commit when `expectedIntentHash` is omitted) skip
+// the assertion harmlessly — local hash is still the value sent to
+// the backend.
+export function assertIntentHashMatch(
+  expected: Hex | undefined,
+  local: Hex,
+): void {
+  if (!expected) return;
+  if (expected.toLowerCase() !== local.toLowerCase()) {
+    throw new Error(
+      `intent hash drift: expected ${expected} (preflight) !== ${local} (local recompute). ` +
+        `Client envelope diverged from backend's canonical params — never sign past this. ` +
+        `Re-run preflight and rebuild the envelope from its response.`,
+    );
+  }
+}
 
 // ─── USDC allowance gate ─────────────────────────────────────────────
 
@@ -198,12 +264,17 @@ export async function runSponsorFlow(
     funds,
   };
 
-  // 3. Sign.
+  // 3. Sign — but first recompute the EIP-712 intent hash locally and
+  // assert it matches the preflight-asserted expectedIntentHash. Drift
+  // here means the client built a different envelope than the backend
+  // canonicalised — never sign past it (R-INTENT-HASH-IS-MATCH-KEY).
   const typedData = buildEnvelopeForSigning({
     envelope,
     chainId: p.chainId,
     forgeAddress: p.forgeAddress,
   });
+  const localIntentHash = hashEnvelopeStruct(envelope);
+  assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
   const account = privateKeyToAccount(p.privateKey);
   const signature = (await account.signTypedData({
     domain: typedData.domain,
@@ -213,7 +284,7 @@ export async function runSponsorFlow(
   })) as Hex;
 
   const result: SponsorFlowResult = {
-    intentHash: "0x" as Hex, // backend fills this in step 4
+    intentHash: localIntentHash,
     signature,
     envelope,
   };
@@ -244,7 +315,7 @@ export async function runSponsorFlow(
   const text = await res.text();
   if (!res.ok) {
     throw new Error(
-      `runSponsorFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${text}`,
+      `runSponsorFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
     );
   }
   const parsed = JSON.parse(text) as {
@@ -335,6 +406,10 @@ export async function runCosponsorFlow(
     chainId: p.chainId,
     forgeAddress: p.forgeAddress,
   });
+  // R-INTENT-HASH-IS-MATCH-KEY: recompute locally + assert against
+  // preflight before signing.
+  const localIntentHash = hashEnvelopeStruct(envelope);
+  assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
   const account = privateKeyToAccount(p.privateKey);
   const signature = (await account.signTypedData({
     domain: typedData.domain,
@@ -344,7 +419,7 @@ export async function runCosponsorFlow(
   })) as Hex;
 
   const result: CosponsorFlowResult = {
-    intentHash: "0x" as Hex,
+    intentHash: localIntentHash,
     signature,
     envelope,
   };
@@ -370,11 +445,11 @@ export async function runCosponsorFlow(
   const text = await res.text();
   if (!res.ok) {
     throw new Error(
-      `runCosponsorFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${text}`,
+      `runCosponsorFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
     );
   }
   const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
-  result.intentHash = (parsed.intentHash ?? p.expectedIntentHash) as Hex;
+  result.intentHash = (parsed.intentHash ?? localIntentHash) as Hex;
   result.backendStatus = parsed.status;
 
   const txHash = await broadcastSubmit(p.walletClient, {
@@ -401,8 +476,15 @@ export interface CommitFlowParams {
   forgeAddress: Address;
   chainId: number;
 
-  /** Server-asserted intentHash from the preflight response. */
-  expectedIntentHash: Hex;
+  /**
+   * Server-asserted intentHash from the preflight response.
+   * Optional for commit: the server cannot pre-compute it because the
+   * contentHash (from the solution body) is unknown at preflight time.
+   * When absent, runCommitFlow derives the hash locally from the built
+   * envelope via hashEnvelopeStruct() — the universal intentHash per
+   * R-INTENT-HASH-IS-MATCH-KEY, which the backend re-derives at Stage 2.
+   */
+  expectedIntentHash?: Hex;
 
   // CommitWitness fields.
   solutionBody: string;
@@ -465,6 +547,19 @@ export async function runCommitFlow(
     chainId: p.chainId,
     forgeAddress: p.forgeAddress,
   });
+  // Compute intentHash locally from the fully-specified envelope.
+  // The commit preflight cannot pre-compute this because contentHash is
+  // derived from the solution body, which is only known here.
+  // hashEnvelopeStruct is the universal intentHash per
+  // R-INTENT-HASH-IS-MATCH-KEY — the same struct hash the backend
+  // re-derives at Stage 2 and the chain emits as event.intent_hash.
+  const localIntentHash = hashEnvelopeStruct(envelope);
+  // R-INTENT-HASH-IS-MATCH-KEY: when preflight pre-asserted a hash
+  // (rare for commit since contentHash is body-derived, but supported
+  // by the API), enforce match before signing.
+  assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
+  const intentHashToSend = p.expectedIntentHash ?? localIntentHash;
+
   const account = privateKeyToAccount(p.privateKey);
   const signature = (await account.signTypedData({
     domain: typedData.domain,
@@ -474,7 +569,7 @@ export async function runCommitFlow(
   })) as Hex;
 
   const result: CommitFlowResult = {
-    intentHash: "0x" as Hex,
+    intentHash: localIntentHash,
     signature,
     envelope,
   };
@@ -493,18 +588,18 @@ export async function runCommitFlow(
         typedData: serializeEnvelope(envelope),
         content: serializeCommitWitness(witness),
         signature,
-        expectedIntentHash: p.expectedIntentHash,
+        expectedIntentHash: intentHashToSend,
       }),
     },
   );
   const text = await res.text();
   if (!res.ok) {
     throw new Error(
-      `runCommitFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${text}`,
+      `runCommitFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
     );
   }
   const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
-  result.intentHash = (parsed.intentHash ?? p.expectedIntentHash) as Hex;
+  result.intentHash = (parsed.intentHash ?? localIntentHash) as Hex;
   result.backendStatus = parsed.status;
 
   const txHash = await broadcastSubmit(p.walletClient, {
@@ -603,6 +698,15 @@ export async function runVoteFlow(
     chainId: p.chainId,
     forgeAddress: p.forgeAddress,
   });
+  // R-INTENT-HASH-IS-MATCH-KEY: recompute locally. A vote's intent hash
+  // is allocation-dependent, so a vote preflight can only return an
+  // empty-allocations placeholder (VotePreflight H-8) — callers therefore
+  // pass expectedIntentHash undefined and this assert no-ops. The real
+  // localIntentHash below is the claim the backend recomputes against at
+  // Stage 2 (mirrors runCommitFlow's intentHashToSend pattern).
+  const localIntentHash = hashEnvelopeStruct(envelope);
+  assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
+  const intentHashToSend = p.expectedIntentHash ?? localIntentHash;
   const account = privateKeyToAccount(p.privateKey);
   const signature = (await account.signTypedData({
     domain: typedData.domain,
@@ -612,7 +716,7 @@ export async function runVoteFlow(
   })) as Hex;
 
   const result: VoteFlowResult = {
-    intentHash: "0x" as Hex,
+    intentHash: localIntentHash,
     signature,
     envelope,
   };
@@ -631,7 +735,7 @@ export async function runVoteFlow(
         typedData: serializeEnvelope(envelope),
         content: serializeVoteWitness(witness),
         signature,
-        expectedIntentHash: p.expectedIntentHash,
+        expectedIntentHash: intentHashToSend,
         voteSaltToken: p.voteSaltToken,
       }),
     },
@@ -639,11 +743,11 @@ export async function runVoteFlow(
   const text = await res.text();
   if (!res.ok) {
     throw new Error(
-      `runVoteFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${text}`,
+      `runVoteFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
     );
   }
   const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
-  result.intentHash = (parsed.intentHash ?? p.expectedIntentHash) as Hex;
+  result.intentHash = (parsed.intentHash ?? localIntentHash) as Hex;
   result.backendStatus = parsed.status;
 
   const txHash = await broadcastSubmit(p.walletClient, {
@@ -680,7 +784,7 @@ export function stringifyWithBigInts(obj: unknown): string {
   );
 }
 
-function serializeSponsorWitness(
+export function serializeSponsorWitness(
   w: import("../intents/sponsor-witness.js").SponsorWitness,
 ): Record<string, unknown> {
   return {
@@ -709,7 +813,7 @@ function serializeCosponsorWitness(
   };
 }
 
-function serializeCommitWitness(w: CommitWitness): Record<string, unknown> {
+export function serializeCommitWitness(w: CommitWitness): Record<string, unknown> {
   return {
     actionTag: w.actionTag,
     solutionBody: w.solutionBody,
@@ -728,13 +832,18 @@ function serializeVoteWitness(w: VoteWitness): Record<string, unknown> {
   };
 }
 
-function serializeEnvelope(e: Envelope): Record<string, unknown> {
+export function serializeEnvelope(e: Envelope): Record<string, unknown> {
   return {
     signer: e.signer,
     questionId: e.qid,
     action: e.action,
     nonce: encodeBigIntForWire(e.nonce),
-    expiresAt: Number(e.expiresAt),
+    // Audit H1: bigint → wire-int via the same sentinel pattern as
+    // every other uint256. `Number(bigint)` was silently lossy for
+    // values past 2^53-1, and the inconsistency with the rest of the
+    // envelope fields was a foot-gun for future deadlines that scale
+    // beyond timestamp range.
+    expiresAt: encodeBigIntForWire(e.expiresAt),
     contentHash: e.contentHash,
     funds: {
       token: e.funds.token,
@@ -747,4 +856,712 @@ function serializeEnvelope(e: Envelope): Record<string, unknown> {
       stakeOp: e.funds.stakeOp,
     },
   };
+}
+
+function serializeAbandonWitness(w: AbandonWitness): Record<string, unknown> {
+  return {
+    actionTag: w.actionTag,
+    expectedStatus: w.expectedStatus,
+    reason: w.reason,
+  };
+}
+
+function serializeRefundWitness(w: RefundWitness): Record<string, unknown> {
+  return {
+    actionTag: w.actionTag,
+    sourceIntentHash: w.sourceIntentHash,
+    expectedAmount: encodeBigIntForWire(w.expectedAmount),
+    expectedStatus: w.expectedStatus,
+  };
+}
+
+function serializeClaimWitness(w: ClaimWitness): Record<string, unknown> {
+  return {
+    actionTag: w.actionTag,
+    proof: w.proof,
+    leafIndex: encodeBigIntForWire(w.leafIndex),
+    leafAmount: encodeBigIntForWire(w.leafAmount),
+    role: w.role,
+    expectedStatus: w.expectedStatus,
+  };
+}
+
+function serializeSettleWitness(w: SettleWitness): Record<string, unknown> {
+  return {
+    actionTag: w.actionTag,
+    merkleRoot: w.merkleRoot,
+    totalClaimable: encodeBigIntForWire(w.totalClaimable),
+    feeTotal: encodeBigIntForWire(w.feeTotal),
+    slashes: w.slashes.map((s: SlashEntry) => ({
+      intentHash: s.intentHash,
+      amount: encodeBigIntForWire(s.amount),
+      role: s.role,
+    })),
+    leafCount: encodeBigIntForWire(w.leafCount),
+    slashEntryOffset: encodeBigIntForWire(w.slashEntryOffset),
+    totalSlashEntries: encodeBigIntForWire(w.totalSlashEntries),
+    feeDistributions: w.feeDistributions.map((f: FeeDistribution) => ({
+      recipient: f.recipient,
+      amount: encodeBigIntForWire(f.amount),
+    })),
+  };
+}
+
+// ─── Abandon flow ────────────────────────────────────────────────────
+//
+// Permissionless Open→Abandoned transition by the question's oracle.
+// (Note: the chain restricts Abandon to `env.signer == q.oracle`;
+//  rev2 §10.1 C1-sm. Anyone-can-abandon comes via forceRecover
+//  post-`recoverableAt`, a different path.)
+//
+// AUDIT C1 FIX — the earlier version of this flow skipped the backend
+// POST and broadcast directly. That broke the reconciler: when the
+// chain Abandon event arrived, the cycle-runner's LEFT JOIN against
+// signed_intents found no row, processOne classified the event as
+// OutcomeHeld, and the question's DB status stayed `open` forever
+// even though the chain said `Abandoned`. Exactly the R-CHAIN-IS-
+// AUTHORITY drift this codebase exists to prevent. We POST a staged
+// row first, then broadcast — mirroring runRefundFlow / runClaimFlow.
+//
+// Preflight is not available (intent.go dispatcher returns 501 for
+// `abandon` — PR2 roadmap), so the caller computes the envelope
+// fields locally. The submit endpoint accepts the staged row even
+// without preflight (per the 501's recovery action string itself).
+
+export interface AbandonFlowParams {
+  signer: Address;
+  qid: Hex;
+  questionId: string;
+  nonce: bigint;
+  expiresAt: bigint;
+  forgeAddress: Address;
+  chainId: number;
+  /** USDC (or whatever the question's bountyToken is). The chain
+   *  rejects token-zero in the funds shape gate even though Abandon
+   *  moves no funds. Pass the question's chain_token verbatim. */
+  token: Address;
+  /** Reason encoded as a bytes32 string. Common values mirror
+   *  questions.abandonment_reason: 'timeout' / 'no_solutions' /
+   *  'owner_cancelled'. Pad/zero-pad to 32 bytes via stringToHex(...,
+   *  { size: 32 }) at the call site. */
+  reason: Hex;
+  /** On-chain QuestionStatus the signer expects (the chain's enum
+   *  Open=1). The contract reverts on mismatch — defense against
+   *  signing into a status the signer didn't intend. */
+  expectedStatus: number;
+  /** Backend bearer JWT for the POST /intents stage. Required (the
+   *  staged row is the reconciler's match key — see C1 fix above). */
+  bearerToken: string;
+  /** API base url (http://localhost:8080 in dev). */
+  baseUrl: string;
+  walletClient: WalletClient;
+  privateKey: Hex;
+}
+
+export interface AbandonFlowResult {
+  intentHash: Hex;
+  signature: Hex;
+  envelope: Envelope;
+  backendStatus?: string;
+  txHash?: Hex;
+}
+
+export async function runAbandonFlow(
+  p: AbandonFlowParams,
+): Promise<AbandonFlowResult> {
+  const { witness, contentHash } = buildAbandonWitness({
+    expectedStatus: p.expectedStatus,
+    reason: p.reason,
+  });
+  // Abandon funds-shape (QuadphaseShapes.assertFundsShape): all
+  // amounts zero, stakeOp=None, but token MUST be non-zero per the
+  // shared "shape:token-must-be-nonzero" gate that fires before the
+  // per-action branch.
+  const funds: Funds = {
+    token: p.token,
+    poolIn: 0n,
+    poolOut: 0n,
+    feeAmount: 0n,
+    feeShareBps: 0,
+    feeShares: [],
+    stakeAmount: 0n,
+    stakeOp: StakeOp.None,
+  };
+  const envelope: Envelope = {
+    signer: p.signer,
+    qid: p.qid,
+    action: ActionTag.Abandon,
+    nonce: p.nonce,
+    expiresAt: p.expiresAt,
+    contentHash,
+    funds,
+  };
+  const typedData = buildEnvelopeForSigning({
+    envelope,
+    chainId: p.chainId,
+    forgeAddress: p.forgeAddress,
+  });
+  const intentHash = hashEnvelopeStruct(envelope);
+  // R-INTENT-HASH-IS-MATCH-KEY: abandon has no preflight today so the
+  // local hash is the canonical value sent forward; this no-ops, but
+  // keeps the assertion site uniform across every flow for future
+  // preflight wiring.
+  assertIntentHashMatch(undefined, intentHash);
+  const account = privateKeyToAccount(p.privateKey);
+  const signature = (await account.signTypedData({
+    domain: typedData.domain,
+    types: typedData.types,
+    primaryType: typedData.primaryType,
+    message: typedData.message as never,
+  })) as Hex;
+
+  const result: AbandonFlowResult = {
+    intentHash,
+    signature,
+    envelope,
+  };
+
+  // C1: stage the row in the backend BEFORE broadcasting. The
+  // reconciler can only confirm chain events whose intent_hash
+  // matches a staged signed_intents row.
+  const res = await fetch(
+    `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${p.bearerToken}`,
+        Prefer: "return=minimal",
+      },
+      body: stringifyWithBigInts({
+        actionType: "abandon",
+        typedData: serializeEnvelope(envelope),
+        content: serializeAbandonWitness(witness),
+        signature,
+        expectedIntentHash: intentHash,
+      }),
+    },
+  );
+  const text = await res.text();
+  if (!res.ok) {
+    // C2: redact any echoed Authorization header before it reaches
+    // the LLM's error message.
+    throw new Error(
+      `runAbandonFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
+    );
+  }
+  const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
+  result.intentHash = (parsed.intentHash ?? intentHash) as Hex;
+  result.backendStatus = parsed.status;
+
+  const txHash = await broadcastSubmit(p.walletClient, {
+    forgeAddress: p.forgeAddress,
+    envelope,
+    signature,
+  });
+  result.txHash = txHash;
+  return result;
+}
+
+// ─── Refund flow ─────────────────────────────────────────────────────
+//
+// Per-actor "pull my funds back from an Abandoned (or Settled with
+// un-slashed remainder) question" flow. Three sub-paths share this
+// shape:
+//
+//   sourceIntentHash == bytes32(0) → sponsor / cosponsor refund:
+//     contract releases sponsorContributions[qid][signer] (the
+//     signer's cumulative bounty contribution on this question).
+//   sourceIntentHash != 0 → commit / vote stake refund: contract
+//     releases stakes[ih] iff stakeOwner[ih] == env.signer.
+//
+// Backend preflight (`actionType=refund` → RefundDraft) returns the
+// envelope template + expectedAmount + sourceIntentHash. If the
+// caller already has those values (e.g. queried directly from
+// chain), they can skip preflight and pass them in — the backend
+// POST is still needed to stage the signed_intents row for
+// post-confirm projection.
+
+export interface RefundFlowParams {
+  signer: Address;
+  qid: Hex;
+  questionId: string;
+  nonce: bigint;
+  expiresAt: bigint;
+  forgeAddress: Address;
+  chainId: number;
+  token: Address;
+  /** bytes32(0) for sponsor refund; the committed solution/vote
+   *  intentHash for stake refunds. */
+  sourceIntentHash: Hex;
+  /** Exact amount the contract will release. The witness encodes
+   *  this; mismatch reverts with 'refund:amount-mismatch'. Preflight
+   *  populates it from sponsorContributions/stakes lookup. */
+  expectedAmount: bigint;
+  /** On-chain QuestionStatus enum the signer expects:
+   *  Abandoned=4, Settled=3. The contract reverts on mismatch. */
+  expectedStatus: number;
+  /** Backend bearer JWT for the POST /intents stage. */
+  bearerToken: string;
+  /** API base url (http://localhost:8080 in dev). */
+  baseUrl: string;
+  /** Optional pre-computed intent hash from preflight. When omitted,
+   *  the flow derives it locally and uses that. */
+  expectedIntentHash?: Hex;
+  walletClient: WalletClient;
+  privateKey: Hex;
+}
+
+export interface RefundFlowResult {
+  intentHash: Hex;
+  signature: Hex;
+  envelope: Envelope;
+  backendStatus?: string;
+  txHash?: Hex;
+}
+
+export async function runRefundFlow(
+  p: RefundFlowParams,
+): Promise<RefundFlowResult> {
+  // AUDIT H2: validate sourceIntentHash up-front. The chain expects
+  // bytes32 (66 chars including `0x`). Without this guard, a caller
+  // passing `0x00` (66 chars short) would silently bypass the
+  // zero-sentinel check at the StakeOp decision, set the wrong
+  // stakeOp, and produce an opaque chain revert rather than a clear
+  // client-side type error.
+  if (!BYTES32_RE.test(p.sourceIntentHash)) {
+    throw new Error(
+      `runRefundFlow: sourceIntentHash must be 0x + 64 hex chars (bytes32); got "${p.sourceIntentHash}" (${p.sourceIntentHash.length} chars)`,
+    );
+  }
+  const { witness, contentHash } = buildRefundWitness({
+    sourceIntentHash: p.sourceIntentHash,
+    expectedAmount: p.expectedAmount,
+    expectedStatus: p.expectedStatus,
+  });
+  // Refund funds-shape: poolOut = expectedAmount, everything else zero,
+  // stakeOp = None for BOTH sponsor and stake refunds. The contract
+  // disambiguates sponsor-vs-stake by sourceIntentHash (== 0 ⇒ sponsor),
+  // NOT by stakeOp, and the backend's canonical refund envelope
+  // (newRefundFunds) hashes StakeOp.None unconditionally — so the client
+  // must use None too or the envelope hash drifts from the backend's
+  // expectedIntentHash on every stake refund. #629.
+  const funds: Funds = {
+    token: p.token,
+    poolIn: 0n,
+    poolOut: p.expectedAmount,
+    feeAmount: 0n,
+    feeShareBps: 0,
+    feeShares: [],
+    stakeAmount: 0n,
+    stakeOp: StakeOp.None,
+  };
+  const envelope: Envelope = {
+    signer: p.signer,
+    qid: p.qid,
+    action: ActionTag.Refund,
+    nonce: p.nonce,
+    expiresAt: p.expiresAt,
+    contentHash,
+    funds,
+  };
+  const typedData = buildEnvelopeForSigning({
+    envelope,
+    chainId: p.chainId,
+    forgeAddress: p.forgeAddress,
+  });
+  const localIntentHash = hashEnvelopeStruct(envelope);
+  // R-INTENT-HASH-IS-MATCH-KEY: refund preflight (RefundDraft) returns
+  // expectedIntentHash when available; assert before signing.
+  assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
+  const intentHashToSend = p.expectedIntentHash ?? localIntentHash;
+  const account = privateKeyToAccount(p.privateKey);
+  const signature = (await account.signTypedData({
+    domain: typedData.domain,
+    types: typedData.types,
+    primaryType: typedData.primaryType,
+    message: typedData.message as never,
+  })) as Hex;
+
+  const result: RefundFlowResult = {
+    intentHash: localIntentHash,
+    signature,
+    envelope,
+  };
+
+  const res = await fetch(
+    `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${p.bearerToken}`,
+        Prefer: "return=minimal",
+      },
+      body: stringifyWithBigInts({
+        actionType: "refund",
+        typedData: serializeEnvelope(envelope),
+        content: serializeRefundWitness(witness),
+        signature,
+        expectedIntentHash: intentHashToSend,
+      }),
+    },
+  );
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(
+      `runRefundFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
+    );
+  }
+  const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
+  result.intentHash = (parsed.intentHash ?? localIntentHash) as Hex;
+  result.backendStatus = parsed.status;
+
+  const witnessBytes = encodeRefundWitnessBytes(witness);
+  const txHash = await broadcastPullValue(p.walletClient, {
+    forgeAddress: p.forgeAddress,
+    envelope,
+    signature,
+    witnessBytes,
+  });
+  result.txHash = txHash;
+  return result;
+}
+
+// ─── Claim flow ──────────────────────────────────────────────────────
+//
+// Winner's pull-side flow for Settled questions. Backend preflight
+// (`actionType=claim` → ClaimDraft) returns the Merkle proof +
+// leafIndex/leafAmount/role from the settlement_claims projection.
+// SDK signs the envelope verbatim and calls pullValue() — the chain
+// verifies the proof against the stored merkle root and releases
+// poolOut into the recipient (always == env.signer).
+
+export interface ClaimFlowParams {
+  signer: Address;
+  qid: Hex;
+  questionId: string;
+  nonce: bigint;
+  expiresAt: bigint;
+  forgeAddress: Address;
+  chainId: number;
+  token: Address;
+  /** Merkle proof from preflight (Round-3 ClaimDraft response). */
+  proof: Hex[];
+  leafIndex: bigint;
+  leafAmount: bigint;
+  /** Role byte for dual-role disambiguation (solver / voter /
+   *  sponsor — see contract for the enum). */
+  role: number;
+  /** On-chain QuestionStatus enum the signer expects (Settled=3). */
+  expectedStatus: number;
+  bearerToken: string;
+  baseUrl: string;
+  expectedIntentHash?: Hex;
+  walletClient: WalletClient;
+  privateKey: Hex;
+}
+
+export interface ClaimFlowResult {
+  intentHash: Hex;
+  signature: Hex;
+  envelope: Envelope;
+  backendStatus?: string;
+  txHash?: Hex;
+}
+
+export async function runClaimFlow(
+  p: ClaimFlowParams,
+): Promise<ClaimFlowResult> {
+  const { witness, contentHash } = buildClaimWitness({
+    proof: p.proof,
+    leafIndex: p.leafIndex,
+    leafAmount: p.leafAmount,
+    role: p.role,
+    expectedStatus: p.expectedStatus,
+  });
+  // Claim funds-shape: poolOut = leafAmount, everything else zero,
+  // stakeOp = None.
+  const funds: Funds = {
+    token: p.token,
+    poolIn: 0n,
+    poolOut: p.leafAmount,
+    feeAmount: 0n,
+    feeShareBps: 0,
+    feeShares: [],
+    stakeAmount: 0n,
+    stakeOp: StakeOp.None,
+  };
+  const envelope: Envelope = {
+    signer: p.signer,
+    qid: p.qid,
+    action: ActionTag.Claim,
+    nonce: p.nonce,
+    expiresAt: p.expiresAt,
+    contentHash,
+    funds,
+  };
+  const typedData = buildEnvelopeForSigning({
+    envelope,
+    chainId: p.chainId,
+    forgeAddress: p.forgeAddress,
+  });
+  const localIntentHash = hashEnvelopeStruct(envelope);
+  // R-INTENT-HASH-IS-MATCH-KEY: claim preflight (ClaimDraft) returns
+  // expectedIntentHash when available; assert before signing.
+  assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
+  const intentHashToSend = p.expectedIntentHash ?? localIntentHash;
+  const account = privateKeyToAccount(p.privateKey);
+  const signature = (await account.signTypedData({
+    domain: typedData.domain,
+    types: typedData.types,
+    primaryType: typedData.primaryType,
+    message: typedData.message as never,
+  })) as Hex;
+
+  const result: ClaimFlowResult = {
+    intentHash: localIntentHash,
+    signature,
+    envelope,
+  };
+
+  const res = await fetch(
+    `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${p.bearerToken}`,
+        Prefer: "return=minimal",
+      },
+      body: stringifyWithBigInts({
+        actionType: "claim",
+        typedData: serializeEnvelope(envelope),
+        content: serializeClaimWitness(witness),
+        signature,
+        expectedIntentHash: intentHashToSend,
+      }),
+    },
+  );
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(
+      `runClaimFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
+    );
+  }
+  const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
+  result.intentHash = (parsed.intentHash ?? localIntentHash) as Hex;
+  result.backendStatus = parsed.status;
+
+  const witnessBytes = encodeClaimWitnessBytes(witness);
+  const txHash = await broadcastPullValue(p.walletClient, {
+    forgeAddress: p.forgeAddress,
+    envelope,
+    signature,
+    witnessBytes,
+  });
+  result.txHash = txHash;
+  return result;
+}
+
+// ─── Settle flow ─────────────────────────────────────────────────────
+//
+// Oracle's settlement-publication flow. The signer is the question's
+// oracle (the address bound on-chain via sponsorSubmit). The witness
+// carries the chain-critical fields the universal Envelope can't hold:
+// merkleRoot, totalClaimable, feeTotal, the slash set, the per-recipient
+// feeDistributions, and the chunked-publish offsets. The contract flips
+// Open → Settling on the
+// first chunk and Settling → Settled on the final chunk (when
+// slashEntryOffset + slashes.length == totalSlashEntries).
+//
+// Mirrors runClaimFlow / runRefundFlow exactly:
+//   1. build SettleWitness (+ contentHash) from oracle-computed inputs.
+//   2. build Envelope(action=Settle) — Settle funds-shape is all-zero
+//      with token = q.token (the funds-shape gate requires non-zero
+//      token even though settle moves no envelope-level funds; slash
+//      moves happen inside the contract).
+//   3. EIP-712 sign the envelope.
+//   4. recompute hashEnvelopeStruct + assertIntentHashMatch
+//      (R-INTENT-HASH-IS-MATCH-KEY) before signing past it.
+//   5. POST /v1/questions/:id/intents actionType="settle" to stage the
+//      signed_intents row so the reconciler can match the chain event
+//      by intent_hash (R-RECONCILER-OWNS-CONFIRMATION). The backend
+//      submit dispatcher accepts settle and returns 202 (the per-action
+//      settlement content write is reconciler-owned; the staged row IS
+//      the match key). If the POST is unavailable (older backend), pass
+//      skipBackendPost=true to broadcast-only — the chain still settles,
+//      but the reconciler can't confirm until a row exists.
+//   6. broadcastSettle → publishSettlement(env, sig, witnessBytes).
+
+export interface SettleFlowParams {
+  signer: Address; // the question's oracle
+  qid: Hex;
+  questionId: string;
+  nonce: bigint;
+  expiresAt: bigint;
+  forgeAddress: Address;
+  chainId: number;
+  /** The question's bountyToken. The funds-shape gate rejects
+   *  token-zero even though settle moves no envelope-level funds. */
+  token: Address;
+
+  // SettleWitness fields — computed by the oracle (off-chain merkle
+  // tree build + slash determination + realized-outcome fee aggregation).
+  merkleRoot: Hex;
+  totalClaimable: bigint;
+  /** Total fee skimmed at settlement (economics.md §0). The contract
+   *  pins it to `poolAmount × q.feeShareBps / 10000`; Σ feeDistributions
+   *  amounts must equal it. Renamed from the pre-revision `dustFolded`. */
+  feeTotal: bigint;
+  slashes: SlashEntry[];
+  leafCount: bigint;
+  slashEntryOffset: bigint;
+  totalSlashEntries: bigint;
+  /** Per-recipient fee credits (platform first, then referrers),
+   *  aggregated by the oracle. Credited to accruedFees[recipient][token]
+   *  by the contract; empty when feeTotal == 0. */
+  feeDistributions: FeeDistribution[];
+
+  /** Backend bearer JWT for the POST /intents stage. Required unless
+   *  skipBackendPost is set. */
+  bearerToken?: string;
+  /** API base url (http://localhost:8080 in dev). */
+  baseUrl?: string;
+  /** Broadcast-only mode: skip the backend POST. Use only when the
+   *  backend's intent dispatcher doesn't accept actionType="settle"
+   *  (e.g. an older deploy). Leaves the row unstaged — the reconciler
+   *  can't confirm until a matching signed_intents row exists. */
+  skipBackendPost?: boolean;
+  /** Optional pre-computed intent hash. When omitted, derived locally. */
+  expectedIntentHash?: Hex;
+  walletClient: WalletClient;
+  privateKey: Hex;
+}
+
+export interface SettleFlowResult {
+  intentHash: Hex;
+  signature: Hex;
+  envelope: Envelope;
+  witness: SettleWitness;
+  backendStatus?: string;
+  /** True when the backend POST was skipped (broadcast-only mode). */
+  backendSkipped?: boolean;
+  txHash?: Hex;
+}
+
+export async function runSettleFlow(
+  p: SettleFlowParams,
+): Promise<SettleFlowResult> {
+  // 1. Witness.
+  const { witness, contentHash } = buildSettleWitness({
+    merkleRoot: p.merkleRoot,
+    totalClaimable: p.totalClaimable,
+    feeTotal: p.feeTotal,
+    slashes: p.slashes,
+    leafCount: p.leafCount,
+    slashEntryOffset: p.slashEntryOffset,
+    totalSlashEntries: p.totalSlashEntries,
+    feeDistributions: p.feeDistributions,
+  });
+
+  // 2. Envelope — Settle funds-shape: all amounts zero, stakeOp None,
+  // token non-zero (shared funds-shape gate).
+  const funds: Funds = {
+    token: p.token,
+    poolIn: 0n,
+    poolOut: 0n,
+    feeAmount: 0n,
+    feeShareBps: 0,
+    feeShares: [],
+    stakeAmount: 0n,
+    stakeOp: StakeOp.None,
+  };
+  const envelope: Envelope = {
+    signer: p.signer,
+    qid: p.qid,
+    action: ActionTag.Settle,
+    nonce: p.nonce,
+    expiresAt: p.expiresAt,
+    contentHash,
+    funds,
+  };
+
+  // 3 + 4. Recompute + assert before signing (R-INTENT-HASH-IS-MATCH-KEY).
+  const typedData = buildEnvelopeForSigning({
+    envelope,
+    chainId: p.chainId,
+    forgeAddress: p.forgeAddress,
+  });
+  const localIntentHash = hashEnvelopeStruct(envelope);
+  assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
+  const intentHashToSend = p.expectedIntentHash ?? localIntentHash;
+  const account = privateKeyToAccount(p.privateKey);
+  const signature = (await account.signTypedData({
+    domain: typedData.domain,
+    types: typedData.types,
+    primaryType: typedData.primaryType,
+    message: typedData.message as never,
+  })) as Hex;
+
+  const result: SettleFlowResult = {
+    intentHash: localIntentHash,
+    signature,
+    envelope,
+    witness,
+  };
+
+  // 5. Backend POST — stage the signed_intents row so the reconciler
+  // matches the chain Settle event by intent_hash. Skippable for
+  // broadcast-only operation against a backend whose dispatcher
+  // doesn't route actionType="settle".
+  if (p.skipBackendPost) {
+    result.backendSkipped = true;
+  } else {
+    if (!p.bearerToken || !p.baseUrl) {
+      throw new Error(
+        "runSettleFlow: bearerToken + baseUrl are required unless skipBackendPost is set",
+      );
+    }
+    const res = await fetch(
+      `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${p.bearerToken}`,
+          Prefer: "return=minimal",
+        },
+        body: stringifyWithBigInts({
+          actionType: "settle",
+          typedData: serializeEnvelope(envelope),
+          content: serializeSettleWitness(witness),
+          signature,
+          expectedIntentHash: intentHashToSend,
+        }),
+      },
+    );
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(
+        `runSettleFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
+      );
+    }
+    const parsed = JSON.parse(text) as {
+      intentHash?: string;
+      status?: string;
+    };
+    result.intentHash = (parsed.intentHash ?? localIntentHash) as Hex;
+    result.backendStatus = parsed.status;
+  }
+
+  // 6. Chain broadcast.
+  const txHash = await broadcastSettle(p.walletClient, {
+    forgeAddress: p.forgeAddress,
+    envelope,
+    signature,
+    witness,
+  });
+  result.txHash = txHash;
+  return result;
 }

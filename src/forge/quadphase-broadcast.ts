@@ -24,22 +24,28 @@ import {
   type Account,
   type Address,
   type Hex,
+  type PublicClient,
   type WalletClient,
+  createWalletClient,
   encodeAbiParameters,
+  http,
   parseAbiParameters,
 } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 
 import type { Envelope, FeeShare, Funds } from "../intents/envelope.js";
 import type { SponsorWitness } from "../intents/sponsor-witness.js";
 import type { ClaimWitness } from "../intents/claim-witness.js";
 import type { RefundWitness } from "../intents/refund-witness.js";
+import type { FeeDistribution, SettleWitness, SlashEntry } from "../intents/settle-witness.js";
 
-// ─── Minimal ABI fragments for the three entry points ────────────────
+// ─── ABI fragments for the v2 envelope entry points ──────────────────
 //
-// Kept as a self-contained fragment here so the legacy REZON_FORGE_ABI
-// (still referenced by src/forge/client.ts for backward-compatible
-// helpers) doesn't need a coordinated rewrite. The fragments below are
-// the only chain surface the post-cutover SDK actually broadcasts to.
+// Self-contained fragments for the four universal write entry points
+// (submit / sponsorSubmit / pullValue / publishSettlement). The v1
+// per-action ABI (REZON_FORGE_ABI in the deleted src/forge/abi.ts) was
+// removed in the unified-envelope cutover (#595); these fragments are
+// the only chain surface the SDK broadcasts to.
 
 const FEE_SHARE_TUPLE = {
   type: "tuple",
@@ -108,6 +114,22 @@ export const QUADPHASE_ENTRY_ABI = [
   {
     type: "function",
     name: "pullValue",
+    stateMutability: "nonpayable",
+    inputs: [
+      ENVELOPE_TUPLE,
+      { name: "sig", type: "bytes" },
+      { name: "witnessBytes", type: "bytes" },
+    ],
+    outputs: [],
+  },
+  {
+    // Settle — oracle-signed envelope (action=Settle) carrying the
+    // SettleWitness (merkleRoot + slashes + offsets) as witnessBytes.
+    // Same (env, sig, witnessBytes) ABI as pullValue/sponsorSubmit; the
+    // contract decodes the witness, recomputes hashSettleWitness, and
+    // rejects a contentHash mismatch before any state write.
+    type: "function",
+    name: "publishSettlement",
     stateMutability: "nonpayable",
     inputs: [
       ENVELOPE_TUPLE,
@@ -221,6 +243,39 @@ export function encodeRefundWitnessBytes(w: RefundWitness): Hex {
   );
 }
 
+/** Encode a SettleWitness for `publishSettlement(witnessBytes)`. The
+ *  contract decodes via `abi.decode(witnessBytes, (SettleWitness))`,
+ *  where SettleWitness embeds a `SlashEntry[]` tuple array. Field
+ *  order matches QuadphaseTypes.SettleWitness / settle-witness.ts's
+ *  SETTLE_WITNESS_TYPES byte-for-byte. */
+export function encodeSettleWitnessBytes(w: SettleWitness): Hex {
+  return encodeAbiParameters(
+    parseAbiParameters(
+      "(uint8 actionTag, bytes32 merkleRoot, uint256 totalClaimable, uint256 feeTotal, (bytes32 intentHash, uint256 amount, uint8 role)[] slashes, uint256 leafCount, uint256 slashEntryOffset, uint256 totalSlashEntries, (address recipient, uint256 amount)[] feeDistributions)",
+    ),
+    [
+      {
+        actionTag: w.actionTag,
+        merkleRoot: w.merkleRoot,
+        totalClaimable: w.totalClaimable,
+        feeTotal: w.feeTotal,
+        slashes: w.slashes.map((s: SlashEntry) => ({
+          intentHash: s.intentHash,
+          amount: s.amount,
+          role: s.role,
+        })),
+        leafCount: w.leafCount,
+        slashEntryOffset: w.slashEntryOffset,
+        totalSlashEntries: w.totalSlashEntries,
+        feeDistributions: w.feeDistributions.map((f: FeeDistribution) => ({
+          recipient: f.recipient,
+          amount: f.amount,
+        })),
+      },
+    ],
+  );
+}
+
 // ─── Broadcast helpers ───────────────────────────────────────────────
 
 export interface BroadcastSubmitParams {
@@ -235,6 +290,20 @@ export interface BroadcastSubmitParams {
 /**
  * Broadcasts the universal `submit(env, sig)` entry point. Use for
  * Cosponsor / Commit / Vote / Abandon actions.
+ *
+ * VOTE-PRIVACY INVARIANT — DO NOT ADD THE WITNESS TO THIS CALLDATA.
+ * For a Vote, the witness holds the raw allocations (which solution got how
+ * many points). The chain must NEVER see them: `submit` is called with ONLY
+ * `(envelope, signature)`. The envelope carries an opaque `contentHash =
+ * HashVoteWitness(actionTag, allocations, salt)` where `salt` is a unique
+ * 32-byte server-issued value per voter (signer/vote_salt.go). Because each
+ * voter's salt differs, two voters who allocate IDENTICALLY still produce
+ * different contentHashes — so on-chain their votes are unlinkable and the
+ * allocations are not rainbow-table-enumerable from the public Quadphase
+ * event. The raw witness is POSTed to the backend only (off-chain), for
+ * settle-time tallying. If you ever add `witnessBytes` here for Vote, you
+ * publish every voter's choices on-chain — privacy is gone. (Claim/Refund
+ * use the separate pullValue path, where the witness is non-secret.)
  */
 export async function broadcastSubmit(
   wallet: WalletClient,
@@ -244,6 +313,7 @@ export async function broadcastSubmit(
     address: params.forgeAddress,
     abi: QUADPHASE_ENTRY_ABI,
     functionName: "submit",
+    // (envelope, signature) ONLY — never the witness (see invariant above).
     args: [envelopeAsTuple(params.envelope), params.signature],
     account: wallet.account as Account,
     chain: wallet.chain,
@@ -312,4 +382,85 @@ export async function broadcastPullValue(
     chain: wallet.chain,
     ...(params.gas ? { gas: params.gas } : {}),
   });
+}
+
+export interface BroadcastSettleParams {
+  forgeAddress: Address;
+  envelope: Envelope;
+  signature: Hex;
+  /** The oracle's SettleWitness — abi-encoded to witnessBytes here. */
+  witness: SettleWitness;
+  gas?: bigint;
+}
+
+/**
+ * Broadcasts `publishSettlement(env, sig, witnessBytes)`. The signer is
+ * the question's oracle; the contract decodes the SettleWitness,
+ * recomputes hashSettleWitness, asserts it == env.contentHash, then
+ * flips Open → Settling (first chunk) or Settling → Settled (final
+ * chunk) and moves slashed stakes into the pool atomically with the
+ * merkle-root commit.
+ */
+export async function broadcastSettle(
+  wallet: WalletClient,
+  params: BroadcastSettleParams,
+): Promise<Hex> {
+  const witnessBytes = encodeSettleWitnessBytes(params.witness);
+  return wallet.writeContract({
+    address: params.forgeAddress,
+    abi: QUADPHASE_ENTRY_ABI,
+    functionName: "publishSettlement",
+    args: [envelopeAsTuple(params.envelope), params.signature, witnessBytes],
+    account: wallet.account as Account,
+    chain: wallet.chain,
+    ...(params.gas ? { gas: params.gas } : {}),
+  });
+}
+
+// ─── Wallet + receipt helpers (relocated from the deleted v1 client.ts) ─
+//
+// These two are chain-plumbing primitives the live MCP server + the
+// operator scripts depend on. They were defined in src/forge/client.ts
+// alongside the v1 broadcasters; when that file was deleted in the v2
+// cutover (#595) they moved here so the only surviving import surface is
+// the v2 broadcast module.
+
+/**
+ * Constructs a WalletClient for an agent from a raw private key. Uses
+ * viem's `privateKeyToAccount` so the 0x-prefixed hex from the agent's
+ * HD derivation (src/wallet/derive.ts) is accepted directly.
+ */
+export function makeAgentWalletClient(params: {
+  privateKey: Hex;
+  chainId: number;
+  rpcUrl: string;
+}): WalletClient {
+  const account = privateKeyToAccount(params.privateKey);
+  return createWalletClient({
+    account,
+    chain: {
+      id: params.chainId,
+      name: `chain-${params.chainId}`,
+      nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
+      rpcUrls: { default: { http: [params.rpcUrl] } },
+    },
+    transport: http(params.rpcUrl),
+  });
+}
+
+/**
+ * Awaits the transaction receipt + asserts `status === "success"`.
+ * Throws on revert with the tx hash so the caller can explore the
+ * failure on the block explorer.
+ */
+export async function awaitReceipt(
+  client: PublicClient,
+  hash: Hex,
+): Promise<void> {
+  const receipt = await client.waitForTransactionReceipt({ hash });
+  if (receipt.status !== "success") {
+    throw new Error(
+      `RezonForge call reverted: tx ${hash}; check block explorer for revert reason.`,
+    );
+  }
 }
