@@ -31,7 +31,7 @@ import { createPublicClient, http } from "viem";
 
 import { deriveAgentWallet } from "../../src/wallet/derive.js";
 import { loadLoginDomain } from "../../src/wallet/domain.js";
-import { signWalletLoginIntent } from "../../src/wallet/signer.js";
+import { SessionManager } from "../../src/wallet/session.js";
 import {
   awaitReceipt,
   makeAgentWalletClient,
@@ -76,9 +76,25 @@ export function buildWalletBank(
   return bank;
 }
 
+// Process-wide session cache so repeated loginWallet() calls for the same
+// wallet reuse one JWT (P0: login once, reuse across actions). Keyed by
+// apiBase since one process may target multiple backends in a test.
+const sessionManagers = new Map<string, SessionManager>();
+function sessionManagerFor(apiBase: string): SessionManager {
+  const base = apiBase.replace(/\/$/, "");
+  let mgr = sessionManagers.get(base);
+  if (!mgr) {
+    mgr = new SessionManager({ apiBase: base, domain: loadLoginDomain() });
+    sessionManagers.set(base, mgr);
+  }
+  return mgr;
+}
+
 /** Sign a WalletLoginIntent for the given HD index and exchange it for a
  *  backend JWT via POST /v1/sessions. The withdraw door is Bearer-gated
- *  (the eligible set is scoped to the JWT-bound wallet). */
+ *  (the eligible set is scoped to the JWT-bound wallet). Routes through a
+ *  process-wide SessionManager — the first call per wallet logs in; later
+ *  calls reuse the cached token (collapsing the per-question login fan-out). */
 export async function loginWallet(
   apiBase: string,
   mnemonic: string,
@@ -86,24 +102,9 @@ export async function loginWallet(
 ): Promise<{ bearer: string; address: Address; privateKey: Hex }> {
   const domain = loadLoginDomain();
   const wallet = deriveAgentWallet(mnemonic, walletIdx, domain.chainId);
-  const body = await signWalletLoginIntent({
-    wallet,
-    expiresAt: Math.floor(Date.now() / 1000) + 300,
-    domain,
-  });
-  const res = await fetch(`${apiBase}/v1/sessions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    throw new Error(
-      `login (idx ${walletIdx}) failed: ${res.status} ${await res.text()}`,
-    );
-  }
-  const data = (await res.json()) as { accessToken: string };
+  const bearer = await sessionManagerFor(apiBase).ensureToken(wallet);
   return {
-    bearer: data.accessToken,
+    bearer,
     address: wallet.address as Address,
     privateKey: wallet.privateKey as Hex,
   };

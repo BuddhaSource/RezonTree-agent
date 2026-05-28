@@ -21,3 +21,7 @@ votes/
 # Local env backups — never commit (potential secrets)
 .env.*.bak
 .env.bak
+
+# Per-wallet JWT session cache (SessionManager disk cache) — holds bearer
+# tokens; never commit.
+.sessions/

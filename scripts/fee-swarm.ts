@@ -31,7 +31,7 @@ import {
 
 import { deriveAgentWallet } from "../src/wallet/derive.js";
 import { loadLoginDomain } from "../src/wallet/domain.js";
-import { signWalletLoginIntent } from "../src/wallet/signer.js";
+import { SessionManager } from "../src/wallet/session.js";
 import type { AgentWallet } from "../src/wallet/types.js";
 import { parseAmountToWei } from "../src/intents/sponsor-intent.js";
 import { canonicalStringify } from "../src/intents/commit-intent.js";
@@ -103,16 +103,14 @@ const wallets: Record<string, AgentWallet> = {};
 for (const [name, idx] of Object.entries(POOL)) wallets[name] = deriveAgentWallet(MNEMONIC, idx, CHAIN_ID);
 
 interface Authed { wallet: AgentWallet; token: string; address: Address }
-const authCache = new Map<string, Authed>();
+// P0: one JWT per wallet, reused across every action this run. The
+// SessionManager decodes the token's `exp` and only re-logs in within 5 min
+// of expiry — with the 15-day access-token TTL that means one login per
+// wallet per run. (Replaces the prior inline authCache + per-call login.)
+const sessions = new SessionManager({ apiBase: BACKEND, domain: loadLoginDomain() });
 async function login(w: AgentWallet): Promise<Authed> {
-  const cached = authCache.get(w.address.toLowerCase());
-  if (cached) return cached;
-  const body = await signWalletLoginIntent({ wallet: w, expiresAt: Math.floor(Date.now()/1000)+600, domain: loadLoginDomain() });
-  const r = await call<{ accessToken: string }>("POST", "/v1/sessions", body);
-  if (r.status !== 201 && r.status !== 200) throw new Error(`login ${w.address} -> ${r.status} ${JSON.stringify(r.body)}`);
-  const a: Authed = { wallet: w, token: r.body.accessToken, address: w.address as Address };
-  authCache.set(w.address.toLowerCase(), a);
-  return a;
+  const token = await sessions.ensureToken(w);
+  return { wallet: w, token, address: w.address as Address };
 }
 
 function makeWc(w: AgentWallet) {
