@@ -133,8 +133,9 @@ describe("runXxxFlow refuses to sign past drift (R-INTENT-HASH-IS-MATCH-KEY)", (
         token: TOKEN,
         amount: 1n,
         feeAmount: 0n,
-        feeShareBps: 0,
-        feeShares: [],
+        // No feeShares param — cosponsor hardcodes empty feeShares +
+        // feeShareBps=0 (the fix for the Round-3 envelope drift). The
+        // shape-match test below asserts the resulting funds.
       }),
     ).rejects.toThrow(/intent hash drift/);
   });
@@ -207,5 +208,101 @@ describe("runXxxFlow refuses to sign past drift (R-INTENT-HASH-IS-MATCH-KEY)", (
 
   it("never reaches fetch — assertion is strictly pre-network", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Round-3 submit-body shape parity (sponsor ≡ cosponsor) ──────────
+//
+// Regression fence for the Q9 cosponsor crash: runCosponsorFlow posted a
+// body that drifted from runSponsorFlow's correct Round-3 shape. This
+// runs both flows far enough to capture the POST body (the broadcast
+// step never runs — the stub wallet would throw — so we let the POST
+// reject AFTER capture). We assert:
+//   1. Both bodies carry the identical top-level Round-3 field set
+//      ({actionType, typedData, content, signature, expectedIntentHash}).
+//   2. Cosponsor's actionType is "cosponsor".
+//   3. Cosponsor's funds.feeShares is the EMPTY array and feeShareBps=0
+//      (the #656 invariant — frozen by the first sponsor; chain shape
+//      gate + backend preflight bake empty).
+describe("Round-3 submit body: cosponsor mirrors sponsor's shape", () => {
+  const base = {
+    baseUrl: "http://localhost:9999",
+    bearerToken: "test-token",
+    signer: TEST_ADDR,
+    qid: ("0x" + "01".repeat(32)) as Hex,
+    questionId: "qst_test",
+    nonce: 0n,
+    expiresAt: 9_999_999_999n,
+    forgeAddress: FORGE,
+    chainId: 31337,
+    walletClient: stubWallet,
+    privateKey: TEST_KEY,
+  };
+
+  // Capture the POST body, then fail the response so the flow throws
+  // before reaching the (stub) broadcast leg.
+  function captureFetch(): { bodies: unknown[] } {
+    const bodies: unknown[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation((async (
+      _url: unknown,
+      init?: { body?: string },
+    ) => {
+      bodies.push(JSON.parse(init?.body ?? "{}"));
+      return {
+        ok: false,
+        status: 599,
+        statusText: "captured",
+        text: async () => "captured-by-test",
+      } as unknown as Response;
+    }) as typeof fetch);
+    return { bodies };
+  }
+
+  it("posts the same top-level field set, actionType=cosponsor, empty feeShares", async () => {
+    const cap = captureFetch();
+
+    // Sponsor — pass the local hash as expectedIntentHash so the drift
+    // assert no-ops and the flow reaches the POST. We don't care about
+    // the hash value, only the body shape.
+    await runSponsorFlow({
+      ...base,
+      expectedIntentHash: undefined as unknown as Hex,
+      title: "T", body: "B", criteria: "C", tags: [],
+      oracle: ORACLE,
+      sponsorshipFloor: 1n, commitFee: 1n, voteFee: 0n,
+      stakeFloor: 0n, stakeBasisPoints: 0,
+      fundingDeadline: base.expiresAt, noSolutionGracePeriod: 1800n,
+      token: TOKEN, amount: 1n, feeAmount: 0n, feeShareBps: 0, feeShares: [],
+    }).catch(() => undefined);
+
+    await runCosponsorFlow({
+      ...base,
+      expectedIntentHash: undefined as unknown as Hex,
+      token: TOKEN, amount: 1n, feeAmount: 0n,
+    }).catch(() => undefined);
+
+    expect(cap.bodies).toHaveLength(2);
+    const [sponsorBody, cosponsorBody] = cap.bodies as Array<Record<string, unknown>>;
+
+    // 1. Identical top-level Round-3 field set — this is the load-bearing
+    //    parity assertion (the Q9 crash was the two bodies drifting apart).
+    //    `expectedIntentHash` is undefined here (we skip the drift assert),
+    //    so stringifyWithBigInts omits it from BOTH bodies symmetrically;
+    //    the remaining four keys are the Round-3 shape.
+    expect(Object.keys(cosponsorBody).sort()).toEqual(
+      Object.keys(sponsorBody).sort(),
+    );
+    expect(Object.keys(cosponsorBody).sort()).toEqual(
+      ["actionType", "content", "signature", "typedData"],
+    );
+
+    // 2. Discriminator.
+    expect(cosponsorBody.actionType).toBe("cosponsor");
+    expect(sponsorBody.actionType).toBe("sponsor");
+
+    // 3. #656 invariant — cosponsor carries empty feeShares + feeShareBps=0.
+    const coFunds = (cosponsorBody.typedData as { funds: Record<string, unknown> }).funds;
+    expect(coFunds.feeShares).toEqual([]);
+    expect(coFunds.feeShareBps).toBe(0);
   });
 });

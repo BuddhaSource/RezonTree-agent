@@ -123,6 +123,78 @@ export function assertIntentHashMatch(
   }
 }
 
+// ─── Shared envelope sign + submit ───────────────────────────────────
+//
+// Sponsor and cosponsor build different witnesses + funds and broadcast
+// through different chain entry points (sponsorSubmit vs submit), but
+// the middle of the flow is byte-identical: recompute the EIP-712 hash,
+// assert it matches the preflight `expectedIntentHash` (never sign past
+// drift — R-INTENT-HASH-IS-MATCH-KEY), sign, and POST the Round-3
+// unified-intent body `{actionType, typedData, content, signature,
+// expectedIntentHash}`. This helper is that shared spine — extracting
+// it keeps the two flows from re-duplicating ~40 LOC each and guarantees
+// they post the identical wire shape (the divergence that broke Q9's
+// cosponsor leg in the 10-Q swarm was a per-flow copy drifting out of
+// sync). The witness payload key is `content`; the dispatcher accepts
+// the legacy `witness` alias too, but new builds send `content`.
+async function signAndSubmitEnvelope(p: {
+  baseUrl: string;
+  bearerToken: string;
+  questionId: string;
+  actionType: string;
+  envelope: Envelope;
+  serializedContent: Record<string, unknown>;
+  expectedIntentHash: Hex;
+  chainId: number;
+  forgeAddress: Address;
+  privateKey: Hex;
+}): Promise<{ localIntentHash: Hex; signature: Hex; backendStatus?: string; backendIntentHash?: Hex }> {
+  const typedData = buildEnvelopeForSigning({
+    envelope: p.envelope,
+    chainId: p.chainId,
+    forgeAddress: p.forgeAddress,
+  });
+  const localIntentHash = hashEnvelopeStruct(p.envelope);
+  assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
+  const account = privateKeyToAccount(p.privateKey);
+  const signature = (await account.signTypedData({
+    domain: typedData.domain,
+    types: typedData.types,
+    primaryType: typedData.primaryType,
+    message: typedData.message as never,
+  })) as Hex;
+
+  const submitBody = {
+    actionType: p.actionType,
+    typedData: serializeEnvelope(p.envelope),
+    content: p.serializedContent,
+    signature,
+    expectedIntentHash: p.expectedIntentHash,
+  };
+  const res = await fetch(`${p.baseUrl}/v1/questions/${p.questionId}/intents`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${p.bearerToken}`,
+      Prefer: "return=minimal",
+    },
+    body: stringifyWithBigInts(submitBody),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(
+      `${p.actionType}: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
+    );
+  }
+  const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
+  return {
+    localIntentHash,
+    signature,
+    backendStatus: parsed.status,
+    backendIntentHash: (parsed.intentHash ?? localIntentHash) as Hex,
+  };
+}
+
 // ─── USDC allowance gate ─────────────────────────────────────────────
 
 /**
@@ -264,66 +336,27 @@ export async function runSponsorFlow(
     funds,
   };
 
-  // 3. Sign — but first recompute the EIP-712 intent hash locally and
-  // assert it matches the preflight-asserted expectedIntentHash. Drift
-  // here means the client built a different envelope than the backend
-  // canonicalised — never sign past it (R-INTENT-HASH-IS-MATCH-KEY).
-  const typedData = buildEnvelopeForSigning({
+  // 3+4. Sign (with pre-sign drift assert) + POST the Round-3 unified
+  // intent body via the shared spine.
+  const submitted = await signAndSubmitEnvelope({
+    baseUrl: p.baseUrl,
+    bearerToken: p.bearerToken,
+    questionId: p.questionId,
+    actionType: "sponsor",
     envelope,
+    serializedContent: serializeSponsorWitness(witness),
+    expectedIntentHash: p.expectedIntentHash,
     chainId: p.chainId,
     forgeAddress: p.forgeAddress,
+    privateKey: p.privateKey,
   });
-  const localIntentHash = hashEnvelopeStruct(envelope);
-  assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
-  const account = privateKeyToAccount(p.privateKey);
-  const signature = (await account.signTypedData({
-    domain: typedData.domain,
-    types: typedData.types,
-    primaryType: typedData.primaryType,
-    message: typedData.message as never,
-  })) as Hex;
-
   const result: SponsorFlowResult = {
-    intentHash: localIntentHash,
-    signature,
+    intentHash: submitted.backendIntentHash ?? submitted.localIntentHash,
+    signature: submitted.signature,
     envelope,
+    backendStatus: submitted.backendStatus,
   };
-
-  // 4. Backend POST — Round-3 unified intent dispatcher. `typedData`
-  // is the envelope JSON (the dispatcher wraps it into the existing
-  // QuadphaseSubmit shape server-side); `content` carries the witness
-  // fields.
-  const submitBody = {
-    actionType: "sponsor",
-    typedData: serializeEnvelope(envelope),
-    content: serializeSponsorWitness(witness),
-    signature,
-    expectedIntentHash: p.expectedIntentHash,
-  };
-  const res = await fetch(
-    `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${p.bearerToken}`,
-        Prefer: "return=minimal",
-      },
-      body: stringifyWithBigInts(submitBody),
-    },
-  );
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(
-      `runSponsorFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
-    );
-  }
-  const parsed = JSON.parse(text) as {
-    intentHash?: string;
-    status?: string;
-  };
-  result.intentHash = (parsed.intentHash ?? p.expectedIntentHash) as Hex;
-  result.backendStatus = parsed.status;
+  const signature = submitted.signature;
 
   // 5. Chain broadcast.
   const txHash = await broadcastSponsorSubmit(p.walletClient, {
@@ -354,12 +387,18 @@ export interface CosponsorFlowParams {
   /** Server-asserted intentHash from the preflight response. */
   expectedIntentHash: Hex;
 
-  // Funds.
+  // Funds. Cosponsor binds only the added pool amount + token. It
+  // carries NO feeShares of its own and feeShareBps=0 — the fee-share
+  // policy is frozen by the first sponsor; a cosponsor top-up only adds
+  // to the pool. The backend's cosponsor preflight bakes the canonical
+  // envelope with empty feeShares + feeShareBps=0 and computes
+  // `expectedIntentHash` over THAT, and the chain shape gate enforces
+  // it. There is therefore no feeShares/feeShareBps param here — the
+  // flow hardcodes empty so a caller can't drift the envelope and crash
+  // the submit with HTTP 400 / an intent-hash mismatch.
   token: Address;
   amount: bigint;
   feeAmount: bigint;
-  feeShareBps: number;
-  feeShares: FeeShare[];
 
   walletClient: WalletClient;
   privateKey: Hex;
@@ -381,14 +420,19 @@ export interface CosponsorFlowResult {
 export async function runCosponsorFlow(
   p: CosponsorFlowParams,
 ): Promise<CosponsorFlowResult> {
+  // 1+2. Witness + envelope. Cosponsor funds carry empty feeShares +
+  // feeShareBps=0 — hardcoded, not caller-supplied, so the locally-built
+  // envelope can never drift from the backend's canonical template
+  // (preflight bakes the same empty array; the chain shape gate enforces
+  // it). A stale non-empty fallback was what crashed Q9's cosponsor leg.
   const { witness, contentHash } = buildCosponsorWitness({ amount: p.amount });
   const funds: Funds = {
     token: p.token,
     poolIn: p.amount,
     poolOut: 0n,
     feeAmount: p.feeAmount,
-    feeShareBps: p.feeShareBps,
-    feeShares: p.feeShares,
+    feeShareBps: 0,
+    feeShares: [],
     stakeAmount: 0n,
     stakeOp: StakeOp.None,
   };
@@ -401,57 +445,30 @@ export async function runCosponsorFlow(
     contentHash,
     funds,
   };
-  const typedData = buildEnvelopeForSigning({
+
+  // 3+4. Sign (with pre-sign drift assert) + POST via the shared spine —
+  // identical Round-3 wire shape to runSponsorFlow.
+  const submitted = await signAndSubmitEnvelope({
+    baseUrl: p.baseUrl,
+    bearerToken: p.bearerToken,
+    questionId: p.questionId,
+    actionType: "cosponsor",
     envelope,
+    serializedContent: serializeCosponsorWitness(witness),
+    expectedIntentHash: p.expectedIntentHash,
     chainId: p.chainId,
     forgeAddress: p.forgeAddress,
+    privateKey: p.privateKey,
   });
-  // R-INTENT-HASH-IS-MATCH-KEY: recompute locally + assert against
-  // preflight before signing.
-  const localIntentHash = hashEnvelopeStruct(envelope);
-  assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
-  const account = privateKeyToAccount(p.privateKey);
-  const signature = (await account.signTypedData({
-    domain: typedData.domain,
-    types: typedData.types,
-    primaryType: typedData.primaryType,
-    message: typedData.message as never,
-  })) as Hex;
-
   const result: CosponsorFlowResult = {
-    intentHash: localIntentHash,
-    signature,
+    intentHash: submitted.backendIntentHash ?? submitted.localIntentHash,
+    signature: submitted.signature,
     envelope,
+    backendStatus: submitted.backendStatus,
   };
+  const signature = submitted.signature;
 
-  const res = await fetch(
-    `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${p.bearerToken}`,
-        Prefer: "return=minimal",
-      },
-      body: stringifyWithBigInts({
-        actionType: "cosponsor",
-        typedData: serializeEnvelope(envelope),
-        content: serializeCosponsorWitness(witness),
-        signature,
-        expectedIntentHash: p.expectedIntentHash,
-      }),
-    },
-  );
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(
-      `runCosponsorFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
-    );
-  }
-  const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
-  result.intentHash = (parsed.intentHash ?? localIntentHash) as Hex;
-  result.backendStatus = parsed.status;
-
+  // 5. Chain broadcast — universal `submit(env, sig)`.
   const txHash = await broadcastSubmit(p.walletClient, {
     forgeAddress: p.forgeAddress,
     envelope,

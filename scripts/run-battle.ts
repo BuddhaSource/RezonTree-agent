@@ -573,7 +573,6 @@ class BattleRunner {
       await ensureUsdcAllowance(wc, publicClient, {
         usdc: USDC, forge: FORGE!, owner: ca.address, required: amountWei,
       });
-      const fees = feeShareFromPreflight(cosponsorPre, this.defaultFeeRecipient());
       const result = await runCosponsorFlow({
         baseUrl: BACKEND, bearerToken: ca.token, signer: ca.address,
         questionId: question.id, qid, nonce: BigInt(cosponsorPre.nonce ?? "0"),
@@ -581,8 +580,9 @@ class BattleRunner {
         forgeAddress: FORGE!, chainId: cosponsorPre.chainId ?? CHAIN_ID,
         expectedIntentHash: cosponsorPre.expectedIntentHash as Hex,
         token: cosponsorPre.token.contractAddress as Address, amount: amountWei, feeAmount: 0n,
-        feeShareBps: fees.feeShareBps,
-        feeShares: [{ recipient: fees.platformFeeRecipient, basisPoints: 10000 }],
+        // No feeShares — cosponsor inherits the frozen sponsor policy;
+        // the flow hardcodes the empty array (chain shape gate + backend
+        // preflight bake empty, so any caller value would drift the hash).
         walletClient: wc, privateKey: wallet.privateKey as Hex,
       });
       await awaitReceipt(publicClient, result.txHash!);
