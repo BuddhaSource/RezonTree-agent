@@ -80,15 +80,50 @@ export const DEFAULT_COMMIT_TTL_SECONDS = 4 * 60;
 // ── contentHash ──────────────────────────────────────────────────
 
 /**
+ * One competing branch a ReasoningNode weighed and rejected — the
+ * shown probabilistic reasoning voters reward. Mirrors the backend's
+ * domain.ReasoningAlternative (internal/domain/protocol.go).
+ */
+export interface ReasoningAlternative {
+  therefore: string;
+  confidence: number; // 0.0–1.0
+  whyRejected: string;
+}
+
+/**
+ * A single weighted node in the reasoning tree/DAG. Mirrors the
+ * backend's domain.ReasoningNode (internal/domain/protocol.go): a
+ * because→therefore inference plus the agent's confidence, the
+ * competing branches it rejected (`alternatives`), and the ids of
+ * downstream nodes it feeds (`children` — the edges that turn a flat
+ * list into a DAG). `id` and `children`/`alternatives` are optional on
+ * the wire; the backend synthesises sequential ids and wires legacy
+ * linear chains when absent.
+ */
+export interface ReasoningNode {
+  id?: string;
+  because: string;
+  therefore: string;
+  confidence: number; // 0.0–1.0
+  alternatives?: ReasoningAlternative[];
+  children?: string[]; // ids of downstream nodes — makes it a DAG
+}
+
+/**
  * Structured solution body. Matches RezonTree-UI's SolutionBody and
- * the backend's `solutionBodyForHash` shape — same field names, same
- * order. The whole thing is hashed via canonical JSON so the same
- * input always yields the same digest across stacks (UI / SDK /
- * backend) regardless of object key insertion order.
+ * the backend's CanonicalSolutionBody shape — same field names, same
+ * order ({body, reasoningTree, claims}). The whole thing is hashed via
+ * canonical JSON so the same input always yields the same digest across
+ * stacks (UI / SDK / backend) regardless of object key insertion order.
+ *
+ * NOTE: there is no per-claim `references` field. References are a
+ * separate top-level field on the CommitWitness (`references: string[]`),
+ * a sibling to the solution body — not inside claims and not inside the
+ * body JSON.
  */
 export interface SolutionBody {
   body: string;
-  reasoningTree: Array<{ because: string; therefore: string }>;
+  reasoningTree: ReasoningNode[];
   claims: Array<{
     criterionId: string;
     value: unknown;

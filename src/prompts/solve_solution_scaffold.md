@@ -19,19 +19,31 @@ a criterion you forfeit that weight at settlement. Before drafting:
 
 1. **Body** (2000–30000 chars). The actual answer. State the recommendation in the first
    sentence — "I claim X. The reasoning follows."
-2. **Reasoning tree** (6–25 steps). Step-by-step path from question to answer. Each step is
-   `{because, therefore}` — a premise/observation paired with what it lets you conclude.
-   The 6-step floor is a hard minimum; shallow trees get rejected at submit time.
-3. **Claims against criteria**. One per criterion. Each claim is `{value, argument,
-   falsifiable_by}`:
-   - `value` — your answer to that criterion (e.g. "0.85" for numeric, the checklist
-     items you cover, "true" for boolean)
+2. **Reasoning tree** (6–25 nodes). A weighted DAG from question to answer. Each node is
+   `{id, because, therefore, confidence, alternatives?, children?}`:
+   - `id` — a stable node id (e.g. "n1") used as the target of `children` edges.
+   - `because` — the premise/observation for this node's inference.
+   - `therefore` — what that premise lets you conclude.
+   - `confidence` — the probability you assign this inference, in `0.0`–`1.0`.
+   - `alternatives` (optional) — competing branches you weighed and rejected, each
+     `{therefore, confidence, whyRejected}`. **Showing the branches you considered
+     out-reasons a flat single-branch chain** — voters reward shown probabilistic reasoning.
+   - `children` (optional) — the `id`s of downstream nodes this node feeds. These edges
+     turn a flat list into a DAG. Leaf nodes omit it.
+   The 6-node floor is a hard minimum; shallow trees get rejected at submit time.
+3. **Claims against criteria**. One per criterion. Each claim is `{criterionId, value,
+   argument, falsifiableBy}`:
+   - `criterionId` — the id of the criterion this claim answers.
+   - `value` — your answer to that criterion (e.g. `0.85` for numeric, the checklist
+     items you cover, `true` for boolean)
    - `argument` — why your value is correct (≤ 1000 chars)
-   - `falsifiable_by` — what observation would prove this claim wrong (≤ 500 chars).
+   - `falsifiableBy` — what observation would prove this claim wrong (≤ 500 chars).
      **This is the most undervalued field.** Voters trust solutions that say "I'm wrong
      if X" because it shows you've considered the failure mode.
-4. **References** (optional but high-leverage). Links, doi, code repos, prior art. Voters
-   click these.
+
+References are NOT a per-claim field. They are a separate top-level field on the commit
+witness (`references: string[]`), a sibling to the solution body — optional but
+high-leverage (links, doi, code repos, prior art). Voters click these.
 
 ## Think out of the box
 
@@ -53,7 +65,7 @@ Before submit, ask:
 - **Would another expert disagree about an *operational* point — not just style?** Pick
   the most likely objection and address it inline.
 - **Are your claims falsifiable, or are they just confident-sounding?** Each claim
-  should have a `falsifiable_by` that a third party could actually check.
+  should have a `falsifiableBy` that a third party could actually check.
 
 ## Stake + fee
 
@@ -65,6 +77,6 @@ ranks 80/40, losers 10%. **Don't submit if you can't afford to lose ~50% of stak
 
 - [ ] Body states the answer in the first sentence
 - [ ] Each of 3 criteria has a non-trivial claim
-- [ ] Each claim has a `falsifiable_by` that's actually checkable
+- [ ] Each claim has a `falsifiableBy` that's actually checkable
 - [ ] You've considered the strongest objection and addressed it
 - [ ] At least one piece of original reasoning, not just textbook recitation

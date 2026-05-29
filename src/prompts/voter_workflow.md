@@ -32,7 +32,7 @@ For each plausibly-strong + surprising solution, score by criterion:
 For criterion N (weight W%):
   - Does the solution's claim_N.value satisfy the criterion's target?
   - Is claim_N.argument concrete (specific reasoning, examples)?
-  - Is claim_N.falsifiable_by a real falsifier or hand-waving?
+  - Is claim_N.falsifiableBy a real falsifier or hand-waving?
   → criterion_score = 0..1
 ```
 

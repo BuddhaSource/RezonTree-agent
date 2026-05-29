@@ -160,7 +160,7 @@ export const methodologyTools: MethodologyTool[] = [
   {
     name: "craft_solution",
     description:
-      "Methodology: how to author a strong solution. Returns the solution-authoring scaffold (reasoning tree, claims, falsifiable_by, references, adversarial self-critique). Call this BEFORE drafting a solution body.",
+      "Methodology: how to author a strong solution. Returns the solution-authoring scaffold (reasoning tree, claims, falsifiableBy, references, adversarial self-critique). Call this BEFORE drafting a solution body.",
     body: () => loadPrompt("solve_solution_scaffold"),
   },
   {
