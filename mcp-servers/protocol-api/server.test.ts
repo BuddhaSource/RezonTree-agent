@@ -400,20 +400,28 @@ describe("withdraw — unified money-out door", () => {
     expect(withdrawBlock).toMatch(/eligible_count:\s*0/);
   });
 
-  it("uses each draft's server-allocated nonce + expectedIntentHash verbatim", () => {
-    // R-INTENT-HASH-IS-MATCH-KEY: the withdraw door pre-allocates a
-    // distinct RANDOM nonce per item; the SDK MUST pass it (and the
-    // pinned expectedIntentHash) through unchanged — never recompute.
-    expect(
-      withdrawBlock,
-      "claim leg must feed the draft's nonce verbatim",
-    ).toMatch(/nonce:\s*BigInt\(c\.nonce\)/);
+  it("refund uses the draft's server-allocated nonce + expectedIntentHash verbatim; claim is unsigned", () => {
+    // R-INTENT-HASH-IS-MATCH-KEY: refund is a signed intent — the
+    // withdraw door pre-allocates a distinct RANDOM nonce per refund
+    // item; the SDK MUST pass it (and the pinned expectedIntentHash)
+    // through unchanged — never recompute.
     expect(withdrawBlock).toMatch(/nonce:\s*BigInt\(r\.nonce\)/);
     expect(
       withdrawBlock,
-      "both legs must pass the draft's expectedIntentHash so runClaim/RefundFlow can assert no drift before signing",
-    ).toMatch(/expectedIntentHash:\s*c\.expectedIntentHash/);
-    expect(withdrawBlock).toMatch(/expectedIntentHash:\s*r\.expectedIntentHash/);
+      "refund leg must pass the draft's expectedIntentHash so runRefundFlow can assert no drift before signing",
+    ).toMatch(/expectedIntentHash:\s*r\.expectedIntentHash/);
+    // Claim is PERMISSIONLESS + UNSIGNED — the Merkle proof is the auth.
+    // It carries NO nonce and NO expectedIntentHash.
+    expect(
+      withdrawBlock,
+      "claim leg must NOT feed a nonce — claim is not a signed intent",
+    ).not.toMatch(/nonce:\s*BigInt\(c\.nonce\)/);
+    expect(withdrawBlock).not.toMatch(/expectedIntentHash:\s*c\.expectedIntentHash/);
+    // It pays the leaf's committed recipient instead.
+    expect(
+      withdrawBlock,
+      "claim leg must pay the leaf's recipient (pay-to-recipient is structural)",
+    ).toMatch(/recipient:\s*c\.recipient/);
   });
 
   it("keys per-item idempotency so one item can't replay another's tx", () => {
@@ -1003,13 +1011,18 @@ describe("withdraw — behavioral draft→flow-param mapping", () => {
     flowMocks.awaitReceipt.mockReset();
   });
 
-  it("maps the claim draft → runClaimFlow args VERBATIM", async () => {
+  it("maps the claim draft → runClaimFlow leaf args VERBATIM (permissionless, unsigned)", async () => {
     currentDraft = draftWith([
       { actionType: "claim", role: "winner_creator", claim: CLAIM_DRAFT },
     ]);
+    // Claim is permissionless + unsigned now: runClaimFlow returns just
+    // the broadcast tx + echoed leaf identity (no intentHash).
     flowMocks.runClaimFlow.mockResolvedValue({
-      intentHash: CLAIM_DRAFT.expectedIntentHash,
       txHash: "0xclaimtx",
+      recipient: CLAIM_DRAFT.recipient,
+      role: CLAIM_DRAFT.role,
+      leafIndex: BigInt(CLAIM_DRAFT.leafIndex),
+      leafAmount: BigInt(CLAIM_DRAFT.leafAmount),
     });
 
     const res = await withdrawHandler({ question_id: "qst_abc" });
@@ -1017,30 +1030,26 @@ describe("withdraw — behavioral draft→flow-param mapping", () => {
     expect(flowMocks.runClaimFlow).toHaveBeenCalledTimes(1);
     const arg = flowMocks.runClaimFlow.mock.calls[0][0];
 
-    // nonce + expectedIntentHash are the load-bearing pins: passed
-    // VERBATIM, never recomputed. nonce is BigInt(draft.nonce).
-    expect(arg.nonce).toBe(BigInt(CLAIM_DRAFT.nonce));
-    expect(typeof arg.nonce).toBe("bigint");
-    expect(arg.expectedIntentHash).toBe(CLAIM_DRAFT.expectedIntentHash);
+    // The Merkle proof IS the authorisation — the leaf fields are the
+    // load-bearing pins, passed VERBATIM. No nonce / expectedIntentHash /
+    // expiresAt / signature: claim is not a signed intent.
+    expect(arg.nonce).toBeUndefined();
+    expect(arg.expectedIntentHash).toBeUndefined();
+    expect(arg.expiresAt).toBeUndefined();
 
     // leafIndex / leafAmount are the canonical swap-bug surface.
     expect(arg.leafIndex).toBe(BigInt(CLAIM_DRAFT.leafIndex));
     expect(arg.leafAmount).toBe(BigInt(CLAIM_DRAFT.leafAmount));
 
-    // proof + role + expectedStatus from the witness.
+    // proof + role + recipient — the leaf the contract recomputes +
+    // pay-to-recipient destination.
     expect(arg.proof).toEqual(CLAIM_DRAFT.proof);
     expect(arg.role).toBe(CLAIM_DRAFT.role);
-    expect(arg.expectedStatus).toBe(3); // witness.expectedStatus
+    expect(arg.recipient).toBe(CLAIM_DRAFT.recipient);
 
-    // token recovered from envelopeTemplate.envelope.funds.token.
-    expect(arg.token).toBe(TOKEN);
-
-    // qid / questionId routing.
+    // qid routing + the forge the claim() write targets.
     expect(arg.qid).toBe(CLAIM_DRAFT.qid);
-    expect(arg.questionId).toBe("qst_abc");
-
-    // expiresAt from the draft's recommendedExpiresAt (absolute Unix).
-    expect(arg.expiresAt).toBe(BigInt(CLAIM_DRAFT.recommendedExpiresAt));
+    expect(arg.forgeAddress).toBeDefined();
 
     // The handler awaits the receipt and reports success.
     expect(flowMocks.awaitReceipt).toHaveBeenCalledWith(
@@ -1096,14 +1105,17 @@ describe("withdraw — behavioral draft→flow-param mapping", () => {
     expect(body.total_withdrawn_wei).toBe(REFUND_DRAFT.expectedAmount);
   });
 
-  it("drives BOTH legs in one call, each with its own verbatim nonce + hash", async () => {
+  it("drives BOTH legs in one call — claim by leaf, refund by its own verbatim nonce + hash", async () => {
     currentDraft = draftWith([
       { actionType: "claim", role: "winner_creator", claim: CLAIM_DRAFT },
       { actionType: "refund", role: "sponsor", refund: REFUND_DRAFT },
     ]);
     flowMocks.runClaimFlow.mockResolvedValue({
-      intentHash: CLAIM_DRAFT.expectedIntentHash,
       txHash: "0xclaimtx",
+      recipient: CLAIM_DRAFT.recipient,
+      role: CLAIM_DRAFT.role,
+      leafIndex: BigInt(CLAIM_DRAFT.leafIndex),
+      leafAmount: BigInt(CLAIM_DRAFT.leafAmount),
     });
     flowMocks.runRefundFlow.mockResolvedValue({
       intentHash: REFUND_DRAFT.expectedIntentHash,
@@ -1115,12 +1127,14 @@ describe("withdraw — behavioral draft→flow-param mapping", () => {
     const claimArg = flowMocks.runClaimFlow.mock.calls[0][0];
     const refundArg = flowMocks.runRefundFlow.mock.calls[0][0];
 
-    // Each leg carries ITS OWN nonce + hash — not crossed, not shared.
-    expect(claimArg.nonce).toBe(BigInt(CLAIM_DRAFT.nonce));
-    expect(claimArg.expectedIntentHash).toBe(CLAIM_DRAFT.expectedIntentHash);
+    // Claim is unsigned: keyed on its leaf (proof/recipient/leafIndex),
+    // NOT a nonce or intentHash. Refund still carries its own verbatim
+    // nonce + hash — not crossed, not shared with the claim.
+    expect(claimArg.recipient).toBe(CLAIM_DRAFT.recipient);
+    expect(claimArg.leafIndex).toBe(BigInt(CLAIM_DRAFT.leafIndex));
+    expect(claimArg.nonce).toBeUndefined();
     expect(refundArg.nonce).toBe(BigInt(REFUND_DRAFT.nonce));
     expect(refundArg.expectedIntentHash).toBe(REFUND_DRAFT.expectedIntentHash);
-    expect(claimArg.nonce).not.toBe(refundArg.nonce);
 
     const body = JSON.parse(res.content[0].text);
     expect(body.eligible_count).toBe(2);

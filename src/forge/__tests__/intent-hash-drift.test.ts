@@ -29,8 +29,12 @@ import {
   runCommitFlow,
   runVoteFlow,
   runRefundFlow,
-  runClaimFlow,
 } from "../quadphase-flow.js";
+
+// NOTE: runClaimFlow is NOT in this drift fence. Claim is now
+// PERMISSIONLESS + UNSIGNED (contract A+G) — it builds no envelope,
+// signs nothing, and asserts no intentHash (the Merkle proof is the
+// authorisation). There is no "sign past drift" hazard to fence.
 
 // A 32-byte hex that will never match any real envelope hash.
 const BOGUS_HASH = ("0x" + "de".repeat(32)) as Hex;
@@ -187,21 +191,6 @@ describe("runXxxFlow refuses to sign past drift (R-INTENT-HASH-IS-MATCH-KEY)", (
         sourceIntentHash: ZERO_HASH,
         expectedAmount: 1n,
         expectedStatus: 4,
-      }),
-    ).rejects.toThrow(/intent hash drift/);
-  });
-
-  it("runClaimFlow throws on drift", async () => {
-    await expect(
-      runClaimFlow({
-        ...common,
-        expectedIntentHash: BOGUS_HASH,
-        token: TOKEN,
-        proof: [],
-        leafIndex: 0n,
-        leafAmount: 1n,
-        role: 0,
-        expectedStatus: 3,
       }),
     ).rejects.toThrow(/intent hash drift/);
   });

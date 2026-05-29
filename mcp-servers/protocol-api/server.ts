@@ -1428,19 +1428,6 @@ function tokenFromTemplate(
   return token as Address;
 }
 
-// claimExpectedStatus pulls expectedStatus out of the claim draft's
-// witness (the backend bakes onchainStatusSettled=3 into the
-// ClaimWitness; it's not a top-level draft field). The local recompute
-// guard inside runClaimFlow re-asserts the resulting intentHash against
-// the draft's expectedIntentHash, so a wrong value can never be signed —
-// this just reproduces the witness the backend hashed. Defaults to
-// Settled=3 if the template omits it.
-function claimExpectedStatus(claim: NonNullable<WithdrawItem["claim"]>): number {
-  const w = claim.envelopeTemplate?.witness as
-    | { expectedStatus?: unknown }
-    | undefined;
-  return typeof w?.expectedStatus === "number" ? w.expectedStatus : 3;
-}
 
 server.tool(
   "withdraw",
@@ -1553,44 +1540,33 @@ server.tool(
 
         if (item.actionType === "claim" && item.claim) {
           const c = item.claim;
-          // Map the ClaimDraftResponse → ClaimFlowParams VERBATIM: the
-          // server-allocated random nonce, the pinned expiresAt, the
-          // proof + leaf metadata, and expectedIntentHash all flow
-          // through unchanged. runClaimFlow recomputes the intentHash
-          // locally and asserts it == c.expectedIntentHash before
-          // signing (R-INTENT-HASH-IS-MATCH-KEY) — drift is fatal there.
-          const token = tokenFromTemplate(c, "claim");
+          // Claim is PERMISSIONLESS + UNSIGNED (contract A+G): the Merkle
+          // proof IS the authorisation, funds go to the leaf's recipient.
+          // Map the ClaimDraftResponse leaf → runClaimFlow VERBATIM (qid,
+          // recipient, role, leafIndex, leafAmount, proof from the
+          // persisted root-verified leaf set). No envelope, no signature,
+          // no /intents POST, no nonce/expiresAt/expectedIntentHash.
           const flow = await runClaimFlow({
-            signer: address,
-            // Use the draft's own qid — the exact bytes32 the backend
-            // hashed into c.expectedIntentHash (identical to draft.qid,
-            // but byte-exact with this item's pinned hash).
+            // Use the draft's own qid — byte-exact with the leaf the
+            // backend proved against draft.qid.
             qid: c.qid as Hex,
-            questionId: params.question_id,
-            nonce: BigInt(c.nonce),
-            expiresAt: BigInt(c.recommendedExpiresAt),
+            // Pay-to-recipient: the leaf's committed winner wallet.
+            recipient: c.recipient as Address,
             forgeAddress: env.router,
-            chainId: c.chainId ?? CHAIN_ID,
-            token,
             proof: c.proof as Hex[],
             leafIndex: BigInt(c.leafIndex),
             leafAmount: BigInt(c.leafAmount),
             role: c.role,
-            expectedStatus: claimExpectedStatus(c),
-            bearerToken: bearer,
-            baseUrl: API_URL,
-            expectedIntentHash: c.expectedIntentHash as Hex,
             walletClient,
-            privateKey,
           });
-          await awaitReceipt(publicClient, flow.txHash!);
+          await awaitReceipt(publicClient, flow.txHash);
           totalWithdrawn += BigInt(c.leafAmount);
           itemResult = {
             action_type: "claim",
             role: item.role,
             status: "broadcast",
-            intent_hash: flow.intentHash,
-            tx_hash: flow.txHash!,
+            recipient: c.recipient,
+            tx_hash: flow.txHash,
             amount_wei: c.leafAmount,
           };
         } else {

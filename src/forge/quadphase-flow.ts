@@ -62,10 +62,6 @@ import {
   type RefundWitness,
 } from "../intents/refund-witness.js";
 import {
-  buildClaimWitness,
-  type ClaimWitness,
-} from "../intents/claim-witness.js";
-import {
   buildSettleWitness,
   type FeeDistribution,
   type SettleWitness,
@@ -73,12 +69,12 @@ import {
 } from "../intents/settle-witness.js";
 import {
   broadcastAbandonSubmit,
+  broadcastClaim,
   broadcastSettle,
   broadcastSponsorSubmit,
   broadcastSubmit,
   broadcastPullValue,
   encodeRefundWitnessBytes,
-  encodeClaimWitnessBytes,
 } from "./quadphase-broadcast.js";
 import { redactBearer } from "../utils/redact.js";
 
@@ -893,17 +889,6 @@ function serializeRefundWitness(w: RefundWitness): Record<string, unknown> {
   };
 }
 
-function serializeClaimWitness(w: ClaimWitness): Record<string, unknown> {
-  return {
-    actionTag: w.actionTag,
-    proof: w.proof,
-    leafIndex: encodeBigIntForWire(w.leafIndex),
-    leafAmount: encodeBigIntForWire(w.leafAmount),
-    role: w.role,
-    expectedStatus: w.expectedStatus,
-  };
-}
-
 function serializeSettleWitness(w: SettleWitness): Record<string, unknown> {
   return {
     actionTag: w.actionTag,
@@ -1255,138 +1240,82 @@ export async function runRefundFlow(
 
 // ─── Claim flow ──────────────────────────────────────────────────────
 //
-// Winner's pull-side flow for Settled questions. Backend preflight
-// (`actionType=claim` → ClaimDraft) returns the Merkle proof +
-// leafIndex/leafAmount/role from the settlement_claims projection.
-// SDK signs the envelope verbatim and calls pullValue() — the chain
-// verifies the proof against the stored merkle root and releases
-// poolOut into the recipient (always == env.signer).
+// Winner's pull-side flow for Settled questions. PERMISSIONLESS + UNSIGNED
+// (contract A+G): the oracle-signed settlementRoot already fixed the
+// entitlement, and the Merkle proof IS the authorisation. So there is NO
+// envelope, NO signature, and NO backend /intents POST for a claim — the
+// flow reads the leaf (recipient, role, leafIndex, leafAmount) + Merkle
+// proof from the backend claim/withdraw preflight (ClaimDraft, sourced
+// from the persisted root-verified leaf set — leafset single-source) and
+// calls the contract's `claim(...)` directly. The chain recomputes
+// leaf = keccak256(abi.encode(qid, recipient, role, leafIndex,
+// leafAmount)), verifies it against the stored root via `proof`, dedups,
+// and transfers `leafAmount` to `recipient` — pay-to-recipient is
+// structural, msg.sender (whoever holds gas) is irrelevant.
+//
+// (The legacy pullValue(Claim)-via-signed-ClaimWitness path was removed;
+// pullValue is REFUND-ONLY now and reverts "pull:wrong-action" on a Claim
+// envelope. Refund still rides runRefundFlow → pullValue, unchanged.)
 
 export interface ClaimFlowParams {
-  signer: Address;
+  /** The leaf's committed recipient — funds go HERE. Sourced verbatim
+   *  from the ClaimDraft's `recipient` (which is the winner's wallet).
+   *  Claim is permissionless, so this need not equal the broadcasting
+   *  wallet; the contract pays the leaf's recipient regardless. */
+  recipient: Address;
   qid: Hex;
-  questionId: string;
-  nonce: bigint;
-  expiresAt: bigint;
   forgeAddress: Address;
-  chainId: number;
-  token: Address;
   /** Merkle proof from preflight (Round-3 ClaimDraft response). */
   proof: Hex[];
   leafIndex: bigint;
   leafAmount: bigint;
-  /** Role byte for dual-role disambiguation (solver / voter /
-   *  sponsor — see contract for the enum). */
+  /** Role byte for dual-role disambiguation (winner_creator=1 / voter /
+   *  sponsor — see contract for the enum). It is part of the leaf the
+   *  proof authorises. */
   role: number;
-  /** On-chain QuestionStatus enum the signer expects (Settled=3). */
-  expectedStatus: number;
-  bearerToken: string;
-  baseUrl: string;
-  expectedIntentHash?: Hex;
+  /** The wallet that broadcasts (pays gas). Funds still go to
+   *  `recipient`, not this wallet's account. */
   walletClient: WalletClient;
-  privateKey: Hex;
+  /** Optional gas override for the claim tx. */
+  gas?: bigint;
 }
 
 export interface ClaimFlowResult {
-  intentHash: Hex;
-  signature: Hex;
-  envelope: Envelope;
-  backendStatus?: string;
-  txHash?: Hex;
+  /** Chain tx hash of the claim() broadcast. */
+  txHash: Hex;
+  /** Echoed leaf identity for the caller's reporting. */
+  recipient: Address;
+  role: number;
+  leafIndex: bigint;
+  leafAmount: bigint;
 }
 
+/**
+ * Broadcasts a single settlement-leaf claim via the permissionless,
+ * unsigned `claim(...)` entry point. No envelope, no signature, no
+ * backend POST — the Merkle proof is the authorisation and funds go to
+ * the leaf's `recipient`.
+ */
 export async function runClaimFlow(
   p: ClaimFlowParams,
 ): Promise<ClaimFlowResult> {
-  const { witness, contentHash } = buildClaimWitness({
-    proof: p.proof,
+  const txHash = await broadcastClaim(p.walletClient, {
+    forgeAddress: p.forgeAddress,
+    qid: p.qid,
+    recipient: p.recipient,
+    role: p.role,
     leafIndex: p.leafIndex,
     leafAmount: p.leafAmount,
+    proof: p.proof,
+    ...(p.gas ? { gas: p.gas } : {}),
+  });
+  return {
+    txHash,
+    recipient: p.recipient,
     role: p.role,
-    expectedStatus: p.expectedStatus,
-  });
-  // Claim funds-shape: poolOut = leafAmount, everything else zero,
-  // stakeOp = None.
-  const funds: Funds = {
-    token: p.token,
-    poolIn: 0n,
-    poolOut: p.leafAmount,
-    feeAmount: 0n,
-    feeShareBps: 0,
-    feeShares: [],
-    stakeAmount: 0n,
-    stakeOp: StakeOp.None,
+    leafIndex: p.leafIndex,
+    leafAmount: p.leafAmount,
   };
-  const envelope: Envelope = {
-    signer: p.signer,
-    qid: p.qid,
-    action: ActionTag.Claim,
-    nonce: p.nonce,
-    expiresAt: p.expiresAt,
-    contentHash,
-    funds,
-  };
-  const typedData = buildEnvelopeForSigning({
-    envelope,
-    chainId: p.chainId,
-    forgeAddress: p.forgeAddress,
-  });
-  const localIntentHash = hashEnvelopeStruct(envelope);
-  // R-INTENT-HASH-IS-MATCH-KEY: claim preflight (ClaimDraft) returns
-  // expectedIntentHash when available; assert before signing.
-  assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
-  const intentHashToSend = p.expectedIntentHash ?? localIntentHash;
-  const account = privateKeyToAccount(p.privateKey);
-  const signature = (await account.signTypedData({
-    domain: typedData.domain,
-    types: typedData.types,
-    primaryType: typedData.primaryType,
-    message: typedData.message as never,
-  })) as Hex;
-
-  const result: ClaimFlowResult = {
-    intentHash: localIntentHash,
-    signature,
-    envelope,
-  };
-
-  const res = await fetch(
-    `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${p.bearerToken}`,
-        Prefer: "return=minimal",
-      },
-      body: stringifyWithBigInts({
-        actionType: "claim",
-        typedData: serializeEnvelope(envelope),
-        content: serializeClaimWitness(witness),
-        signature,
-        expectedIntentHash: intentHashToSend,
-      }),
-    },
-  );
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(
-      `runClaimFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
-    );
-  }
-  const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
-  result.intentHash = (parsed.intentHash ?? localIntentHash) as Hex;
-  result.backendStatus = parsed.status;
-
-  const witnessBytes = encodeClaimWitnessBytes(witness);
-  const txHash = await broadcastPullValue(p.walletClient, {
-    forgeAddress: p.forgeAddress,
-    envelope,
-    signature,
-    witnessBytes,
-  });
-  result.txHash = txHash;
-  return result;
 }
 
 // ─── Settle flow ─────────────────────────────────────────────────────

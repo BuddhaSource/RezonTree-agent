@@ -422,37 +422,36 @@ function tokenFromDraft(d: { envelopeTemplate?: { envelope?: { funds?: { token?:
 }
 
 // claim — winner/voter pull of a settled-question Merkle leaf. Preflight
-// returns the proof + leafIndex/leafAmount/role from the persisted,
-// root-verified leaf set (backend single-source, leafset I3b-3); the SDK
-// signs Envelope(Claim) + ClaimWitness and broadcasts pullValue().
+// returns the proof + recipient/leafIndex/leafAmount/role from the
+// persisted, root-verified leaf set (backend single-source, leafset
+// I3b-3). Claim is PERMISSIONLESS + UNSIGNED (contract A+G): the SDK
+// calls claim(qid, recipient, role, leafIndex, leafAmount, proof)
+// directly — no envelope, no signature, no /intents POST. Funds go to
+// the leaf's recipient.
 async function actClaim(idx: number, qid: string, dry = false) {
-  const { publicClient, walletClient, privateKey, address } = clientsFor(idx);
-  const bearer = await jwtFor(idx);
+  const { publicClient, walletClient, address } = clientsFor(idx);
   const pre = await preflight<ClaimDraft>(idx, qid, "claim", "recipient", address);
   if (dry) {
-    // Preflight-only: inspect the witness the backend serves (proof from
-    // the persisted root-verified leaf set) without broadcasting.
+    // Preflight-only: inspect the leaf the backend serves (proof from the
+    // persisted root-verified leaf set) without broadcasting.
     console.log(JSON.stringify({
-      action: "claim-dry", recipient: address, leafAmount: pre.leafAmount,
+      action: "claim-dry", recipient: pre.recipient, leafAmount: pre.leafAmount,
       leafIndex: pre.leafIndex, role: pre.role, proofLen: pre.proof?.length ?? 0,
-      proof: pre.proof, expectedIntentHash: pre.expectedIntentHash,
+      proof: pre.proof,
     }, null, 2));
     return;
   }
   const result = await runClaimFlow({
-    baseUrl: API_URL, bearerToken: bearer, signer: address, questionId: qid,
-    qid: pre.qid, nonce: BigInt(pre.nonce ?? "0"),
-    expiresAt: BigInt(pre.recommendedExpiresAt ?? Math.floor(Date.now() / 1000) + 300),
-    forgeAddress: FORGE!, chainId: pre.chainId ?? CHAIN_ID,
-    token: tokenFromDraft(pre),
+    qid: pre.qid,
+    recipient: (pre.recipient as Address) ?? address,
+    forgeAddress: FORGE!,
     proof: pre.proof, leafIndex: BigInt(pre.leafIndex), leafAmount: BigInt(pre.leafAmount),
-    role: pre.role, expectedStatus: 3 /* Settled */,
-    expectedIntentHash: (pre.expectedIntentHash as Hex | undefined) || undefined,
-    walletClient, privateKey,
+    role: pre.role,
+    walletClient,
   });
-  await awaitReceipt(publicClient, result.txHash!);
+  await awaitReceipt(publicClient, result.txHash);
   console.log(JSON.stringify({
-    action: "claim", txHash: result.txHash, intentHash: result.intentHash,
+    action: "claim", txHash: result.txHash, recipient: result.recipient,
     leafAmount: pre.leafAmount, role: pre.role,
   }, null, 2));
 }

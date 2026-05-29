@@ -69,6 +69,7 @@ import { buildSponsorWitness } from "../src/intents/sponsor-witness.js";
 import { buildCommitWitness } from "../src/intents/commit-witness.js";
 import {
   awaitReceipt,
+  broadcastClaim,
   broadcastSponsorSubmit,
   broadcastSubmit,
   makeAgentWalletClient,
@@ -1151,38 +1152,28 @@ class BattleRunner {
     }
 
     if (a.attack === "frontrun_claim") {
-      // Mallory tries to pullValue(Claim) against a non-existent
-      // settlement (bogus qid + empty proof). The chain merkle check
-      // must revert.
+      // Mallory tries to claim() against a non-existent settlement
+      // (bogus qid + empty proof). Claim is now PERMISSIONLESS + unsigned
+      // (the Merkle proof IS the auth), so the attack is a direct
+      // claim() call — the chain must revert on the proof/status check
+      // (claim:question-not-settled or claim:invalid-proof).
       const honest = await loginWallet(this.wallets["alice"]);
       const question = await this.makeQuestion(honest, "frontrun-claim test");
       await this.sponsorFund(honest, question.id, "1");
       const mallory = this.wallets["mallory"];
       const fakeQid = ("0x" + "ab".repeat(32)) as Hex;
-      const funds: Funds = {
-        token: USDC, poolIn: 0n, poolOut: parseAmountToWei("1", 6), feeAmount: 0n,
-        feeShareBps: 0, feeShares: [], stakeAmount: 0n, stakeOp: StakeOp.None,
-      };
-      // Claim witness: empty proof, leafAmount=1 USDC, role 0.
-      const { witness, contentHash } = (await import("../src/intents/claim-witness.js")).buildClaimWitness({
-        proof: [], leafIndex: 0n, leafAmount: parseAmountToWei("1", 6), role: 0, expectedStatus: 3,
-      });
-      const envelope: Envelope = {
-        signer: mallory.address as Address, qid: fakeQid, action: ActionTag.Claim,
-        nonce: 0n, expiresAt: BigInt(Math.floor(Date.now() / 1000) + 300),
-        contentHash, funds,
-      };
       const wc = this.makeWalletClient(mallory);
       try {
-        const account = privateKeyToAccount(mallory.privateKey as Hex);
-        const typedData = buildEnvelopeForSigning({ envelope, chainId: CHAIN_ID, forgeAddress: FORGE! });
-        const sig = (await account.signTypedData({
-          domain: typedData.domain, types: typedData.types,
-          primaryType: typedData.primaryType, message: typedData.message as never,
-        })) as Hex;
-        const witnessBytes = (await import("../src/forge/quadphase-broadcast.js")).encodeClaimWitnessBytes(witness);
-        await (await import("../src/forge/quadphase-broadcast.js")).broadcastPullValue(wc, {
-          forgeAddress: FORGE!, envelope, signature: sig, witnessBytes,
+        await broadcastClaim(wc, {
+          forgeAddress: FORGE!,
+          qid: fakeQid,
+          // Mallory names herself the recipient — pay-to-recipient is
+          // structural but the proof can't authorise a bogus leaf.
+          recipient: mallory.address as Address,
+          role: 0,
+          leafIndex: 0n,
+          leafAmount: parseAmountToWei("1", 6),
+          proof: [],
         });
         return this.attackFailed(a, "chain accepted bogus claim");
       } catch (err) {

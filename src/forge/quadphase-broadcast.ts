@@ -8,7 +8,12 @@
 //   sponsorSubmit(env, sig, witnessBytes)   — Sponsor (carries the
 //                                             witness so the chain can
 //                                             decode oracle + grace)
-//   pullValue(env, sig, witnessBytes)       — Claim, Refund
+//   pullValue(env, sig, witnessBytes)       — Refund ONLY (reverts on a
+//                                             Claim envelope)
+//   claim / claimAll                        — Claim (PERMISSIONLESS, no
+//                                             signature, no envelope; the
+//                                             Merkle proof is the auth and
+//                                             funds always go to recipient)
 //
 // The witness bytes for sponsorSubmit and pullValue are the abi-
 // encoded witness struct (NOT the typehash-prefixed hashStruct
@@ -36,7 +41,6 @@ import { privateKeyToAccount } from "viem/accounts";
 import type { Envelope, FeeShare, Funds } from "../intents/envelope.js";
 import type { AbandonWitness } from "../intents/abandon-witness.js";
 import type { SponsorWitness } from "../intents/sponsor-witness.js";
-import type { ClaimWitness } from "../intents/claim-witness.js";
 import type { RefundWitness } from "../intents/refund-witness.js";
 import type { FeeDistribution, SettleWitness, SlashEntry } from "../intents/settle-witness.js";
 
@@ -130,6 +134,10 @@ export const QUADPHASE_ENTRY_ABI = [
     outputs: [],
   },
   {
+    // pullValue is REFUND-ONLY. The contract reverts "pull:wrong-action"
+    // for any envelope whose action != Refund — Claim no longer rides
+    // this path (see claim/claimAll below). The witness here is always a
+    // RefundWitness.
     type: "function",
     name: "pullValue",
     stateMutability: "nonpayable",
@@ -137,6 +145,52 @@ export const QUADPHASE_ENTRY_ABI = [
       ENVELOPE_TUPLE,
       { name: "sig", type: "bytes" },
       { name: "witnessBytes", type: "bytes" },
+    ],
+    outputs: [],
+  },
+  {
+    // claim — PERMISSIONLESS, NO-SIGNATURE settlement-leaf pull (A+G).
+    // The Merkle proof IS the authorisation; the leaf binds (qid,
+    // recipient, role, leafIndex, leafAmount). Funds ALWAYS go to
+    // `recipient` (the leaf's committed address), never msg.sender —
+    // pay-to-recipient is structural. No envelope, no signature, no
+    // nonce: dedup is on the leaf hash. Replaced the old
+    // pullValue(Claim)-via-signed-ClaimWitness path.
+    type: "function",
+    name: "claim",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "qid", type: "bytes32" },
+      { name: "recipient", type: "address" },
+      { name: "role", type: "uint8" },
+      { name: "leafIndex", type: "uint256" },
+      { name: "leafAmount", type: "uint256" },
+      { name: "proof", type: "bytes32[]" },
+    ],
+    outputs: [],
+  },
+  {
+    // claimAll — claim every leaf one recipient owns on a question in a
+    // single tx (one transfer). Each ClaimLeaf is
+    // (uint8 role, uint256 leafIndex, uint256 leafAmount, bytes32[] proof);
+    // the contract sums the leafAmounts and pays the total to `recipient`.
+    // Same permissionless, no-signature authorisation model as claim().
+    type: "function",
+    name: "claimAll",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "qid", type: "bytes32" },
+      { name: "recipient", type: "address" },
+      {
+        type: "tuple[]",
+        name: "leaves",
+        components: [
+          { name: "role", type: "uint8" },
+          { name: "leafIndex", type: "uint256" },
+          { name: "leafAmount", type: "uint256" },
+          { name: "proof", type: "bytes32[]" },
+        ],
+      },
     ],
     outputs: [],
   },
@@ -243,25 +297,6 @@ export function encodeAbandonWitnessBytes(w: AbandonWitness): Hex {
         actionTag: w.actionTag,
         expectedStatus: w.expectedStatus,
         reason: w.reason,
-      },
-    ],
-  );
-}
-
-/** Encode a ClaimWitness for `pullValue(witnessBytes)`. */
-export function encodeClaimWitnessBytes(w: ClaimWitness): Hex {
-  return encodeAbiParameters(
-    parseAbiParameters(
-      "(uint8 actionTag, bytes32[] proof, uint256 leafIndex, uint256 leafAmount, uint8 role, uint8 expectedStatus)",
-    ),
-    [
-      {
-        actionTag: w.actionTag,
-        proof: w.proof,
-        leafIndex: w.leafIndex,
-        leafAmount: w.leafAmount,
-        role: w.role,
-        expectedStatus: w.expectedStatus,
       },
     ],
   );
@@ -428,15 +463,16 @@ export interface BroadcastPullValueParams {
   forgeAddress: Address;
   envelope: Envelope;
   signature: Hex;
-  /** Pre-encoded witness bytes (use encodeClaimWitnessBytes or
-   *  encodeRefundWitnessBytes). */
+  /** Pre-encoded RefundWitness bytes (use encodeRefundWitnessBytes). */
   witnessBytes: Hex;
   gas?: bigint;
 }
 
 /**
- * Broadcasts `pullValue(env, sig, witnessBytes)`. Use for Claim and
- * Refund actions; the contract dispatches on `env.action`.
+ * Broadcasts `pullValue(env, sig, witnessBytes)`. REFUND ONLY — the
+ * contract reverts "pull:wrong-action" for a Claim envelope. The
+ * witness must be a RefundWitness (encodeRefundWitnessBytes). Claims
+ * go through broadcastClaim / broadcastClaimAll instead.
  */
 export async function broadcastPullValue(
   wallet: WalletClient,
@@ -450,6 +486,116 @@ export async function broadcastPullValue(
       envelopeAsTuple(params.envelope),
       params.signature,
       params.witnessBytes,
+    ],
+    account: wallet.account as Account,
+    chain: wallet.chain,
+    ...(params.gas ? { gas: params.gas } : {}),
+  });
+}
+
+// ─── Claim broadcasters (permissionless, no signature) ───────────────
+//
+// A claim is NOT a signed Quadphase intent: the oracle-signed
+// settlementRoot already fixed the entitlement, and the Merkle proof IS
+// the authorisation (the leaf binds qid + recipient + role + leafIndex +
+// leafAmount). So claiming is a permissionless PULL — no envelope, no
+// signature, no nonce, and crucially NO backend /intents POST. Funds
+// ALWAYS go to `recipient` (the leaf's committed address); the caller
+// (msg.sender) only pays gas. Pay-to-recipient is structural in the
+// contract, so a relayer can push every winner out post-settlement.
+//
+// Leaf encoding the proof authorises (must match the contract's
+// `_settlementLeafHash`):
+//   leaf = keccak256(abi.encode(qid, recipient, role, leafIndex, leafAmount))
+// and `proof` is the array of Merkle siblings (sorted-pair hashing).
+
+/** One leaf in a claimAll batch — mirrors the contract's ClaimLeaf
+ *  struct `(uint8 role, uint256 leafIndex, uint256 leafAmount,
+ *  bytes32[] proof)`. */
+export interface ClaimLeaf {
+  role: number;
+  leafIndex: bigint;
+  leafAmount: bigint;
+  proof: Hex[];
+}
+
+export interface BroadcastClaimParams {
+  forgeAddress: Address;
+  /** bytes32 chain-level question id. */
+  qid: Hex;
+  /** Leaf's committed recipient — funds go here, NOT msg.sender. */
+  recipient: Address;
+  /** Role byte (winner_creator=1 / voter / sponsor — contract enum). */
+  role: number;
+  leafIndex: bigint;
+  leafAmount: bigint;
+  /** Merkle proof (sibling hashes) for the leaf. */
+  proof: Hex[];
+  gas?: bigint;
+}
+
+/**
+ * Broadcasts `claim(qid, recipient, role, leafIndex, leafAmount, proof)`
+ * — a plain, unsigned write. The contract recomputes the leaf hash,
+ * verifies it against the stored settlement root via `proof`, dedups on
+ * the leaf, and transfers `leafAmount` to `recipient`. No envelope, no
+ * signature, no backend POST.
+ */
+export async function broadcastClaim(
+  wallet: WalletClient,
+  params: BroadcastClaimParams,
+): Promise<Hex> {
+  return wallet.writeContract({
+    address: params.forgeAddress,
+    abi: QUADPHASE_ENTRY_ABI,
+    functionName: "claim",
+    args: [
+      params.qid,
+      params.recipient,
+      params.role,
+      params.leafIndex,
+      params.leafAmount,
+      params.proof,
+    ],
+    account: wallet.account as Account,
+    chain: wallet.chain,
+    ...(params.gas ? { gas: params.gas } : {}),
+  });
+}
+
+export interface BroadcastClaimAllParams {
+  forgeAddress: Address;
+  qid: Hex;
+  /** Leaf-committed recipient — every leaf in `leaves` must commit to
+   *  this same recipient (the contract pays the summed total to it). */
+  recipient: Address;
+  leaves: ClaimLeaf[];
+  gas?: bigint;
+}
+
+/**
+ * Broadcasts `claimAll(qid, recipient, leaves)` — claims every leaf the
+ * recipient owns on the question in one tx (one transfer of the summed
+ * amount to `recipient`). Same permissionless, no-signature model as
+ * broadcastClaim. Bounded by the contract's MAX_BATCH.
+ */
+export async function broadcastClaimAll(
+  wallet: WalletClient,
+  params: BroadcastClaimAllParams,
+): Promise<Hex> {
+  return wallet.writeContract({
+    address: params.forgeAddress,
+    abi: QUADPHASE_ENTRY_ABI,
+    functionName: "claimAll",
+    args: [
+      params.qid,
+      params.recipient,
+      params.leaves.map((l) => ({
+        role: l.role,
+        leafIndex: l.leafIndex,
+        leafAmount: l.leafAmount,
+        proof: l.proof,
+      })),
     ],
     account: wallet.account as Account,
     chain: wallet.chain,

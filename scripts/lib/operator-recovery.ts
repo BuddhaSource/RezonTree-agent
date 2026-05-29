@@ -162,21 +162,16 @@ export function tokenFromTemplate(
   return token as Address;
 }
 
-/** Pull expectedStatus out of a claim draft's witness (the backend bakes
- *  onchainStatusSettled=3 into the ClaimWitness). Defaults to Settled=3 if
- *  the template omits it. Mirrors server.ts::claimExpectedStatus. */
-export function claimExpectedStatus(claim: ClaimDraftResponse): number {
-  const w = claim.envelopeTemplate?.witness as
-    | { expectedStatus?: unknown }
-    | undefined;
-  return typeof w?.expectedStatus === "number" ? w.expectedStatus : 3;
-}
-
 export interface WithdrawnItemResult {
   actionType: "claim" | "refund";
   role: string;
   status: "broadcast" | "failed";
+  /** Refund-only: the staged signed-intent hash. Claims are unsigned
+   *  (permissionless), so they carry no intentHash — they set
+   *  `recipient` instead. */
   intentHash?: Hex;
+  /** Claim-only: the leaf's committed payout recipient. */
+  recipient?: string;
   txHash?: Hex;
   /** Amount actually pulled (0 on a failed broadcast). */
   amountWei: bigint;
@@ -278,34 +273,26 @@ export async function sweepWalletQuestion(
           result.totalWithdrawnWei += amount;
           continue;
         }
-        const token = tokenFromTemplate(c, "claim");
+        // Claim is PERMISSIONLESS + UNSIGNED — the Merkle proof is the
+        // auth and funds go to the leaf's recipient. No envelope / sig /
+        // /intents POST. The operator wallet only pays gas.
         const flow = await runClaimFlow({
-          signer: wallet.address,
           qid: c.qid as Hex,
-          questionId,
-          nonce: BigInt(c.nonce),
-          expiresAt: BigInt(c.recommendedExpiresAt),
+          recipient: c.recipient as Address,
           forgeAddress: opts.forgeAddress,
-          chainId: c.chainId ?? opts.chainId,
-          token,
           proof: c.proof as Hex[],
           leafIndex: BigInt(c.leafIndex),
           leafAmount: amount,
           role: c.role,
-          expectedStatus: claimExpectedStatus(c),
-          bearerToken: bearer,
-          baseUrl: opts.apiBase,
-          expectedIntentHash: c.expectedIntentHash as Hex,
           walletClient: walletClient!,
-          privateKey: wallet.privateKey,
         });
-        await awaitReceipt(publicClient!, flow.txHash!);
+        await awaitReceipt(publicClient!, flow.txHash);
         result.totalWithdrawnWei += amount;
         result.items.push({
           actionType: "claim",
           role: item.role,
           status: "broadcast",
-          intentHash: flow.intentHash,
+          recipient: c.recipient,
           txHash: flow.txHash,
           amountWei: amount,
           owedWei,
