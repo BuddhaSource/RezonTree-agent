@@ -78,15 +78,22 @@ describe("SDK flow helpers (src/forge/quadphase-flow.ts) redaction contract", ()
     // status stays `open` even though the chain says `Abandoned`.
     expect(
       abandonBody,
-      "runAbandonFlow must POST to /v1/questions/:id/intents before broadcastSubmit (audit C1)",
+      "runAbandonFlow must POST to /v1/questions/:id/intents before broadcastAbandonSubmit (audit C1)",
     ).toMatch(/POST.*\/v1\/questions/);
     expect(abandonBody).toMatch(/actionType: "abandon"/);
-    // And the POST must precede broadcastSubmit, not follow it.
+    // And the POST must precede broadcastAbandonSubmit, not follow it.
+    // Abandon broadcasts via the witness-bearing `abandonSubmit(env, sig,
+    // witnessBytes)` entry — plain `submit()` reverts
+    // "submit:abandon-needs-witness" for an Abandon envelope.
     const postIdx = abandonBody.indexOf("/v1/questions/");
-    const broadcastIdx = abandonBody.indexOf("broadcastSubmit(");
+    const broadcastIdx = abandonBody.indexOf("broadcastAbandonSubmit(");
+    expect(
+      broadcastIdx,
+      "runAbandonFlow must broadcast via broadcastAbandonSubmit (witness-bearing abandonSubmit entry)",
+    ).toBeGreaterThan(-1);
     expect(
       postIdx,
-      "POST must happen before broadcastSubmit (chain emits event → reconciler needs the row already staged)",
+      "POST must happen before broadcastAbandonSubmit (chain emits event → reconciler needs the row already staged)",
     ).toBeLessThan(broadcastIdx);
   });
 

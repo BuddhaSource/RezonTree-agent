@@ -34,6 +34,7 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 
 import type { Envelope, FeeShare, Funds } from "../intents/envelope.js";
+import type { AbandonWitness } from "../intents/abandon-witness.js";
 import type { SponsorWitness } from "../intents/sponsor-witness.js";
 import type { ClaimWitness } from "../intents/claim-witness.js";
 import type { RefundWitness } from "../intents/refund-witness.js";
@@ -103,6 +104,23 @@ export const QUADPHASE_ENTRY_ABI = [
   {
     type: "function",
     name: "sponsorSubmit",
+    stateMutability: "nonpayable",
+    inputs: [
+      ENVELOPE_TUPLE,
+      { name: "sig", type: "bytes" },
+      { name: "witnessBytes", type: "bytes" },
+    ],
+    outputs: [],
+  },
+  {
+    // Abandon — `submit()` now REVERTS "submit:abandon-needs-witness"
+    // for an Abandon envelope, so Abandon broadcasts through this
+    // dedicated witness-bearing entry. Same (env, sig, witnessBytes)
+    // ABI as sponsorSubmit/publishSettlement; the contract decodes the
+    // AbandonWitness, recomputes hashAbandonWitness, and rejects a
+    // contentHash mismatch before any state write.
+    type: "function",
+    name: "abandonSubmit",
     stateMutability: "nonpayable",
     inputs: [
       ENVELOPE_TUPLE,
@@ -202,6 +220,29 @@ export function encodeSponsorWitnessBytes(w: SponsorWitness): Hex {
         stakeBasisPoints: w.stakeBasisPoints,
         fundingDeadline: w.fundingDeadline,
         noSolutionGracePeriod: w.noSolutionGracePeriod,
+      },
+    ],
+  );
+}
+
+/** Encode an AbandonWitness for `abandonSubmit(witnessBytes)`. The
+ *  contract decodes via `abi.decode(witnessBytes, (AbandonWitness))`
+ *  and recomputes hashAbandonWitness over {actionTag, expectedStatus,
+ *  reason}. These are the bare struct fields as a tuple (NO typehash
+ *  prefix — the typehash is folded inside env.contentHash, not the raw
+ *  witness bytes), matching how encodeSponsorWitnessBytes encodes its
+ *  struct. Field order mirrors ABANDON_WITNESS_TYPES / the contract's
+ *  AbandonWitness byte-for-byte. */
+export function encodeAbandonWitnessBytes(w: AbandonWitness): Hex {
+  return encodeAbiParameters(
+    parseAbiParameters(
+      "(uint8 actionTag, uint8 expectedStatus, bytes32 reason)",
+    ),
+    [
+      {
+        actionTag: w.actionTag,
+        expectedStatus: w.expectedStatus,
+        reason: w.reason,
       },
     ],
   );
@@ -344,6 +385,38 @@ export async function broadcastSponsorSubmit(
     address: params.forgeAddress,
     abi: QUADPHASE_ENTRY_ABI,
     functionName: "sponsorSubmit",
+    args: [envelopeAsTuple(params.envelope), params.signature, witnessBytes],
+    account: wallet.account as Account,
+    chain: wallet.chain,
+    ...(params.gas ? { gas: params.gas } : {}),
+  });
+}
+
+export interface BroadcastAbandonSubmitParams {
+  forgeAddress: Address;
+  envelope: Envelope;
+  signature: Hex;
+  witness: AbandonWitness;
+  gas?: bigint;
+}
+
+/**
+ * Broadcasts `abandonSubmit(env, sig, witnessBytes)`. The plain
+ * `submit()` entry REVERTS "submit:abandon-needs-witness" for an
+ * Abandon envelope, so Abandon must broadcast here. The chain decodes
+ * the AbandonWitness to recompute env.contentHash (and read the
+ * expectedStatus + reason), then performs the permissionless
+ * Open → Abandoned transition.
+ */
+export async function broadcastAbandonSubmit(
+  wallet: WalletClient,
+  params: BroadcastAbandonSubmitParams,
+): Promise<Hex> {
+  const witnessBytes = encodeAbandonWitnessBytes(params.witness);
+  return wallet.writeContract({
+    address: params.forgeAddress,
+    abi: QUADPHASE_ENTRY_ABI,
+    functionName: "abandonSubmit",
     args: [envelopeAsTuple(params.envelope), params.signature, witnessBytes],
     account: wallet.account as Account,
     chain: wallet.chain,

@@ -72,6 +72,7 @@ import {
   type SlashEntry,
 } from "../intents/settle-witness.js";
 import {
+  broadcastAbandonSubmit,
   broadcastSettle,
   broadcastSponsorSubmit,
   broadcastSubmit,
@@ -1071,10 +1072,17 @@ export async function runAbandonFlow(
   result.intentHash = (parsed.intentHash ?? intentHash) as Hex;
   result.backendStatus = parsed.status;
 
-  const txHash = await broadcastSubmit(p.walletClient, {
+  // C: Abandon broadcasts through `abandonSubmit(env, sig, witnessBytes)`,
+  // NOT the plain `submit(env, sig)` — `submit()` now REVERTS
+  // "submit:abandon-needs-witness" for an Abandon envelope. The witness
+  // built above (buildAbandonWitness) is abi-encoded inside the helper so
+  // the chain can recompute env.contentHash and read expectedStatus +
+  // reason.
+  const txHash = await broadcastAbandonSubmit(p.walletClient, {
     forgeAddress: p.forgeAddress,
     envelope,
     signature,
+    witness,
   });
   result.txHash = txHash;
   return result;
