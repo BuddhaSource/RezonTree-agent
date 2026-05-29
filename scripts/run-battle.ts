@@ -581,9 +581,11 @@ class BattleRunner {
         forgeAddress: FORGE!, chainId: cosponsorPre.chainId ?? CHAIN_ID,
         expectedIntentHash: cosponsorPre.expectedIntentHash as Hex,
         token: cosponsorPre.token.contractAddress as Address, amount: amountWei, feeAmount: 0n,
-        // No feeShares — cosponsor inherits the frozen sponsor policy;
-        // the flow hardcodes the empty array (chain shape gate + backend
-        // preflight bake empty, so any caller value would drift the hash).
+        // Cosponsor signs its OWN settlement-skim feeShares (realized-outcome
+        // model; chain requires non-empty). Echo the backend-advertised policy
+        // verbatim so the locally-built intentHash matches preflight.
+        feeShares: (cosponsorPre.feeShares ?? []).map((s) => ({ recipient: s.recipient as Address, basisPoints: s.basisPoints })),
+        feeShareBps: Number(cosponsorPre.feeShareBps ?? 0),
         walletClient: wc, privateKey: wallet.privateKey as Hex,
       });
       await awaitReceipt(publicClient, result.txHash!);

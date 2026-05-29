@@ -100,6 +100,11 @@ export interface FundPreflight {
   platformFeeBps?: string;
   feeShareBps?: string;
   platformFeeRecipient?: string;
+  // BE-policy feeShares the cosponsor signs into funds.feeShares
+  // (realized-outcome model; chain requires non-empty per
+  // "shape:cosponsor:feeShares-required"). Mirror of the backend
+  // FundPreflightResponse.feeShares. v1 = [{platform, 10000}].
+  feeShares?: { recipient: string; basisPoints: number }[];
   abandonmentGracePeriod?: string;
   // Recommended sponsor-signed fundingDeadline (unix seconds).
   // Distinct from `fundingDeadline` above (which is the active round's

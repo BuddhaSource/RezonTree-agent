@@ -286,20 +286,22 @@ async function actSponsor(idx: number, qid: string, amount: string) {
     return;
   }
 
-  // cosponsor — a pure pool top-up. The cosponsor carries NO feeShares
-  // of its own: the fee-share policy is frozen by the first sponsor, and
-  // a cosponsor top-up only adds to the pool (#656 / contract gate
-  // `shape:cosponsor:feeShares-must-be-empty`). The backend's cosponsor
-  // preflight bakes the canonical envelope with empty feeShares +
-  // feeShareBps=0 and computes `expectedIntentHash` over THAT; runCosponsorFlow
-  // hardcodes the same empty array, so the locally-recomputed hash always
-  // matches preflight (a stale non-empty array drifts the hash → HTTP 400).
+  // cosponsor — a pool top-up that, under the realized-outcome fee model,
+  // signs its OWN settlement-skim feeShares: the chain REQUIRES a non-empty
+  // feeShares array (`shape:cosponsor:feeShares-required`) summing to 10000,
+  // because a cosponsor is taxed at settlement like commit/vote. The backend
+  // cosponsor preflight advertises the BE platform policy (pre.feeShares) +
+  // the frozen q-level split (pre.feeShareBps) and computes
+  // `expectedIntentHash` over THEM; runCosponsorFlow echoes them verbatim so
+  // the locally-recomputed hash matches preflight.
   const result = await runCosponsorFlow({
     baseUrl: API_URL, bearerToken: bearer, signer: address, questionId: qid,
     qid: pre.qid as Hex, nonce, expiresAt, forgeAddress: FORGE!,
     chainId: pre.chainId ?? CHAIN_ID,
     expectedIntentHash: pre.expectedIntentHash as Hex,
     token: pre.token.contractAddress as Address, amount: amountWei, feeAmount: 0n,
+    feeShares: (pre.feeShares ?? []).map((s) => ({ recipient: s.recipient as Address, basisPoints: s.basisPoints })),
+    feeShareBps: Number(pre.feeShareBps ?? 0),
     walletClient, privateKey,
   });
   await awaitReceipt(publicClient, result.txHash!);

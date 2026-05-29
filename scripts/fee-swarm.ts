@@ -47,6 +47,7 @@ import {
 import {
   ensureUsdcAllowance,
   runCommitFlow,
+  runCosponsorFlow,
   runSponsorFlow,
   runVoteFlow,
 } from "../src/forge/quadphase-flow.js";
@@ -178,6 +179,7 @@ interface ScenarioSpec {
   abandon: boolean;     // S0
   // referee->referrer pairings (by pool name); referrer must claim a code.
   referrals: { referee: string; referrer: string }[];
+  cosponsor?: string;   // pool name that cosponsors after the sponsor confirms (Q9)
 }
 
 const SPECS: ScenarioSpec[] = [
@@ -185,7 +187,39 @@ const SPECS: ScenarioSpec[] = [
   { id: "S1", title: "S1 settle: 1 solver (referred) + 2 voters", sponsor: "alice", solvers: ["bob"], voters: ["carol", "dave"], winner: "bob", abandon: false, referrals: [{ referee: "alice", referrer: "grace" }, { referee: "bob", referrer: "grace" }] },
   { id: "S3", title: "S3 settle: 3 solvers (mix referred/un-referred) + 3 voters, top-3", sponsor: "alice", solvers: ["bob", "dave", "heidi"], voters: ["carol", "eve", "frank"], winner: "bob", abandon: false, referrals: [{ referee: "alice", referrer: "grace" }, { referee: "bob", referrer: "grace" }] },
   { id: "S4", title: "S4 settle: 4 solvers, top-3 win, 4th slashed", sponsor: "alice", solvers: ["bob", "dave", "heidi", "ivan"], voters: ["carol", "eve", "frank"], winner: "bob", abandon: false, referrals: [{ referee: "alice", referrer: "grace" }, { referee: "ivan", referrer: "grace" }] },
+  // 10-scenario lifecycle swarm (task #662 follow-up, 2026-05-28). Real
+  // academic titles; sponsor=alice everywhere; idx mapping unchanged from
+  // POOL above (alice=1..ivan=9 of the bulb-mnemonic). Q4/Q5 abandon via
+  // 0-sol DB-only flip. Q6/Q7 reach recover() (driven separately after
+  // time-warp). Q8 carries alice->grace referral. Q9 = solo solver (cosponsor
+  // leg requires SDK extension — flagged inline).
+  { id: "Q1", title: "Methods for accelerating genome decoding in biotech: WGS pipelines under 24h",                              sponsor: "alice", solvers: ["bob"],                  voters: ["carol", "dave"],          winner: "bob", abandon: false, referrals: [] },
+  { id: "Q2", title: "Bitcoin trading research: defining a regime-aware momentum strategy for BTC-USD",                            sponsor: "alice", solvers: ["bob", "dave", "heidi"], voters: ["carol", "eve", "frank"],  winner: "bob", abandon: false, referrals: [] },
+  { id: "Q3", title: "Best use of GBrain skill by Garry Tan for early-stage YC application review",                                sponsor: "alice", solvers: ["bob", "dave", "heidi", "ivan"], voters: ["carol", "eve", "frank"], winner: "bob", abandon: false, referrals: [] },
+  { id: "Q4", title: "LLM evaluation benchmarks beyond static datasets: dynamic agentic eval design",                              sponsor: "alice", solvers: [],                       voters: [],                         winner: "",    abandon: true,  referrals: [] },
+  { id: "Q5", title: "Climate modeling: architectures for sub-1km regional downscaling on consumer GPUs",                          sponsor: "alice", solvers: [],                       voters: [],                         winner: "",    abandon: true,  referrals: [] },
+  { id: "Q6", title: "AI safety alignment research priorities for frontier-model post-deployment monitoring",                       sponsor: "alice", solvers: [],                       voters: [],                         winner: "",    abandon: false, referrals: [] }, // recover-target: do NOT abandon; time-warp + recover() later
+  { id: "Q7", title: "Web3 governance frameworks comparison: liquid democracy vs futarchy vs quadratic",                            sponsor: "alice", solvers: [],                       voters: [],                         winner: "",    abandon: false, referrals: [] }, // recover-target
+  { id: "Q8", title: "Solar panel efficiency materials: perovskite stability under tropical conditions",                            sponsor: "alice", solvers: ["bob"],                  voters: ["carol", "dave"],          winner: "bob", abandon: false, referrals: [{ referee: "alice", referrer: "grace" }] },
+  { id: "Q9", title: "Distributed systems consensus: Tangle vs DAG vs PBFT for sub-second finality",                                sponsor: "alice", solvers: ["dave"],                 voters: ["carol", "eve"],           winner: "dave", abandon: false, referrals: [], cosponsor: "bob" },
+  { id: "Q10", title: "Quantum-safe cryptography: post-NIST round 4 finalist evaluations",                                          sponsor: "alice", solvers: ["bob", "dave", "heidi"], voters: ["carol", "eve", "frank"],  winner: "bob", abandon: false, referrals: [] },
 ];
+
+// Genuine research framing per question (3-5 sentences). An agent reading
+// these later sees plausible questions, not "test N" filler. Keyed by
+// spec.id; scenarios without an entry fall back to the generic blurb.
+const DESCRIPTIONS: Record<string, string> = {
+  Q1: "Whole-genome sequencing pipelines remain the bottleneck for clinical turnaround: secondary analysis (alignment, variant calling, annotation) routinely takes 12-48h per sample on commodity infrastructure. We seek a reproducible architecture that takes a 30x human WGS FASTQ to an annotated, clinically-actionable VCF in under 24 hours end-to-end. Submissions should specify the aligner/caller stack (e.g. DRAGEN vs BWA-MEM2+DeepVariant), the parallelization strategy (per-chromosome sharding, GPU offload), and the hardware envelope. Quantify wall-clock, cost-per-sample, and F1 against GIAB truth sets, and identify which stages dominate the critical path.",
+  Q2: "We want a falsifiable specification of a regime-aware momentum strategy for BTC-USD that survives out-of-sample testing across the 2018-2025 cycles. A submission should define the regime classifier (volatility clustering, trend vs mean-reversion detection), the momentum signal and its lookback, position sizing, and transaction-cost assumptions for a realistic venue. Report Sharpe, max drawdown, and turnover on a strict walk-forward split, and explicitly address overfitting and survivorship/look-ahead bias. The strongest answers state the conditions under which the edge decays.",
+  Q3: "Garry Tan's 'GBrain' skill encodes a partner-grade heuristic for triaging early-stage YC applications at speed. We seek the highest-leverage workflow for applying it to a batch of 500 applications: how to sequence the founder/market/traction signals, where the skill's judgment is load-bearing versus where it should defer to a human, and how to avoid false negatives on non-obvious outliers. Submissions should propose a concrete review pipeline, a rubric for escalation, and a calibration method against historical YC outcomes. Address the failure mode where pattern-matching penalizes genuinely novel theses.",
+  Q4: "Static benchmarks (MMLU, GSM8K) saturate and leak into training data, making them poor signals for frontier agentic capability. We want a design for dynamic, contamination-resistant evaluation: tasks generated or mutated at eval time, graded on multi-step tool-use and recovery from error rather than single-shot answers. Submissions should specify the task-generation mechanism, the grading oracle (programmatic vs model-judge vs human), and how to prevent reward hacking. Quantify how the eval discriminates between models that static benchmarks rate as equivalent.",
+  Q5: "Regional climate downscaling to sub-1km resolution is gated by the compute cost of dynamical models, putting it out of reach for most labs. We seek an ML-based downscaling architecture (e.g. diffusion or physics-informed super-resolution) that runs on a single consumer GPU and produces calibrated sub-1km fields from coarse reanalysis input. Submissions should specify the model, the training data and conditioning variables, and the validation against held-out high-resolution observations. Address physical consistency (mass/energy conservation) and quantify the resolution/skill tradeoff versus dynamical downscaling.",
+  Q6: "Most alignment effort targets pre-deployment training; far less is invested in detecting capability or behavioral drift after a frontier model ships. We want a prioritized research agenda for post-deployment monitoring: which signals (refusal-rate shifts, jailbreak-success telemetry, distributional shift in tool-calls) are leading indicators of emerging risk, and how to monitor them without unacceptable false-positive load. Submissions should rank interventions by tractability and impact, and propose at least one concrete detector with a measurable success criterion. Identify the monitoring gaps that current evals cannot close.",
+  Q7: "Liquid democracy, futarchy, and quadratic voting each promise to fix a different failure of one-token-one-vote on-chain governance. We seek a rigorous comparison across plutocracy resistance, sybil resistance, voter-effort cost, and resistance to vote-buying/bribery markets. Submissions should model each mechanism under a realistic attacker, cite empirical deployments where they exist, and state which mechanism dominates under which assumptions. The strongest answers identify a hybrid or a decisive disqualifying attack rather than declaring a universal winner.",
+  Q8: "Perovskite solar cells exceed 25% lab efficiency but degrade rapidly under the heat and humidity of tropical deployment, blocking commercialization where insolation is highest. We seek the most promising materials/encapsulation strategy for maintaining >80% of initial efficiency after 1000h at 85C/85% RH. Submissions should specify the composition (2D/3D mixed-cation, additives), the encapsulation stack, and the degradation pathway being suppressed (ion migration, phase segregation). Report against ISOS damp-heat protocols and quantify the efficiency/stability tradeoff.",
+  Q9: "Sub-second deterministic finality is the gating requirement for using a distributed ledger in payments and exchange settlement. We want a head-to-head evaluation of IOTA-style Tangle, generalized DAG-BFT, and classical PBFT across finality latency, throughput, fault tolerance threshold, and behavior under partition. Submissions should state the network/adversary model, cite measured latencies where deployments exist, and identify which design dominates for a sub-second-finality target at hundreds of validators. Address the CAP/cost tradeoffs each makes.",
+  Q10: "With NIST's PQC standardization advancing (ML-KEM, ML-DSA standardized; round-4 KEM finalists like Classic McEliece, BIKE, HQC under evaluation), implementers need guidance on the round-4 finalists for niche requirements. We seek a comparative evaluation across security-assumption diversity (code-based vs lattice), key/ciphertext size, constant-time implementation risk, and side-channel surface. Submissions should recommend a finalist for a concrete constrained deployment (e.g. embedded TLS) and justify against the alternatives. Identify the cryptanalytic developments that would change the recommendation.",
+};
 
 const SPONSOR_AMOUNT = "1";   // 1 USDC (6dp) per sponsor
 const STATUS_SETTLED = 3, STATUS_ABANDONED = 4, STATUS_RECOVERED = 5;
@@ -217,7 +251,7 @@ async function runScenario(spec: ScenarioSpec) {
 
   // 0) Logins for everyone involved.
   const sponsor = await login(wallets[spec.sponsor]);
-  const involved = new Set<string>([spec.sponsor, ...spec.solvers, ...spec.voters, ...spec.referrals.flatMap(r => [r.referee, r.referrer])]);
+  const involved = new Set<string>([spec.sponsor, ...spec.solvers, ...spec.voters, ...spec.referrals.flatMap(r => [r.referee, r.referrer]), ...(spec.cosponsor ? [spec.cosponsor] : [])]);
   const auths: Record<string, Authed> = {};
   for (const name of involved) auths[name] = await login(wallets[name]);
 
@@ -243,7 +277,14 @@ async function runScenario(spec: ScenarioSpec) {
   //    finding). So we capture the stored title/description and feed them
   //    back into runSponsorFlow with empty criteria + tags.
   const qTitle = spec.title;
-  const qDescription = `Realized-outcome fee-model swarm scenario ${spec.id}. ${spec.title}. `.repeat(12);
+  // Genuine per-topic research framing (DESCRIPTIONS map); pad to the
+  // backend's MinQuestionDescriptionChars=1000 floor with the scenario
+  // tag so the body stays plausible to an agent reading it later.
+  const realFraming = DESCRIPTIONS[spec.id] ?? `Realized-outcome fee-model swarm scenario ${spec.id}. ${spec.title}.`;
+  let qDescription = realFraming;
+  while (qDescription.length < 1050) {
+    qDescription += `\n\nSubmissions are scored against the success criteria below; the strongest answer wins by voter conviction. (${spec.id})`;
+  }
   const qResp = await call<{ id: string; successCriteria: { id: string; name: string }[] }>("POST", "/v1/questions", {
     title: qTitle,
     description: qDescription,
@@ -317,6 +358,37 @@ async function runScenario(spec: ScenarioSpec) {
     if (qstatus === "open") ok("question open (sponsor reconciled L1→L2→L3)");
   }
 
+  // 3b) Cosponsor (Q9): a second funder adds to the pool after the sponsor
+  //     confirmed. Cosponsor inherits q.token / feeShareBps / feeShares from
+  //     chain state; the envelope carries only the added amount.
+  if (spec.cosponsor) {
+    const co = auths[spec.cosponsor];
+    const coPre = await preflightV2<FundPreflight>(questionId, "cosponsor", "cosponsor", co.address, co.token);
+    const coAmountWei = parseAmountToWei(SPONSOR_AMOUNT, coPre.token.decimals);
+    const coWc = makeWc(wallets[spec.cosponsor]);
+    await ensureUsdcAllowance(coWc, publicClient as any, { usdc: USDC, forge: FORGE, owner: co.address, required: coAmountWei });
+    const coResult = await runCosponsorFlow({
+      baseUrl: BACKEND, bearerToken: co.token, signer: co.address, questionId, qid,
+      nonce: BigInt(coPre.nonce ?? "0"),
+      expiresAt: BigInt(coPre.recommendedExpiresAt ?? Math.floor(Date.now()/1000)+300),
+      forgeAddress: FORGE, chainId: coPre.chainId ?? CHAIN_ID,
+      expectedIntentHash: coPre.expectedIntentHash as Hex,
+      token: (coPre.token.contractAddress as Address),
+      amount: coAmountWei, feeAmount: 0n,
+      // Cosponsor signs its OWN settlement-skim feeShares (realized-outcome
+      // model; chain requires non-empty). Echo the backend-advertised policy
+      // verbatim so the locally-built intentHash matches preflight.
+      feeShares: (coPre.feeShares ?? []).map((s) => ({ recipient: s.recipient as Address, basisPoints: s.basisPoints })),
+      feeShareBps: Number(coPre.feeShareBps ?? 0),
+      walletClient: coWc, privateKey: wallets[spec.cosponsor].privateKey as Hex,
+    });
+    await awaitReceipt(publicClient as any, coResult.txHash!);
+    poolInflows += coAmountWei;
+    ok(`cosponsor ${spec.cosponsor} ${SPONSOR_AMOUNT} USDC on-chain (intent ${coResult.intentHash.slice(0,12)}…)`);
+    // Wait for cosponsor reconcile so the pool reflects it before commits.
+    await new Promise((r) => setTimeout(r, 12000));
+  }
+
   // Snapshot platform accrued BEFORE settle (global mapping; isolate this Q).
   const accruedBefore = new Map<string, bigint>();
   const trackRecipients = new Set<string>([platformFeeRecipient.toLowerCase()]);
@@ -371,12 +443,18 @@ async function runScenario(spec: ScenarioSpec) {
     const commitWaitDeadline = Date.now() + 180_000;
     const want = new Set(spec.solvers.map((s) => solutionsByLetter[s].intentHash.toLowerCase()));
     while (Date.now() < commitWaitDeadline) {
-      const r = await call<{ data?: Array<{ intentHash?: string; intent_hash?: string; confirmationStatus?: string }> }>("GET", `/v1/questions/${questionId}/solutions`, undefined, sponsor.token);
+      // Round-3 consolidated surface: the standalone /v1/questions/:id/solutions
+      // route is gone (ROUTE_NOT_FOUND). Solutions embed under the question
+      // detail via ?include=solutions → { solutions: { data: [...] } }. [SWARM FIX #629]
+      const r = await call<{ solutions?: { data?: any[] } }>("GET", `/v1/questions/${questionId}?include=solutions`, undefined, sponsor.token);
       const confirmed = new Set<string>();
-      const list = (r.body?.data ?? []) as any[];
+      const list = (r.body?.solutions?.data ?? []) as any[];
       for (const s of list) {
         const ih = (s.intentHash ?? s.intent_hash ?? "").toString().toLowerCase();
-        if (ih && want.has(ih) && (s.confirmationStatus ?? s.confirmation_status) === "confirmed") confirmed.add(ih);
+        // The ?include=solutions embed is confirmed-only (R-CHAIN-IS-PUBLIC-TRUTH):
+        // a row's mere PRESENCE means it's chain-confirmed. The embed does not
+        // carry confirmationStatus, so presence is the signal. [SWARM FIX #629]
+        if (ih && want.has(ih)) confirmed.add(ih);
       }
       if (confirmed.size === want.size) { ok(`all ${want.size} commits confirmed (chain→Ponder→DB)`); break; }
       await new Promise((r) => setTimeout(r, 5000));
@@ -536,10 +614,11 @@ async function main() {
     totalStakesCommittedWei: results.reduce((s, r) => s + BigInt(r.stakesCommittedWei), 0n).toString(),
   };
   const out = { startedAt: new Date().toISOString(), chainId: CHAIN_ID, forge: FORGE, token: USDC, results, aggregate: agg };
-  fs.writeFileSync("/tmp/fee-swarm-tally.json", JSON.stringify(out, (_k, v) => typeof v === "bigint" ? v.toString() : v, 2));
+  const tallyPath = process.env.SWARM_TALLY_PATH ?? "/tmp/fee-swarm-tally.json";
+  fs.writeFileSync(tallyPath, JSON.stringify(out, (_k, v) => typeof v === "bigint" ? v.toString() : v, 2));
   log(`\n=== AGGREGATE ===`);
   log(JSON.stringify(agg, null, 2));
-  log(`tally written to /tmp/fee-swarm-tally.json`);
+  log(`tally written to ${tallyPath}`);
 }
 
 main().catch((e) => { console.error("FATAL", e); process.exit(1); });

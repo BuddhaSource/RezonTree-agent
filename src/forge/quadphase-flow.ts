@@ -384,18 +384,20 @@ export interface CosponsorFlowParams {
   /** Server-asserted intentHash from the preflight response. */
   expectedIntentHash: Hex;
 
-  // Funds. Cosponsor binds only the added pool amount + token. It
-  // carries NO feeShares of its own and feeShareBps=0 — the fee-share
-  // policy is frozen by the first sponsor; a cosponsor top-up only adds
-  // to the pool. The backend's cosponsor preflight bakes the canonical
-  // envelope with empty feeShares + feeShareBps=0 and computes
-  // `expectedIntentHash` over THAT, and the chain shape gate enforces
-  // it. There is therefore no feeShares/feeShareBps param here — the
-  // flow hardcodes empty so a caller can't drift the envelope and crash
-  // the submit with HTTP 400 / an intent-hash mismatch.
+  // Funds. Cosponsor binds the added pool amount + token + its OWN
+  // settlement-skim feeShares (realized-outcome model). The chain REQUIRES
+  // non-empty feeShares summing to 10000 ("shape:cosponsor:feeShares-required")
+  // — a cosponsor is taxed at settlement like commit/vote. feeShares +
+  // feeShareBps come straight from the backend cosponsor preflight
+  // (pre.feeShares = the BE platform policy, pre.feeShareBps = the frozen
+  // q-level split); the flow echoes them verbatim so the locally-built
+  // envelope's intentHash matches the backend's expectedIntentHash and the
+  // Stage-2 tamper-check passes.
   token: Address;
   amount: bigint;
   feeAmount: bigint;
+  feeShares: FeeShare[];
+  feeShareBps: number;
 
   walletClient: WalletClient;
   privateKey: Hex;
@@ -417,19 +419,21 @@ export interface CosponsorFlowResult {
 export async function runCosponsorFlow(
   p: CosponsorFlowParams,
 ): Promise<CosponsorFlowResult> {
-  // 1+2. Witness + envelope. Cosponsor funds carry empty feeShares +
-  // feeShareBps=0 — hardcoded, not caller-supplied, so the locally-built
-  // envelope can never drift from the backend's canonical template
-  // (preflight bakes the same empty array; the chain shape gate enforces
-  // it). A stale non-empty fallback was what crashed Q9's cosponsor leg.
+  // 1+2. Witness + envelope. Cosponsor carries its OWN settlement-skim
+  // feeShares (realized-outcome model), taken verbatim from the backend
+  // preflight (pre.feeShares = BE platform policy, pre.feeShareBps = frozen
+  // q-level split). The chain REQUIRES them non-empty
+  // ("shape:cosponsor:feeShares-required") and the Stage-2 validator
+  // tamper-checks them; echoing the preflight values keeps the locally-built
+  // envelope's intentHash == expectedIntentHash.
   const { witness, contentHash } = buildCosponsorWitness({ amount: p.amount });
   const funds: Funds = {
     token: p.token,
     poolIn: p.amount,
     poolOut: 0n,
     feeAmount: p.feeAmount,
-    feeShareBps: 0,
-    feeShares: [],
+    feeShareBps: p.feeShareBps,
+    feeShares: p.feeShares,
     stakeAmount: 0n,
     stakeOp: StakeOp.None,
   };

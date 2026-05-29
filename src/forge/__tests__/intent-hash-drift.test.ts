@@ -137,9 +137,10 @@ describe("runXxxFlow refuses to sign past drift (R-INTENT-HASH-IS-MATCH-KEY)", (
         token: TOKEN,
         amount: 1n,
         feeAmount: 0n,
-        // No feeShares param — cosponsor hardcodes empty feeShares +
-        // feeShareBps=0 (the fix for the Round-3 envelope drift). The
-        // shape-match test below asserts the resulting funds.
+        // Cosponsor signs its OWN feeShares (realized-outcome; chain requires
+        // non-empty). The drift assert fires on BOGUS_HASH before broadcast.
+        feeShares: [{ recipient: TEST_ADDR, basisPoints: 10000 }],
+        feeShareBps: 1000,
       }),
     ).rejects.toThrow(/intent hash drift/);
   });
@@ -210,9 +211,10 @@ describe("runXxxFlow refuses to sign past drift (R-INTENT-HASH-IS-MATCH-KEY)", (
 //   1. Both bodies carry the identical top-level Round-3 field set
 //      ({actionType, typedData, content, signature, expectedIntentHash}).
 //   2. Cosponsor's actionType is "cosponsor".
-//   3. Cosponsor's funds.feeShares is the EMPTY array and feeShareBps=0
-//      (the #656 invariant — frozen by the first sponsor; chain shape
-//      gate + backend preflight bake empty).
+//   3. Cosponsor's funds.feeShares is NON-EMPTY (realized-outcome model —
+//      the cosponsor signs its OWN settlement-skim recipients; the chain
+//      requires it per shape:cosponsor:feeShares-required, superseding the
+//      stale #656 "must be empty" rule).
 describe("Round-3 submit body: cosponsor mirrors sponsor's shape", () => {
   const base = {
     baseUrl: "http://localhost:9999",
@@ -247,7 +249,7 @@ describe("Round-3 submit body: cosponsor mirrors sponsor's shape", () => {
     return { bodies };
   }
 
-  it("posts the same top-level field set, actionType=cosponsor, empty feeShares", async () => {
+  it("posts the same top-level field set, actionType=cosponsor, non-empty feeShares", async () => {
     const cap = captureFetch();
 
     // Sponsor — pass the local hash as expectedIntentHash so the drift
@@ -268,6 +270,7 @@ describe("Round-3 submit body: cosponsor mirrors sponsor's shape", () => {
       ...base,
       expectedIntentHash: undefined as unknown as Hex,
       token: TOKEN, amount: 1n, feeAmount: 0n,
+      feeShares: [{ recipient: TEST_ADDR, basisPoints: 10000 }], feeShareBps: 1000,
     }).catch(() => undefined);
 
     expect(cap.bodies).toHaveLength(2);
@@ -289,9 +292,11 @@ describe("Round-3 submit body: cosponsor mirrors sponsor's shape", () => {
     expect(cosponsorBody.actionType).toBe("cosponsor");
     expect(sponsorBody.actionType).toBe("sponsor");
 
-    // 3. #656 invariant — cosponsor carries empty feeShares + feeShareBps=0.
+    // 3. Realized-outcome invariant — cosponsor signs its OWN non-empty
+    //    feeShares (chain requires it; supersedes the stale #656 "must be
+    //    empty" rule). The flow echoes the caller-supplied policy verbatim.
     const coFunds = (cosponsorBody.typedData as { funds: Record<string, unknown> }).funds;
-    expect(coFunds.feeShares).toEqual([]);
-    expect(coFunds.feeShareBps).toBe(0);
+    expect((coFunds.feeShares as unknown[]).length).toBe(1);
+    expect(coFunds.feeShareBps).toBe(1000);
   });
 });
