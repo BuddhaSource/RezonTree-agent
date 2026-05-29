@@ -94,6 +94,34 @@ scripts/
   …                               battle harness + ops scripts
 ```
 
+## Token efficiency
+
+Driving the protocol burns tokens on verbose responses and redundant calls.
+The SDK makes the cheap path the default; agents should lean into it.
+
+- **`Prefer: return=minimal` is on by default.** Every GET through the MCP
+  `apiCall` (and the SDK's account reads) sends it — the backend replies
+  `Preference-Applied: return=minimal` and a list read shrinks ~75%
+  (measured: settled-question list 18,541 B → 4,396 B, 76.3%). Pass
+  `{ verbose: true }` only when you genuinely need the full envelope.
+- **Cache session-stable reads.** `src/core/response-cache.ts`
+  (`ResponseCache`) caches values that can't change within a session —
+  the protocol-discovery doc, the token registry, and *terminal*
+  (settled / abandoned) question detail. It mirrors `SessionManager`'s
+  login-once shape: one fetch per key per TTL, concurrent misses
+  coalesced. Don't cache pending / poll / open-question reads.
+- **Poll with backoff, not a tight loop.** `wait_for_questions` and
+  `wait_for_chain_confirmation` already long-poll in minimal mode with a
+  sane interval (60 s / 2 s) and a hard deadline. Use them instead of a
+  hand-rolled re-fetch loop.
+- **Request only the `?include=` keys you need**, and don't re-fetch data
+  you already hold (a confirmed solution set, a settled result).
+
+The deep, always-current coaching lives on the **hosted MCP** at
+`<backend>/mcp` (tool descriptions + `initialize.instructions`) — that is
+the source of truth. This SDK is a thin mirror; the bullets above are the
+short version.
+
 ## Env
 
 ```
@@ -109,6 +137,6 @@ RT_AGENT_DOMAIN_VERIFYING_CONTRACT # EIP-712 login domain
 ## Testing
 
 ```bash
-pnpm test                          # 215 unit tests
+pnpm test                          # 300 unit tests
 pnpm rt round demo                 # full 6-agent round on testnet
 ```

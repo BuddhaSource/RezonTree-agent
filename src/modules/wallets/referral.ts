@@ -257,6 +257,12 @@ async function affiliateCodeOp(args: {
   };
   if (!isRead) {
     headers["Content-Type"] = "application/json";
+  } else {
+    // Token efficiency: GETs default to the compact wire shape (parent
+    // CLAUDE.md API-consumption rule). The referralCode read only
+    // consumes code/walletAddress/url/canUpgrade/createdAt — all present
+    // in the minimal envelope.
+    headers["Prefer"] = "return=minimal";
   }
 
   try {

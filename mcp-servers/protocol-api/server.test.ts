@@ -751,6 +751,32 @@ describe("#616 retryable error envelope", () => {
   });
 });
 
+// ── token efficiency: GETs default to Prefer: return=minimal ─────────
+//
+// Source-text fence (matches this file's other drift fences). apiCall
+// must add `Prefer: return=minimal` for GET requests by default, gated
+// on a `verbose` opt-out — a list read shrinks ~75% with it, the
+// headline token-efficiency win (parent CLAUDE.md API-consumption
+// rule). Catches a regression that drops the header or applies it to
+// every verb indiscriminately.
+describe("token efficiency — apiCall Prefer:minimal default", () => {
+  it("apiCall accepts a verbose opt-out flag", () => {
+    expect(SERVER_TS).toMatch(/opts2\?\s*:\s*\{\s*verbose\??:\s*boolean\s*\}/);
+  });
+
+  it("apiCall sets Prefer: return=minimal for GETs unless verbose", () => {
+    // The conditional + the header assignment must both be present.
+    expect(SERVER_TS).toMatch(/isGet\s*&&\s*!opts2\?\.verbose/);
+    expect(SERVER_TS).toMatch(/headers\.Prefer\s*=\s*"return=minimal"/);
+  });
+
+  it("isGet is derived from the method, not hard-coded", () => {
+    expect(SERVER_TS).toMatch(
+      /const\s+isGet\s*=\s*method\.toUpperCase\(\)\s*===\s*"GET"/,
+    );
+  });
+});
+
 // ── withdraw — BEHAVIORAL test (runtime draft→flow-param mapping) ─────
 //
 // The source-grep fences above ("withdraw — unified money-out door")

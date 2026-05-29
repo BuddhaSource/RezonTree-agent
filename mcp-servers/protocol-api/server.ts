@@ -51,6 +51,10 @@ import {
   runSponsorFlow,
   runVoteFlow,
 } from "../../src/forge/quadphase-flow.js";
+import {
+  ResponseCache,
+  TERMINAL_TTL_MS,
+} from "../../src/core/response-cache.js";
 
 const API_URL =
   process.env.RT_AGENT_BACKEND_URL || "http://localhost:8080";
@@ -701,20 +705,39 @@ async function doLogin(): Promise<string> {
  * Make an authenticated API call. Auto-retries once on 401 with a
  * fresh token — covers operator ACCESS_TOKEN_TTL overrides + clock
  * skew without surfacing transient auth failures to agents.
+ *
+ * TOKEN EFFICIENCY. GET requests send `Prefer: return=minimal` by
+ * default — the backend honours it (responds `Preference-Applied:
+ * return=minimal`) and a list read shrinks ~75% (parent CLAUDE.md
+ * API-consumption rule). The minimal payload still carries every field
+ * the SDK flows consume; if a rare caller needs the full envelope
+ * (nested descriptions, the `X-Prefer-Hint` discovery header) pass
+ * `{ verbose: true }`. Writes (POST/PATCH/...) are unaffected — they
+ * already mutate, not read.
  */
 async function apiCall(
   method: string,
   path: string,
   body?: unknown,
+  opts2?: { verbose?: boolean },
 ): Promise<unknown> {
+  const isGet = method.toUpperCase() === "GET";
   for (let attempt = 0; attempt < 2; attempt++) {
     const token = await getAgentToken();
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    };
+    // Default GETs to the compact wire shape unless the caller opts out.
+    // Non-GET verbs are mutations; Prefer:minimal only affects the
+    // representation echoed back, so it's harmless there but we scope it
+    // to reads to keep the intent obvious.
+    if (isGet && !opts2?.verbose) {
+      headers.Prefer = "return=minimal";
+    }
     const opts: RequestInit = {
       method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
+      headers,
     };
     if (body) opts.body = JSON.stringify(body);
 
@@ -777,6 +800,42 @@ async function apiCall(
   }
   // Unreachable — the loop returns or throws on every iteration.
   throw new Error("apiCall: exhausted retry attempts");
+}
+
+// ── Session-stable read cache ─────────────────────────────────────────
+//
+// TOKEN EFFICIENCY. Re-reading a resource that cannot change within the
+// session burns a round-trip + context-window tokens for zero new
+// information (parent CLAUDE.md: "don't re-fetch unchanged data"). The
+// one resource the protocol tools re-read AND that is genuinely
+// immutable is a TERMINAL question (settled / abandoned) — its detail,
+// claims, and result are frozen once the chain reaches that status. We
+// cache only those; open/draft questions and every pending/poll read
+// stay live (their freshness is what the agent's next action depends
+// on). Keyed by request path so `?include=` variants don't collide.
+const stableReadCache = new ResponseCache();
+
+/** Statuses past which a question's detail is immutable on-chain. */
+const TERMINAL_QUESTION_STATUSES = new Set(["settled", "abandoned"]);
+
+/**
+ * GET a question-detail path through the session-stable cache IFF the
+ * resource is already terminal. A cache hit means the row was terminal
+ * on a prior read, so it's served straight back. On a miss the row is
+ * fetched live (minimal wire shape); only a terminal `status` is then
+ * cached — an open/draft question is always re-read until it settles.
+ * Returns the same payload shape as apiCall("GET", ...).
+ */
+async function cachedQuestionGet(path: string): Promise<unknown> {
+  const hit = stableReadCache.peek(path);
+  if (hit !== undefined) return hit;
+
+  const fresh = await apiCall("GET", path);
+  const status = (fresh as { status?: string } | null)?.status;
+  if (status && TERMINAL_QUESTION_STATUSES.has(status)) {
+    stableReadCache.set(path, fresh, TERMINAL_TTL_MS);
+  }
+  return fresh;
 }
 
 // ── MCP Server Setup ─────────────────────────────────────────────────
@@ -1021,8 +1080,10 @@ server.tool(
         // on-chain intentHash of the committed solution — NOT the human-readable
         // sol_xxx API ID (24 ASCII bytes → bytes24, which viem rejects as bytes32).
         // Fetch the question's confirmed solutions to build the lookup map.
-        const solResp = (await apiCall(
-          "GET",
+        // Routed through the session-stable cache: once the question is
+        // terminal (settled/abandoned) its solution set is frozen, so a
+        // retry against it serves from cache instead of re-reading.
+        const solResp = (await cachedQuestionGet(
           `/v1/questions/${params.question_id}?include=solutions`,
         )) as { solutions: { data: Array<{ id: string; intentHash: string }> } };
 
