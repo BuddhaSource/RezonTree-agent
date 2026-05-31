@@ -120,20 +120,47 @@ export function assertIntentHashMatch(
   }
 }
 
-// ─── Shared envelope sign + submit ───────────────────────────────────
+// ─── Shared envelope sign → assert → POST → broadcast spine ──────────
 //
-// Sponsor and cosponsor build different witnesses + funds and broadcast
-// through different chain entry points (sponsorSubmit vs submit), but
-// the middle of the flow is byte-identical: recompute the EIP-712 hash,
-// assert it matches the preflight `expectedIntentHash` (never sign past
-// drift — R-INTENT-HASH-IS-MATCH-KEY), sign, and POST the Round-3
+// Every signed chain-bound flow (sponsor / cosponsor / commit / vote /
+// refund / settle / abandon) shares ONE middle: recompute the EIP-712
+// hash, assert it matches the preflight `expectedIntentHash` (never sign
+// past drift — R-INTENT-HASH-IS-MATCH-KEY), sign, POST the Round-3
 // unified-intent body `{actionType, typedData, content, signature,
-// expectedIntentHash}`. This helper is that shared spine — extracting
-// it keeps the two flows from re-duplicating ~40 LOC each and guarantees
-// they post the identical wire shape (the divergence that broke Q9's
-// cosponsor leg in the 10-Q swarm was a per-flow copy drifting out of
-// sync). The witness payload key is `content`; the dispatcher accepts
-// the legacy `witness` alias too, but new builds send `content`.
+// expectedIntentHash, …extraBodyFields}`, then broadcast through the
+// action's chain entry point. The flows differ ONLY in (a) the witness +
+// funds they build, (b) which broadcaster they call, and (c) two flows'
+// extras: vote appends `voteSaltToken` to the POST body, settle can skip
+// the POST entirely (`skipPost`). This helper is that single spine —
+// extracting it is how #615 stops the four un-extracted flows from
+// re-duplicating ~40 LOC each (the divergence that let H7/H8 + the Q9
+// cosponsor crash slip in). Claim is the lone signed-flow exception: it's
+// permissionless + unsigned, so it never reaches here.
+//
+// Byte-identical contract (proved by intent-hash-drift.test.ts):
+//   • POST body keys = {actionType, typedData, content, signature,
+//     expectedIntentHash} (+ voteSaltToken when supplied). `typedData`
+//     is serializeEnvelope(envelope); `content` is the caller's
+//     pre-serialized witness; `expectedIntentHash` is the preflight
+//     value when present, else the local recompute (intentHashToSend).
+//   • broadcast() runs AFTER a successful POST (or immediately when the
+//     POST is skipped), with the signature this helper produced.
+// The witness payload key is `content`; the dispatcher accepts the
+// legacy `witness` alias too, but new builds send `content`.
+interface SignAndSubmitResult {
+  localIntentHash: Hex;
+  /** What was actually POSTed as expectedIntentHash (preflight value or
+   *  local recompute). Flows that derive the hash locally use this. */
+  intentHashToSend: Hex;
+  signature: Hex;
+  backendStatus?: string;
+  /** Backend-echoed intentHash, falling back to the local recompute.
+   *  null when the POST was skipped. */
+  backendIntentHash?: Hex;
+  /** True when `skipPost` suppressed the backend POST (settle only). */
+  backendSkipped?: boolean;
+}
+
 async function signAndSubmitEnvelope(p: {
   baseUrl: string;
   bearerToken: string;
@@ -141,18 +168,35 @@ async function signAndSubmitEnvelope(p: {
   actionType: string;
   envelope: Envelope;
   serializedContent: Record<string, unknown>;
-  expectedIntentHash: Hex;
+  /** Preflight-asserted intentHash. Required (sponsor/cosponsor/vote-w-
+   *  preflight); undefined for flows whose hash is body-derived
+   *  (commit, vote, refund, settle, abandon) — then the local recompute
+   *  is the value sent forward and the drift assert no-ops. */
+  expectedIntentHash: Hex | undefined;
   chainId: number;
   forgeAddress: Address;
   privateKey: Hex;
-}): Promise<{ localIntentHash: Hex; signature: Hex; backendStatus?: string; backendIntentHash?: Hex }> {
+  /** Extra top-level POST-body fields beyond the Round-3 five. Vote
+   *  passes `{ voteSaltToken }`. Omitted ⇒ no extra keys (byte-identical
+   *  to the four-key body the other flows post). */
+  extraBodyFields?: Record<string, unknown>;
+  /** Broadcast-only mode: skip the backend POST (settle escape hatch
+   *  for a deploy whose dispatcher doesn't route the action). */
+  skipPost?: boolean;
+  /** Action-specific chain broadcast, run with the produced signature
+   *  after a successful POST (or immediately when skipPost is set). */
+  broadcast: (signature: Hex) => Promise<Hex>;
+}): Promise<SignAndSubmitResult & { txHash: Hex }> {
   const typedData = buildEnvelopeForSigning({
     envelope: p.envelope,
     chainId: p.chainId,
     forgeAddress: p.forgeAddress,
   });
   const localIntentHash = hashEnvelopeStruct(p.envelope);
+  // R-INTENT-HASH-IS-MATCH-KEY: never sign past a drifted hash. No-ops
+  // when expectedIntentHash is undefined (body-derived flows).
   assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
+  const intentHashToSend = (p.expectedIntentHash ?? localIntentHash) as Hex;
   const account = privateKeyToAccount(p.privateKey);
   const signature = (await account.signTypedData({
     domain: typedData.domain,
@@ -161,35 +205,51 @@ async function signAndSubmitEnvelope(p: {
     message: typedData.message as never,
   })) as Hex;
 
-  const submitBody = {
-    actionType: p.actionType,
-    typedData: serializeEnvelope(p.envelope),
-    content: p.serializedContent,
-    signature,
-    expectedIntentHash: p.expectedIntentHash,
-  };
-  const res = await fetch(`${p.baseUrl}/v1/questions/${p.questionId}/intents`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${p.bearerToken}`,
-      Prefer: "return=minimal",
-    },
-    body: stringifyWithBigInts(submitBody),
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(
-      `${p.actionType}: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
-    );
-  }
-  const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
-  return {
+  const out: SignAndSubmitResult = {
     localIntentHash,
+    intentHashToSend,
     signature,
-    backendStatus: parsed.status,
-    backendIntentHash: (parsed.intentHash ?? localIntentHash) as Hex,
   };
+
+  if (p.skipPost) {
+    out.backendSkipped = true;
+  } else {
+    const submitBody = {
+      actionType: p.actionType,
+      typedData: serializeEnvelope(p.envelope),
+      content: p.serializedContent,
+      signature,
+      expectedIntentHash: intentHashToSend,
+      ...(p.extraBodyFields ?? {}),
+    };
+    const res = await fetch(
+      `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${p.bearerToken}`,
+          Prefer: "return=minimal",
+        },
+        body: stringifyWithBigInts(submitBody),
+      },
+    );
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(
+        `${p.actionType}: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
+      );
+    }
+    const parsed = JSON.parse(text) as {
+      intentHash?: string;
+      status?: string;
+    };
+    out.backendStatus = parsed.status;
+    out.backendIntentHash = (parsed.intentHash ?? localIntentHash) as Hex;
+  }
+
+  const txHash = await p.broadcast(signature);
+  return { ...out, txHash };
 }
 
 // ─── USDC allowance gate ─────────────────────────────────────────────
@@ -333,8 +393,9 @@ export async function runSponsorFlow(
     funds,
   };
 
-  // 3+4. Sign (with pre-sign drift assert) + POST the Round-3 unified
-  // intent body via the shared spine.
+  // 3+4+5. Sign (with pre-sign drift assert) → POST the Round-3 unified
+  // intent body → broadcast sponsorSubmit(env, sig, witnessBytes) via the
+  // shared spine.
   const submitted = await signAndSubmitEnvelope({
     baseUrl: p.baseUrl,
     bearerToken: p.bearerToken,
@@ -346,24 +407,21 @@ export async function runSponsorFlow(
     chainId: p.chainId,
     forgeAddress: p.forgeAddress,
     privateKey: p.privateKey,
+    broadcast: (signature) =>
+      broadcastSponsorSubmit(p.walletClient, {
+        forgeAddress: p.forgeAddress,
+        envelope,
+        signature,
+        witness,
+      }),
   });
-  const result: SponsorFlowResult = {
+  return {
     intentHash: submitted.backendIntentHash ?? submitted.localIntentHash,
     signature: submitted.signature,
     envelope,
     backendStatus: submitted.backendStatus,
+    txHash: submitted.txHash,
   };
-  const signature = submitted.signature;
-
-  // 5. Chain broadcast.
-  const txHash = await broadcastSponsorSubmit(p.walletClient, {
-    forgeAddress: p.forgeAddress,
-    envelope,
-    signature,
-    witness,
-  });
-  result.txHash = txHash;
-  return result;
 }
 
 // ─── Cosponsor flow ──────────────────────────────────────────────────
@@ -447,8 +505,9 @@ export async function runCosponsorFlow(
     funds,
   };
 
-  // 3+4. Sign (with pre-sign drift assert) + POST via the shared spine —
-  // identical Round-3 wire shape to runSponsorFlow.
+  // 3+4+5. Sign (with pre-sign drift assert) → POST → broadcast the
+  // universal `submit(env, sig)` via the shared spine — identical Round-3
+  // wire shape to runSponsorFlow.
   const submitted = await signAndSubmitEnvelope({
     baseUrl: p.baseUrl,
     bearerToken: p.bearerToken,
@@ -460,23 +519,20 @@ export async function runCosponsorFlow(
     chainId: p.chainId,
     forgeAddress: p.forgeAddress,
     privateKey: p.privateKey,
+    broadcast: (signature) =>
+      broadcastSubmit(p.walletClient, {
+        forgeAddress: p.forgeAddress,
+        envelope,
+        signature,
+      }),
   });
-  const result: CosponsorFlowResult = {
+  return {
     intentHash: submitted.backendIntentHash ?? submitted.localIntentHash,
     signature: submitted.signature,
     envelope,
     backendStatus: submitted.backendStatus,
+    txHash: submitted.txHash,
   };
-  const signature = submitted.signature;
-
-  // 5. Chain broadcast — universal `submit(env, sig)`.
-  const txHash = await broadcastSubmit(p.walletClient, {
-    forgeAddress: p.forgeAddress,
-    envelope,
-    signature,
-  });
-  result.txHash = txHash;
-  return result;
 }
 
 // ─── Commit flow ─────────────────────────────────────────────────────
@@ -508,11 +564,15 @@ export interface CommitFlowParams {
   solutionBody: string;
   references: string[];
 
-  // Funds shape — Commit requires feeAmount > 0, stakeAmount > 0,
-  // stakeOp = Lock, poolIn = 0, poolOut = 0. feeShares MUST mirror the
-  // question's frozen q.feeShares (basisPoints sum to 10000).
+  // Funds shape — Commit requires feeAmount == 0 (realized-outcome model:
+  // the fee is skimmed ONCE at settlement, never per-commit; the chain
+  // reverts "commit:feeAmount-must-be-zero" for any non-zero value),
+  // stakeAmount > 0, stakeOp = Lock, poolIn = 0, poolOut = 0. feeShares
+  // MUST mirror the question's frozen q.feeShares (basisPoints sum to
+  // 10000). The flow hard-sets feeAmount to 0n; callers don't pass it
+  // (#H7 — plumbing a caller feeAmount only survived because the backend
+  // advertised "0" today; the contract mandates it).
   token: Address;
-  feeAmount: bigint;
   stakeAmount: bigint;
   feeShareBps: number;
   feeShares: FeeShare[];
@@ -545,7 +605,11 @@ export async function runCommitFlow(
     token: p.token,
     poolIn: 0n,
     poolOut: 0n,
-    feeAmount: p.feeAmount,
+    // H7: commit feeAmount MUST be 0. The realized-outcome model takes
+    // the fee ONCE at settlement; the chain's shape gate reverts
+    // "commit:feeAmount-must-be-zero" for any non-zero value. Hard-set
+    // here so a caller can't (re)introduce a non-zero fee.
+    feeAmount: 0n,
     feeShareBps: p.feeShareBps,
     feeShares: p.feeShares,
     stakeAmount: p.stakeAmount,
@@ -560,73 +624,37 @@ export async function runCommitFlow(
     contentHash,
     funds,
   };
-  const typedData = buildEnvelopeForSigning({
+  // The commit preflight cannot pre-compute expectedIntentHash because
+  // contentHash is derived from the solution body, which is only known
+  // here. The shared spine recomputes hashEnvelopeStruct (the universal
+  // intentHash per R-INTENT-HASH-IS-MATCH-KEY — the same struct hash the
+  // backend re-derives at Stage 2), no-ops the drift assert when
+  // expectedIntentHash is absent, and POSTs the local recompute.
+  const submitted = await signAndSubmitEnvelope({
+    baseUrl: p.baseUrl,
+    bearerToken: p.bearerToken,
+    questionId: p.questionId,
+    actionType: "commit",
     envelope,
+    serializedContent: serializeCommitWitness(witness),
+    expectedIntentHash: p.expectedIntentHash,
     chainId: p.chainId,
     forgeAddress: p.forgeAddress,
-  });
-  // Compute intentHash locally from the fully-specified envelope.
-  // The commit preflight cannot pre-compute this because contentHash is
-  // derived from the solution body, which is only known here.
-  // hashEnvelopeStruct is the universal intentHash per
-  // R-INTENT-HASH-IS-MATCH-KEY — the same struct hash the backend
-  // re-derives at Stage 2 and the chain emits as event.intent_hash.
-  const localIntentHash = hashEnvelopeStruct(envelope);
-  // R-INTENT-HASH-IS-MATCH-KEY: when preflight pre-asserted a hash
-  // (rare for commit since contentHash is body-derived, but supported
-  // by the API), enforce match before signing.
-  assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
-  const intentHashToSend = p.expectedIntentHash ?? localIntentHash;
-
-  const account = privateKeyToAccount(p.privateKey);
-  const signature = (await account.signTypedData({
-    domain: typedData.domain,
-    types: typedData.types,
-    primaryType: typedData.primaryType,
-    message: typedData.message as never,
-  })) as Hex;
-
-  const result: CommitFlowResult = {
-    intentHash: localIntentHash,
-    signature,
-    envelope,
-  };
-
-  const res = await fetch(
-    `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${p.bearerToken}`,
-        Prefer: "return=minimal",
-      },
-      body: stringifyWithBigInts({
-        actionType: "commit",
-        typedData: serializeEnvelope(envelope),
-        content: serializeCommitWitness(witness),
+    privateKey: p.privateKey,
+    broadcast: (signature) =>
+      broadcastSubmit(p.walletClient, {
+        forgeAddress: p.forgeAddress,
+        envelope,
         signature,
-        expectedIntentHash: intentHashToSend,
       }),
-    },
-  );
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(
-      `runCommitFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
-    );
-  }
-  const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
-  result.intentHash = (parsed.intentHash ?? localIntentHash) as Hex;
-  result.backendStatus = parsed.status;
-
-  const txHash = await broadcastSubmit(p.walletClient, {
-    forgeAddress: p.forgeAddress,
-    envelope,
-    signature,
   });
-  result.txHash = txHash;
-  return result;
+  return {
+    intentHash: submitted.backendIntentHash ?? submitted.localIntentHash,
+    signature: submitted.signature,
+    envelope,
+    backendStatus: submitted.backendStatus,
+    txHash: submitted.txHash,
+  };
 }
 
 // ─── Vote flow ───────────────────────────────────────────────────────
@@ -658,11 +686,13 @@ export interface VoteFlowParams {
    *  before persisting. NOT part of the signed envelope. */
   voteSaltToken: Hex;
 
-  // Funds shape — Vote requires feeAmount > 0, stakeAmount > 0,
-  // stakeOp = Lock, poolIn = 0, poolOut = 0. feeShares MUST mirror
-  // q.feeShares.
+  // Funds shape — Vote requires feeAmount == 0 (realized-outcome model:
+  // the fee is skimmed ONCE at settlement, never per-vote; the chain
+  // reverts "vote:feeAmount-must-be-zero" for any non-zero value),
+  // stakeAmount > 0, stakeOp = Lock, poolIn = 0, poolOut = 0. feeShares
+  // MUST mirror q.feeShares. The flow hard-sets feeAmount to 0n; callers
+  // don't pass it (#H7 — see runCommitFlow).
   token: Address;
-  feeAmount: bigint;
   stakeAmount: bigint;
   feeShareBps: number;
   feeShares: FeeShare[];
@@ -696,7 +726,9 @@ export async function runVoteFlow(
     token: p.token,
     poolIn: 0n,
     poolOut: 0n,
-    feeAmount: p.feeAmount,
+    // H7: vote feeAmount MUST be 0 (realized-outcome model; chain reverts
+    // "vote:feeAmount-must-be-zero" for non-zero). Hard-set here.
+    feeAmount: 0n,
     feeShareBps: p.feeShareBps,
     feeShares: p.feeShares,
     stakeAmount: p.stakeAmount,
@@ -711,70 +743,40 @@ export async function runVoteFlow(
     contentHash,
     funds,
   };
-  const typedData = buildEnvelopeForSigning({
+  // R-INTENT-HASH-IS-MATCH-KEY: a vote's intent hash is allocation-
+  // dependent, so a vote preflight can only return an empty-allocations
+  // placeholder (VotePreflight H-8) — callers pass expectedIntentHash
+  // undefined and the spine's drift assert no-ops. The local recompute
+  // is the claim the backend recomputes against at Stage 2. The
+  // voteSaltToken rides OUTSIDE the signed envelope as a POST-body extra;
+  // the backend re-binds it to the bearer wallet before persisting
+  // (Audit-A5 HIGH gate).
+  const submitted = await signAndSubmitEnvelope({
+    baseUrl: p.baseUrl,
+    bearerToken: p.bearerToken,
+    questionId: p.questionId,
+    actionType: "vote",
     envelope,
+    serializedContent: serializeVoteWitness(witness),
+    expectedIntentHash: p.expectedIntentHash,
     chainId: p.chainId,
     forgeAddress: p.forgeAddress,
-  });
-  // R-INTENT-HASH-IS-MATCH-KEY: recompute locally. A vote's intent hash
-  // is allocation-dependent, so a vote preflight can only return an
-  // empty-allocations placeholder (VotePreflight H-8) — callers therefore
-  // pass expectedIntentHash undefined and this assert no-ops. The real
-  // localIntentHash below is the claim the backend recomputes against at
-  // Stage 2 (mirrors runCommitFlow's intentHashToSend pattern).
-  const localIntentHash = hashEnvelopeStruct(envelope);
-  assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
-  const intentHashToSend = p.expectedIntentHash ?? localIntentHash;
-  const account = privateKeyToAccount(p.privateKey);
-  const signature = (await account.signTypedData({
-    domain: typedData.domain,
-    types: typedData.types,
-    primaryType: typedData.primaryType,
-    message: typedData.message as never,
-  })) as Hex;
-
-  const result: VoteFlowResult = {
-    intentHash: localIntentHash,
-    signature,
-    envelope,
-  };
-
-  const res = await fetch(
-    `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${p.bearerToken}`,
-        Prefer: "return=minimal",
-      },
-      body: stringifyWithBigInts({
-        actionType: "vote",
-        typedData: serializeEnvelope(envelope),
-        content: serializeVoteWitness(witness),
+    privateKey: p.privateKey,
+    extraBodyFields: { voteSaltToken: p.voteSaltToken },
+    broadcast: (signature) =>
+      broadcastSubmit(p.walletClient, {
+        forgeAddress: p.forgeAddress,
+        envelope,
         signature,
-        expectedIntentHash: intentHashToSend,
-        voteSaltToken: p.voteSaltToken,
       }),
-    },
-  );
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(
-      `runVoteFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
-    );
-  }
-  const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
-  result.intentHash = (parsed.intentHash ?? localIntentHash) as Hex;
-  result.backendStatus = parsed.status;
-
-  const txHash = await broadcastSubmit(p.walletClient, {
-    forgeAddress: p.forgeAddress,
-    envelope,
-    signature,
   });
-  result.txHash = txHash;
-  return result;
+  return {
+    intentHash: submitted.backendIntentHash ?? submitted.localIntentHash,
+    signature: submitted.signature,
+    envelope,
+    backendStatus: submitted.backendStatus,
+    txHash: submitted.txHash,
+  };
 }
 
 // ─── Wire serialization ──────────────────────────────────────────────
@@ -1003,78 +1005,47 @@ export async function runAbandonFlow(
     contentHash,
     funds,
   };
-  const typedData = buildEnvelopeForSigning({
-    envelope,
-    chainId: p.chainId,
-    forgeAddress: p.forgeAddress,
-  });
-  const intentHash = hashEnvelopeStruct(envelope);
-  // R-INTENT-HASH-IS-MATCH-KEY: abandon has no preflight today so the
-  // local hash is the canonical value sent forward; this no-ops, but
-  // keeps the assertion site uniform across every flow for future
-  // preflight wiring.
-  assertIntentHashMatch(undefined, intentHash);
-  const account = privateKeyToAccount(p.privateKey);
-  const signature = (await account.signTypedData({
-    domain: typedData.domain,
-    types: typedData.types,
-    primaryType: typedData.primaryType,
-    message: typedData.message as never,
-  })) as Hex;
 
-  const result: AbandonFlowResult = {
-    intentHash,
-    signature,
-    envelope,
-  };
-
-  // C1: stage the row in the backend BEFORE broadcasting. The
-  // reconciler can only confirm chain events whose intent_hash
-  // matches a staged signed_intents row.
-  const res = await fetch(
-    `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${p.bearerToken}`,
-        Prefer: "return=minimal",
-      },
-      body: stringifyWithBigInts({
-        actionType: "abandon",
-        typedData: serializeEnvelope(envelope),
-        content: serializeAbandonWitness(witness),
-        signature,
-        expectedIntentHash: intentHash,
-      }),
-    },
-  );
-  const text = await res.text();
-  if (!res.ok) {
-    // C2: redact any echoed Authorization header before it reaches
-    // the LLM's error message.
-    throw new Error(
-      `runAbandonFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
-    );
-  }
-  const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
-  result.intentHash = (parsed.intentHash ?? intentHash) as Hex;
-  result.backendStatus = parsed.status;
-
+  // C1: stage the row in the backend BEFORE broadcasting (the reconciler
+  // can only confirm chain events whose intent_hash matches a staged
+  // signed_intents row), then broadcast through abandonSubmit. The
+  // shared spine handles sign → POST → broadcast; abandon has no
+  // preflight today, so expectedIntentHash is undefined and the local
+  // recompute is the canonical value POSTed (drift assert no-ops).
+  //
   // C: Abandon broadcasts through `abandonSubmit(env, sig, witnessBytes)`,
   // NOT the plain `submit(env, sig)` — `submit()` now REVERTS
   // "submit:abandon-needs-witness" for an Abandon envelope. The witness
-  // built above (buildAbandonWitness) is abi-encoded inside the helper so
-  // the chain can recompute env.contentHash and read expectedStatus +
-  // reason.
-  const txHash = await broadcastAbandonSubmit(p.walletClient, {
-    forgeAddress: p.forgeAddress,
+  // built above (buildAbandonWitness) is abi-encoded inside the broadcaster
+  // so the chain can recompute env.contentHash and read expectedStatus +
+  // reason. C2: the spine redacts any echoed Authorization header before
+  // it reaches the LLM's error message.
+  const submitted = await signAndSubmitEnvelope({
+    baseUrl: p.baseUrl,
+    bearerToken: p.bearerToken,
+    questionId: p.questionId,
+    actionType: "abandon",
     envelope,
-    signature,
-    witness,
+    serializedContent: serializeAbandonWitness(witness),
+    expectedIntentHash: undefined,
+    chainId: p.chainId,
+    forgeAddress: p.forgeAddress,
+    privateKey: p.privateKey,
+    broadcast: (signature) =>
+      broadcastAbandonSubmit(p.walletClient, {
+        forgeAddress: p.forgeAddress,
+        envelope,
+        signature,
+        witness,
+      }),
   });
-  result.txHash = txHash;
-  return result;
+  return {
+    intentHash: submitted.backendIntentHash ?? submitted.localIntentHash,
+    signature: submitted.signature,
+    envelope,
+    backendStatus: submitted.backendStatus,
+    txHash: submitted.txHash,
+  };
 }
 
 // ─── Refund flow ─────────────────────────────────────────────────────
@@ -1179,67 +1150,38 @@ export async function runRefundFlow(
     contentHash,
     funds,
   };
-  const typedData = buildEnvelopeForSigning({
+  // R-INTENT-HASH-IS-MATCH-KEY: refund preflight (RefundDraft) returns
+  // expectedIntentHash when available; the spine asserts before signing
+  // and no-ops when it's absent (caller queried chain directly). The
+  // RefundWitness is abi-encoded for the pullValue broadcast leg
+  // (REFUND-ONLY entry point).
+  const witnessBytes = encodeRefundWitnessBytes(witness);
+  const submitted = await signAndSubmitEnvelope({
+    baseUrl: p.baseUrl,
+    bearerToken: p.bearerToken,
+    questionId: p.questionId,
+    actionType: "refund",
     envelope,
+    serializedContent: serializeRefundWitness(witness),
+    expectedIntentHash: p.expectedIntentHash,
     chainId: p.chainId,
     forgeAddress: p.forgeAddress,
-  });
-  const localIntentHash = hashEnvelopeStruct(envelope);
-  // R-INTENT-HASH-IS-MATCH-KEY: refund preflight (RefundDraft) returns
-  // expectedIntentHash when available; assert before signing.
-  assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
-  const intentHashToSend = p.expectedIntentHash ?? localIntentHash;
-  const account = privateKeyToAccount(p.privateKey);
-  const signature = (await account.signTypedData({
-    domain: typedData.domain,
-    types: typedData.types,
-    primaryType: typedData.primaryType,
-    message: typedData.message as never,
-  })) as Hex;
-
-  const result: RefundFlowResult = {
-    intentHash: localIntentHash,
-    signature,
-    envelope,
-  };
-
-  const res = await fetch(
-    `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${p.bearerToken}`,
-        Prefer: "return=minimal",
-      },
-      body: stringifyWithBigInts({
-        actionType: "refund",
-        typedData: serializeEnvelope(envelope),
-        content: serializeRefundWitness(witness),
+    privateKey: p.privateKey,
+    broadcast: (signature) =>
+      broadcastPullValue(p.walletClient, {
+        forgeAddress: p.forgeAddress,
+        envelope,
         signature,
-        expectedIntentHash: intentHashToSend,
+        witnessBytes,
       }),
-    },
-  );
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(
-      `runRefundFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
-    );
-  }
-  const parsed = JSON.parse(text) as { intentHash?: string; status?: string };
-  result.intentHash = (parsed.intentHash ?? localIntentHash) as Hex;
-  result.backendStatus = parsed.status;
-
-  const witnessBytes = encodeRefundWitnessBytes(witness);
-  const txHash = await broadcastPullValue(p.walletClient, {
-    forgeAddress: p.forgeAddress,
-    envelope,
-    signature,
-    witnessBytes,
   });
-  result.txHash = txHash;
-  return result;
+  return {
+    intentHash: submitted.backendIntentHash ?? submitted.localIntentHash,
+    signature: submitted.signature,
+    envelope,
+    backendStatus: submitted.backendStatus,
+    txHash: submitted.txHash,
+  };
 }
 
 // ─── Claim flow ──────────────────────────────────────────────────────
@@ -1445,81 +1387,45 @@ export async function runSettleFlow(
     funds,
   };
 
-  // 3 + 4. Recompute + assert before signing (R-INTENT-HASH-IS-MATCH-KEY).
-  const typedData = buildEnvelopeForSigning({
+  // 3-6. Sign (recompute + assert, R-INTENT-HASH-IS-MATCH-KEY) → POST the
+  // signed_intents row so the reconciler matches the chain Settle event by
+  // intent_hash (R-RECONCILER-OWNS-CONFIRMATION) → broadcast
+  // publishSettlement via the shared spine. skipBackendPost maps to the
+  // spine's skipPost: broadcast-only operation against a backend whose
+  // dispatcher doesn't route actionType="settle" (leaves the row unstaged
+  // — the reconciler can't confirm until a matching row exists).
+  if (!p.skipBackendPost && (!p.bearerToken || !p.baseUrl)) {
+    throw new Error(
+      "runSettleFlow: bearerToken + baseUrl are required unless skipBackendPost is set",
+    );
+  }
+  const submitted = await signAndSubmitEnvelope({
+    baseUrl: p.baseUrl ?? "",
+    bearerToken: p.bearerToken ?? "",
+    questionId: p.questionId,
+    actionType: "settle",
     envelope,
+    serializedContent: serializeSettleWitness(witness),
+    expectedIntentHash: p.expectedIntentHash,
     chainId: p.chainId,
     forgeAddress: p.forgeAddress,
+    privateKey: p.privateKey,
+    skipPost: p.skipBackendPost,
+    broadcast: (signature) =>
+      broadcastSettle(p.walletClient, {
+        forgeAddress: p.forgeAddress,
+        envelope,
+        signature,
+        witness,
+      }),
   });
-  const localIntentHash = hashEnvelopeStruct(envelope);
-  assertIntentHashMatch(p.expectedIntentHash, localIntentHash);
-  const intentHashToSend = p.expectedIntentHash ?? localIntentHash;
-  const account = privateKeyToAccount(p.privateKey);
-  const signature = (await account.signTypedData({
-    domain: typedData.domain,
-    types: typedData.types,
-    primaryType: typedData.primaryType,
-    message: typedData.message as never,
-  })) as Hex;
-
-  const result: SettleFlowResult = {
-    intentHash: localIntentHash,
-    signature,
+  return {
+    intentHash: submitted.backendIntentHash ?? submitted.localIntentHash,
+    signature: submitted.signature,
     envelope,
     witness,
+    backendStatus: submitted.backendStatus,
+    backendSkipped: submitted.backendSkipped,
+    txHash: submitted.txHash,
   };
-
-  // 5. Backend POST — stage the signed_intents row so the reconciler
-  // matches the chain Settle event by intent_hash. Skippable for
-  // broadcast-only operation against a backend whose dispatcher
-  // doesn't route actionType="settle".
-  if (p.skipBackendPost) {
-    result.backendSkipped = true;
-  } else {
-    if (!p.bearerToken || !p.baseUrl) {
-      throw new Error(
-        "runSettleFlow: bearerToken + baseUrl are required unless skipBackendPost is set",
-      );
-    }
-    const res = await fetch(
-      `${p.baseUrl}/v1/questions/${p.questionId}/intents`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${p.bearerToken}`,
-          Prefer: "return=minimal",
-        },
-        body: stringifyWithBigInts({
-          actionType: "settle",
-          typedData: serializeEnvelope(envelope),
-          content: serializeSettleWitness(witness),
-          signature,
-          expectedIntentHash: intentHashToSend,
-        }),
-      },
-    );
-    const text = await res.text();
-    if (!res.ok) {
-      throw new Error(
-        `runSettleFlow: POST /v1/questions/${p.questionId}/intents failed: HTTP ${res.status} ${res.statusText}: ${redactBearer(text)}`,
-      );
-    }
-    const parsed = JSON.parse(text) as {
-      intentHash?: string;
-      status?: string;
-    };
-    result.intentHash = (parsed.intentHash ?? localIntentHash) as Hex;
-    result.backendStatus = parsed.status;
-  }
-
-  // 6. Chain broadcast.
-  const txHash = await broadcastSettle(p.walletClient, {
-    forgeAddress: p.forgeAddress,
-    envelope,
-    signature,
-    witness,
-  });
-  result.txHash = txHash;
-  return result;
 }

@@ -497,11 +497,11 @@ function sliceBetween(haystack: string, start: string, end: string): string {
 // can't silently regress the fix without breaking CI.
 
 describe("MCP security cluster (#617)", () => {
-  it("(1) path traversal: validates question_id shape before URL interpolation", () => {
+  it("(1) path traversal: validates questionId shape before URL interpolation", () => {
     expect(
       SERVER_TS,
       "every signed-flow tool must assertQuestionId before interpolating into the URL",
-    ).toMatch(/assertQuestionId\(params\.question_id\)/);
+    ).toMatch(/assertQuestionId\(params\.questionId\)/);
     // The validator itself must reject the traversal characters.
     expect(SERVER_TS).toMatch(/const QID_RE = \/\^\[a-z\]\{3\}_\[0-9A-Za-z\]\{1,64\}\$\//);
     // Each load-bearing tool calls it.
@@ -654,8 +654,8 @@ describe("#616 wait_for_chain_confirmation", () => {
   const endRel = block.search(/^\);/m);
   const toolBody = block.slice(0, endRel);
 
-  it("validates intent_hash shape at the boundary", () => {
-    expect(toolBody).toMatch(/assertBytes32\(params\.intent_hash/);
+  it("validates intentHash shape at the boundary", () => {
+    expect(toolBody).toMatch(/assertBytes32\(params\.intentHash/);
   });
 
   it("polls the canonical pending surface", () => {
@@ -1025,7 +1025,7 @@ describe("withdraw — behavioral draft→flow-param mapping", () => {
       leafAmount: BigInt(CLAIM_DRAFT.leafAmount),
     });
 
-    const res = await withdrawHandler({ question_id: "qst_abc" });
+    const res = await withdrawHandler({ questionId: "qst_abc" });
 
     expect(flowMocks.runClaimFlow).toHaveBeenCalledTimes(1);
     const arg = flowMocks.runClaimFlow.mock.calls[0][0];
@@ -1072,7 +1072,7 @@ describe("withdraw — behavioral draft→flow-param mapping", () => {
       txHash: "0xrefundtx",
     });
 
-    const res = await withdrawHandler({ question_id: "qst_xyz" });
+    const res = await withdrawHandler({ questionId: "qst_xyz" });
 
     expect(flowMocks.runRefundFlow).toHaveBeenCalledTimes(1);
     const arg = flowMocks.runRefundFlow.mock.calls[0][0];
@@ -1122,7 +1122,7 @@ describe("withdraw — behavioral draft→flow-param mapping", () => {
       txHash: "0xrefundtx",
     });
 
-    const res = await withdrawHandler({ question_id: "qst_both" });
+    const res = await withdrawHandler({ questionId: "qst_both" });
 
     const claimArg = flowMocks.runClaimFlow.mock.calls[0][0];
     const refundArg = flowMocks.runRefundFlow.mock.calls[0][0];
@@ -1148,7 +1148,7 @@ describe("withdraw — behavioral draft→flow-param mapping", () => {
   it("empty eligible:[] returns a clean success (eligible_count:0), not a throw", async () => {
     currentDraft = draftWith([]);
 
-    const res = await withdrawHandler({ question_id: "qst_empty" });
+    const res = await withdrawHandler({ questionId: "qst_empty" });
 
     // No flow function should fire on an empty list.
     expect(flowMocks.runClaimFlow).not.toHaveBeenCalled();

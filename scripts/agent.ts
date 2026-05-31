@@ -53,7 +53,7 @@ import {
   runSettleFlow,
 } from "../src/forge/quadphase-flow.js";
 import { canonicalStringify } from "../src/intents/commit-intent.js";
-import { parseAmountToWei } from "../src/intents/sponsor-intent.js";
+import { parseAmountToWei } from "../src/intents/amounts.js";
 import type { SlashEntry } from "../src/intents/settle-witness.js";
 import {
   awaitReceipt,
@@ -275,7 +275,11 @@ program
     const me = await login(idx);
     const pre = await preflight(me.token, qid, "commit", "submitter", me.address);
 
-    const feeAmount = BigInt(pre.feeAmount as string);
+    // H7 / realized-outcome: commit feeAmount is always 0 (the fee is
+    // skimmed once at settlement; the chain reverts a non-zero commit
+    // fee). runCommitFlow hard-sets it; we mirror 0 locally for the
+    // allowance + reporting.
+    const feeAmount = 0n;
     const stakeAmount = BigInt(pre.stakeAmount as string);
     const { feeShareBps, feeShares, platformFeeRecipient } = feeShareFromPreflight(pre);
 
@@ -310,7 +314,9 @@ program
       solutionBody,
       references: [],
       token: (pre.token as { contractAddress: string }).contractAddress as Address,
-      feeAmount,
+      // H7: commit feeAmount is hard-set to 0 inside runCommitFlow
+      // (realized-outcome model — fee at settlement, chain reverts
+      // "commit:feeAmount-must-be-zero" for non-zero). Don't pass it.
       stakeAmount,
       feeShareBps,
       feeShares: feeShares.length ? feeShares : [{ recipient: platformFeeRecipient, basisPoints: 10000 }],
@@ -370,7 +376,10 @@ program
     });
     if (bpsSum !== 10000) throw new Error(`allocation points must sum to 100 (got ${bpsSum / 100})`);
 
-    const feeAmount = BigInt(pre.feeAmount as string);
+    // H7 / realized-outcome: vote feeAmount is always 0 (fee at
+    // settlement; chain reverts a non-zero vote fee). runVoteFlow
+    // hard-sets it; mirror 0 locally for the allowance + reporting.
+    const feeAmount = 0n;
     const stakeAmount = BigInt(pre.stakeAmount as string);
     const { feeShareBps, feeShares, platformFeeRecipient } = feeShareFromPreflight(pre);
 
@@ -398,7 +407,7 @@ program
       voteSalt: pre.voteSalt as Hex,
       voteSaltToken: pre.voteSaltToken as Hex,
       token: (pre.token as { contractAddress: string }).contractAddress as Address,
-      feeAmount,
+      // H7: feeAmount hard-set to 0 inside runVoteFlow; don't pass it.
       stakeAmount,
       feeShareBps,
       feeShares: feeShares.length ? feeShares : [{ recipient: platformFeeRecipient, basisPoints: 10000 }],

@@ -29,7 +29,7 @@ import { createPublicClient, formatUnits, http } from "viem";
 import { deriveAgentWallet } from "../../src/wallet/derive.js";
 import { loadLoginDomain } from "../../src/wallet/domain.js";
 import { signWalletLoginIntent } from "../../src/wallet/signer.js";
-import { parseAmountToWei } from "../../src/intents/sponsor-intent.js";
+import { parseAmountToWei } from "../../src/intents/amounts.js";
 import { canonicalStringify } from "../../src/intents/commit-intent.js";
 import type {
   CommitPreflight,
@@ -272,7 +272,7 @@ const QID_RE = /^[a-z]{3}_[0-9A-Za-z]{1,64}$/;
 const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
 const BYTES32_RE = /^0x[0-9a-fA-F]{64}$/;
 
-function assertQuestionId(id: string, field = "question_id"): void {
+function assertQuestionId(id: string, field = "questionId"): void {
   if (!QID_RE.test(id)) {
     throw new StructuredMCPError({
       code: "STRUCTURED_INPUT_INVALID",
@@ -878,13 +878,13 @@ export { server };
 
 server.tool(
   "submit_solution",
-  "Submit a solution via the Quadphase v2 unified-envelope flow: preflight → build CommitWitness from {body, reasoning_tree, claims} → sign Envelope(action=Commit) → POST /v1/questions/:id/intents (backend stages solution row + signed_intents row in one tx) → ensure USDC allowance → broadcast BountyForge.submit(env, sig). Returns intent_hash + commit_tx_hash. Backend row flips pending→confirmed when Ponder ingests the chain event (~3s).",
+  "Submit a solution via the Quadphase v2 unified-envelope flow: preflight → build CommitWitness from {body, reasoningTree, claims} → sign Envelope(action=Commit) → POST /v1/questions/:id/intents (backend stages solution row + signed_intents row in one tx) → ensure USDC allowance → broadcast BountyForge.submit(env, sig). Returns intent_hash + commit_tx_hash. Backend row flips pending→confirmed when Ponder ingests the chain event (~3s).",
   {
-    question_id: z.string().describe("The question ID to solve"),
+    questionId: z.string().describe("The question ID to solve"),
     body: z
       .string()
       .describe("Solution body — markdown allowed, 2000–30000 chars"),
-    reasoning_tree: z
+    reasoningTree: z
       .array(
         z.object({
           because: z.string().describe("Observation or premise"),
@@ -895,12 +895,12 @@ server.tool(
     claims: z
       .array(
         z.object({
-          criterion_id: z.string().describe("ID of the success criterion"),
+          criterionId: z.string().describe("ID of the success criterion"),
           value: z
             .union([z.number(), z.boolean(), z.array(z.object({ item: z.string(), met: z.boolean() }))])
             .describe("Typed value: number for numeric, boolean for boolean, [{item,met}] for checklist"),
           argument: z.string().describe("Why this claim is true"),
-          falsifiable_by: z
+          falsifiableBy: z
             .string()
             .describe("What evidence would disprove this claim"),
         }),
@@ -911,7 +911,7 @@ server.tool(
     // QP Stage 1 — boundary check: validate the ID shape before any
     // URL interpolation so a `qst_x/../accounts/admin` injection can't
     // re-route the backend call. See assertQuestionId for threat model.
-    assertQuestionId(params.question_id);
+    assertQuestionId(params.questionId);
     const env = requireRouterEnv();
     const { walletClient, publicClient, privateKey, address } = getClients();
 
@@ -919,19 +919,23 @@ server.tool(
       "submit_solution",
       {
         addr: address,
-        pid: params.question_id,
+        pid: params.questionId,
         body: params.body,
-        reasoning: params.reasoning_tree,
+        reasoning: params.reasoningTree,
         claims: params.claims,
       },
       async () => {
         const pre = (await apiCall(
           "POST",
-          `/v1/questions/${params.question_id}/intents/preflight?submitter=${address}`,
+          `/v1/questions/${params.questionId}/intents/preflight?submitter=${address}`,
           { actionType: "commit", params: { submitter: address } },
         )) as CommitPreflight;
 
-        const feeAmount = BigInt(pre.feeAmount);
+        // H7 / realized-outcome: commit feeAmount is always 0 (the fee is
+        // skimmed once at settlement; the chain reverts a non-zero commit
+        // fee with "commit:feeAmount-must-be-zero"). runCommitFlow
+        // hard-sets it; mirror 0 here for the coverage gate + reporting.
+        const feeAmount = 0n;
         const stakeAmount = BigInt(pre.stakeAmount);
 
         await ensureUsdcCoverage(
@@ -951,12 +955,12 @@ server.tool(
         // field; reasoningTree + claims already cite their support).
         const solutionBodyJSON = canonicalStringify({
           body: params.body,
-          reasoningTree: params.reasoning_tree,
+          reasoningTree: params.reasoningTree,
           claims: params.claims.map((c) => ({
-            criterionId: c.criterion_id,
+            criterionId: c.criterionId,
             value: c.value,
             argument: c.argument,
-            falsifiableBy: c.falsifiable_by,
+            falsifiableBy: c.falsifiableBy,
           })),
         });
 
@@ -972,7 +976,7 @@ server.tool(
             baseUrl: API_URL,
             bearerToken: bearer,
             signer: address,
-            questionId: params.question_id,
+            questionId: params.questionId,
             qid: pre.qid as `0x${string}`,
             nonce,
             expiresAt,
@@ -984,7 +988,7 @@ server.tool(
             solutionBody: solutionBodyJSON,
             references: [],
             token: pre.token.contractAddress as `0x${string}`,
-            feeAmount,
+            // H7: feeAmount hard-set to 0 inside runCommitFlow; don't pass it.
             stakeAmount,
             // Frozen by the first sponsor; preflight echoes the policy
             // bit-for-bit. The chain reverts a commit whose feeShares
@@ -1013,7 +1017,7 @@ server.tool(
             action:
               "If the backend POST succeeded but broadcast failed, the staged intent will expire automatically (default ~5 min). Call rezontree_me_list_pending (hosted MCP) to inspect lifecycle. Do NOT re-call submit_solution before the intent expires; it would burn a fresh nonce.",
             details: {
-              questionId: params.question_id,
+              questionId: params.questionId,
             },
           });
         }
@@ -1026,14 +1030,14 @@ server.tool(
 
 server.tool(
   "cast_vote",
-  "Cast a vote via the Quadphase v2 unified-envelope flow: preflight (returns voteSalt + voteSaltToken) → build VoteWitness(allocations, salt) → sign Envelope(action=Vote) → POST /v1/questions/:id/intents (backend re-binds the salt token + stages votes row + vote_allocations rows in one tx) → ensure USDC allowance → broadcast BountyForge.submit(env, sig). Stake is locked by the forge and refunded at settlement; wrong-voter stakes are slashed into the pool. allocations[].conviction_points use the 100-point budget and are scaled to basis points (×100) on the envelope.",
+  "Cast a vote via the Quadphase v2 unified-envelope flow: preflight (returns voteSalt + voteSaltToken) → build VoteWitness(allocations, salt) → sign Envelope(action=Vote) → POST /v1/questions/:id/intents (backend re-binds the salt token + stages votes row + vote_allocations rows in one tx) → ensure USDC allowance → broadcast BountyForge.submit(env, sig). Stake is locked by the forge and refunded at settlement; wrong-voter stakes are slashed into the pool. allocations[].convictionPoints use the 100-point budget and are scaled to basis points (×100) on the envelope.",
   {
-    question_id: z.string().describe("The question ID"),
+    questionId: z.string().describe("The question ID"),
     allocations: z
       .array(
         z.object({
-          solution_id: z.string().describe("Solution to back"),
-          conviction_points: z
+          solutionId: z.string().describe("Solution to back"),
+          convictionPoints: z
             .number()
             .describe("Points to allocate (min 10, total max 100)"),
           why: z
@@ -1046,20 +1050,20 @@ server.tool(
   },
   async (params) => {
     // QP Stage 1 — boundary check: see assertQuestionId threat model.
-    assertQuestionId(params.question_id);
+    assertQuestionId(params.questionId);
     for (const a of params.allocations) {
-      assertQuestionId(a.solution_id, "allocations[].solution_id");
+      assertQuestionId(a.solutionId, "allocations[].solutionId");
     }
     const env = requireRouterEnv();
     const { walletClient, publicClient, privateKey, address } = getClients();
 
     return withIdempotency(
       "cast_vote",
-      { addr: address, pid: params.question_id, allocs: params.allocations },
+      { addr: address, pid: params.questionId, allocs: params.allocations },
       async () => {
         const pre = (await apiCall(
           "POST",
-          `/v1/questions/${params.question_id}/intents/preflight?voter=${address}`,
+          `/v1/questions/${params.questionId}/intents/preflight?voter=${address}`,
           { actionType: "vote", params: { voter: address } },
         )) as VotePreflight;
 
@@ -1084,7 +1088,7 @@ server.tool(
         // terminal (settled/abandoned) its solution set is frozen, so a
         // retry against it serves from cache instead of re-reading.
         const solResp = (await cachedQuestionGet(
-          `/v1/questions/${params.question_id}?include=solutions`,
+          `/v1/questions/${params.questionId}?include=solutions`,
         )) as { solutions: { data: Array<{ id: string; intentHash: string }> } };
 
         const intentHashBySolId = new Map<string, `0x${string}`>(
@@ -1096,11 +1100,11 @@ server.tool(
 
         // Validate every allocated solution ID resolves to a confirmed intentHash.
         for (const a of params.allocations) {
-          if (!intentHashBySolId.has(a.solution_id)) {
+          if (!intentHashBySolId.has(a.solutionId)) {
             throw new StructuredMCPError({
               code: "VOTE_SOLUTION_NOT_FOUND",
-              message: `Allocated solution ${a.solution_id} not found in confirmed solutions for question ${params.question_id}.`,
-              action: `Verify the solution ID is confirmed via GET /v1/questions/${params.question_id}?include=solutions and retry with a valid solution_id.`,
+              message: `Allocated solution ${a.solutionId} not found in confirmed solutions for question ${params.questionId}.`,
+              action: `Verify the solution ID is confirmed via GET /v1/questions/${params.questionId}?include=solutions and retry with a valid solutionId.`,
             });
           }
         }
@@ -1110,32 +1114,35 @@ server.tool(
         // points loudly — the agent must allocate whole points.
         let bpsSum = 0;
         const v2Allocations = params.allocations.map((a) => {
-          if (!Number.isInteger(a.conviction_points)) {
+          if (!Number.isInteger(a.convictionPoints)) {
             throw new StructuredMCPError({
               code: "VOTE_FRACTIONAL_POINTS",
-              message: `Allocation for ${a.solution_id} has fractional conviction_points (${a.conviction_points}); v2 requires whole-integer points.`,
+              message: `Allocation for ${a.solutionId} has fractional convictionPoints (${a.convictionPoints}); v2 requires whole-integer points.`,
               action:
-                "Round to whole conviction_points before calling cast_vote. The 100-point budget maps directly to 10000 basis points.",
+                "Round to whole convictionPoints before calling cast_vote. The 100-point budget maps directly to 10000 basis points.",
             });
           }
-          const bps = a.conviction_points * 100;
+          const bps = a.convictionPoints * 100;
           bpsSum += bps;
           return {
             // Use intentHash (bytes32) not the sol_xxx API ID string (bytes24)
-            solutionId: intentHashBySolId.get(a.solution_id) as `0x${string}`,
+            solutionId: intentHashBySolId.get(a.solutionId) as `0x${string}`,
             basisPoints: bps,
           };
         });
         if (bpsSum !== 10000) {
           throw new StructuredMCPError({
             code: "VOTE_BPS_SUM_MISMATCH",
-            message: `Allocation basisPoints sum to ${bpsSum}; must equal 10000 (conviction_points must sum to 100).`,
+            message: `Allocation basisPoints sum to ${bpsSum}; must equal 10000 (convictionPoints must sum to 100).`,
             action:
-              "Rebalance allocations[].conviction_points so they sum to exactly 100. Retry.",
+              "Rebalance allocations[].convictionPoints so they sum to exactly 100. Retry.",
           });
         }
 
-        const feeAmount = BigInt(pre.feeAmount);
+        // H7 / realized-outcome: vote feeAmount is always 0 (fee at
+        // settlement; chain reverts "vote:feeAmount-must-be-zero").
+        // runVoteFlow hard-sets it; mirror 0 here for coverage + reporting.
+        const feeAmount = 0n;
         const stakeAmount = BigInt(pre.stakeAmount);
 
         await ensureUsdcCoverage(
@@ -1161,7 +1168,7 @@ server.tool(
             baseUrl: API_URL,
             bearerToken: bearer,
             signer: address,
-            questionId: params.question_id,
+            questionId: params.questionId,
             qid: pre.qid as `0x${string}`,
             nonce,
             expiresAt,
@@ -1172,7 +1179,7 @@ server.tool(
             voteSalt,
             voteSaltToken,
             token: pre.token.contractAddress as `0x${string}`,
-            feeAmount,
+            // H7: feeAmount hard-set to 0 inside runVoteFlow; don't pass it.
             stakeAmount,
             feeShareBps: requireFrozenFeeShareBps(pre, "vote"),
             feeShares: requireFrozenFeeShares(pre, "vote", platformFeeRecipient),
@@ -1195,7 +1202,7 @@ server.tool(
             action:
               "If the backend POST succeeded but broadcast failed, the staged intent will expire automatically. Call rezontree_me_list_pending (hosted MCP) to inspect lifecycle. Do NOT re-call cast_vote before the intent expires; it would burn a fresh nonce.",
             details: {
-              questionId: params.question_id,
+              questionId: params.questionId,
             },
           });
         }
@@ -1208,15 +1215,15 @@ server.tool(
 
 server.tool(
   "fund_question",
-  "Fund a question via RezonForge: preflight → sign Sponsor or Cosponsor intent (auto-detected from preflight.mode) → POST /sponsorships → USDC permit → broadcast sponsor()/cosponsor(). The first contributor signs SponsorIntent (binds per-Q params on-chain); subsequent contributors sign CosponsorIntent (inherits chain state). Amount is in human USDC (e.g. '1.5' = 1.5 USDC). IMPORTANT: check get_usdc_balance before calling — this pulls from your on-chain wallet. For first-sponsors, sponsorship_floor defaults to preflight.sponsorship_floor (usually 1 USDC) but can be overridden lower if your balance requires it.",
+  "Fund a question via RezonForge: preflight → sign Sponsor or Cosponsor intent (auto-detected from preflight.mode) → POST /sponsorships → USDC permit → broadcast sponsor()/cosponsor(). The first contributor signs SponsorIntent (binds per-Q params on-chain); subsequent contributors sign CosponsorIntent (inherits chain state). Amount is in human USDC (e.g. '1.5' = 1.5 USDC). IMPORTANT: check get_usdc_balance before calling — this pulls from your on-chain wallet. For first-sponsors, sponsorshipFloor defaults to preflight.sponsorshipFloor (usually 1 USDC) but can be overridden lower if your balance requires it.",
   {
-    question_id: z.string().describe("The question ID to fund"),
+    questionId: z.string().describe("The question ID to fund"),
     amount: z
       .string()
       .describe(
-        "Amount in human USDC, e.g. '0.5' for 0.5 USDC. Must be >= sponsorship_floor.",
+        "Amount in human USDC, e.g. '0.5' for 0.5 USDC. Must be >= sponsorshipFloor.",
       ),
-    sponsorship_floor: z
+    sponsorshipFloor: z
       .string()
       .optional()
       .describe(
@@ -1225,13 +1232,13 @@ server.tool(
   },
   async (params) => {
     // QP Stage 1 — boundary check: see assertQuestionId threat model.
-    assertQuestionId(params.question_id);
+    assertQuestionId(params.questionId);
     const env = requireRouterEnv();
     const { walletClient, publicClient, privateKey, address } = getClients();
 
     return withIdempotency(
       "fund_question",
-      { addr: address, pid: params.question_id, amount: params.amount },
+      { addr: address, pid: params.questionId, amount: params.amount },
       async () => {
         // Backend dispatches both `actionType=sponsor` and
         // `actionType=cosponsor` to the same FundPreflight handler — it
@@ -1240,7 +1247,7 @@ server.tool(
         // and the response.mode field tells us which flow to run.
         const pre = (await apiCall(
           "POST",
-          `/v1/questions/${params.question_id}/intents/preflight?sponsor=${address}`,
+          `/v1/questions/${params.questionId}/intents/preflight?sponsor=${address}`,
           { actionType: "sponsor", params: { sponsor: address } },
         )) as FundPreflight;
 
@@ -1271,7 +1278,7 @@ server.tool(
             // SponsorWitness fields.
             const qDetail = (await apiCall(
               "GET",
-              `/v1/questions/${params.question_id}`,
+              `/v1/questions/${params.questionId}`,
             )) as {
               id: string;
               qid: string;
@@ -1280,8 +1287,8 @@ server.tool(
               tags?: string[];
               successCriteria?: unknown[];
             };
-            const sponsorshipFloor = params.sponsorship_floor
-              ? parseAmountToWei(params.sponsorship_floor, pre.token.decimals)
+            const sponsorshipFloor = params.sponsorshipFloor
+              ? parseAmountToWei(params.sponsorshipFloor, pre.token.decimals)
               : BigInt(
                   pre.sponsorshipFloor ?? pre.recommendedSponsorshipFloor ?? "0",
                 );
@@ -1302,7 +1309,7 @@ server.tool(
               baseUrl: API_URL,
               bearerToken: bearer,
               signer: address,
-              questionId: params.question_id,
+              questionId: params.questionId,
               qid: pre.qid as `0x${string}`,
               nonce,
               expiresAt,
@@ -1343,11 +1350,21 @@ server.tool(
           // actionType="sponsor" the dispatcher delegated to the same
           // FundPreflight handler — preflight.mode reflects chain
           // state and is the source of truth here.
+          //
+          // H8: a cosponsor inherits the question's FROZEN fee-share
+          // policy — it does NOT author its own. The preflight echoes
+          // that policy in pre.feeShares; we MUST pass it verbatim. The
+          // old `[{platform, 10000}]` hardcode hashed a different array
+          // than the backend's expectedIntentHash the instant any
+          // referrer split existed, throwing assertIntentHashMatch on
+          // every cosponsor. requireFrozenFeeShares pulls pre.feeShares
+          // (falling back to the platform-only policy when the backend
+          // omits the array). Mirrors scripts/run-battle.ts cosponsor.
           const result = await runCosponsorFlow({
             baseUrl: API_URL,
             bearerToken: bearer,
             signer: address,
-            questionId: params.question_id,
+            questionId: params.questionId,
             qid: pre.qid as `0x${string}`,
             nonce,
             expiresAt,
@@ -1357,9 +1374,12 @@ server.tool(
             token: pre.token.contractAddress as `0x${string}`,
             amount: amountWei,
             feeAmount: 0n,
+            // feeShareBps is the frozen q-level split (pre.feeShareBps);
+            // feeShares is the frozen recipient array — both must echo the
+            // backend's expectedIntentHash inputs verbatim.
             feeShareBps: amountWei > 0n ? feeShareBps : 0,
             feeShares: amountWei > 0n
-              ? [{ recipient: platformFeeRecipient, basisPoints: 10000 }]
+              ? requireFrozenFeeShares(pre, "cosponsor", platformFeeRecipient)
               : [],
             walletClient,
             privateKey,
@@ -1431,23 +1451,23 @@ function tokenFromTemplate(
 
 server.tool(
   "withdraw",
-  "Withdraw EVERY amount you're owed on a settled or abandoned question in one call. The backend enumerates your winner-payout claim AND each unrefunded sponsor/commit-stake/vote-fee refund, then this tool signs + broadcasts each (Router.pullValue) independently. Pass just question_id. If you're owed nothing here (already withdrawn, never participated, or not yet eligible) it returns a clean 'nothing to withdraw' result — that is success, not an error. Re-call it after broadcasting to confirm the eligible list shrank; already-broadcast items replay their cached tx instead of double-spending.",
+  "Withdraw EVERY amount you're owed on a settled or abandoned question in one call. The backend enumerates your winner-payout claim AND each unrefunded sponsor/commit-stake/vote-fee refund, then this tool signs + broadcasts each (Router.pullValue) independently. Pass just questionId. If you're owed nothing here (already withdrawn, never participated, or not yet eligible) it returns a clean 'nothing to withdraw' result — that is success, not an error. Re-call it after broadcasting to confirm the eligible list shrank; already-broadcast items replay their cached tx instead of double-spending.",
   {
-    question_id: z
+    questionId: z
       .string()
       .describe("The question ID (qst_...) to withdraw your owed funds from"),
-    qid_hex: z
+    qidHex: z
       .string()
       .optional()
       .describe(
-        "Optional bytes32 question_id (0x-prefixed 66-char hex) for cross-checking the chain qid the door resolves; informational only — the door always derives the canonical qid + per-item nonces server-side.",
+        "Optional bytes32 questionId (0x-prefixed 66-char hex) for cross-checking the chain qid the door resolves; informational only — the door always derives the canonical qid + per-item nonces server-side.",
       ),
   },
   async (params) => {
-    // QP Stage 1 — boundary check: question_id is interpolated into the
+    // QP Stage 1 — boundary check: questionId is interpolated into the
     // preflight URL; reject path-traversal before any backend call.
-    assertQuestionId(params.question_id);
-    if (params.qid_hex !== undefined) assertBytes32(params.qid_hex, "qid_hex");
+    assertQuestionId(params.questionId);
+    if (params.qidHex !== undefined) assertBytes32(params.qidHex, "qidHex");
 
     const env = requireRouterEnv();
     const { walletClient, publicClient, privateKey, address } = getClients();
@@ -1457,7 +1477,7 @@ server.tool(
     // eligible item, so N intents never collide on the contract bitmap.
     const draft = (await apiCall(
       "POST",
-      `/v1/questions/${params.question_id}/intents/preflight`,
+      `/v1/questions/${params.questionId}/intents/preflight`,
       { actionType: "withdraw", params: { signer: address } },
     )) as WithdrawDraftResponse;
 
@@ -1468,7 +1488,7 @@ server.tool(
     // the agent can decide whether to wait for settlement or move on.
     if (items.length === 0) {
       return textResponse({
-        question_id: params.question_id,
+        question_id: params.questionId,
         qid: draft.qid,
         question_status: draft.questionStatus,
         eligible_count: 0,
@@ -1582,7 +1602,7 @@ server.tool(
             // Use the draft's own qid (== draft.qid; byte-exact with
             // this item's pinned r.expectedIntentHash).
             qid: r.qid as Hex,
-            questionId: params.question_id,
+            questionId: params.questionId,
             nonce: BigInt(r.nonce),
             expiresAt: BigInt(r.recommendedExpiresAt),
             forgeAddress: env.router,
@@ -1641,7 +1661,7 @@ server.tool(
     ).length;
 
     return textResponse({
-      question_id: params.question_id,
+      question_id: params.questionId,
       qid: draft.qid,
       question_status: draft.questionStatus,
       eligible_count: items.length,
@@ -1853,13 +1873,13 @@ server.tool(
   {
     title: z.string().describe("≤ 100 chars. Decision being made, not just topic."),
     description: z.string().describe("≥ 1000 chars. See post_question_scaffold.md."),
-    bounty_usd: z
+    bountyUsd: z
       .string()
       .describe("USDC bounty (e.g. '5.00'). Min 1.00 for sponsor."),
-    voting_deadline: z
+    votingDeadline: z
       .string()
       .describe("ISO 8601, default 48h from now."),
-    success_criteria: z
+    successCriteria: z
       .array(
         z.object({
           name: z.string(),
@@ -1890,17 +1910,17 @@ server.tool(
       ),
   },
   async (params) => {
-    // QP Stage 1 — boundary check. voting_deadline is passed via
+    // QP Stage 1 — boundary check. votingDeadline is passed via
     // `new Date(...)`. If the input is malformed we'd ship NaN
     // downstream and the backend rejects with an opaque validation
     // failure. Loud-fail here so the agent learns the shape.
-    const deadlineMs = new Date(params.voting_deadline).getTime();
+    const deadlineMs = new Date(params.votingDeadline).getTime();
     if (!Number.isFinite(deadlineMs)) {
       throw new StructuredMCPError({
         code: "STRUCTURED_INPUT_INVALID",
-        message: `voting_deadline=${JSON.stringify(params.voting_deadline)} is not a parseable ISO-8601 date.`,
+        message: `votingDeadline=${JSON.stringify(params.votingDeadline)} is not a parseable ISO-8601 date.`,
         action:
-          "Pass voting_deadline as ISO-8601, e.g. '2026-06-01T12:00:00Z'. Must be in the future.",
+          "Pass votingDeadline as ISO-8601, e.g. '2026-06-01T12:00:00Z'. Must be in the future.",
       });
     }
     const env = requireRouterEnv();
@@ -1908,14 +1928,14 @@ server.tool(
 
     return withIdempotency(
       "post_question",
-      { addr: address, title: params.title, bounty: params.bounty_usd },
+      { addr: address, title: params.title, bounty: params.bountyUsd },
       async () => {
         // Step 1 — create question (off-chain row, status=draft).
         // Wire field is `initialBounty` in token base units (NOT `bountyAmount`,
         // and NOT a USD float). USDC has 6 decimals so $5 = "5000000".
         const decimals = 6; // USDC; preflight will return real decimals on step 2
         const initialBountyBase =
-          parseAmountToWei(params.bounty_usd, decimals).toString();
+          parseAmountToWei(params.bountyUsd, decimals).toString();
 
         // Pre-flight balance check happens BEFORE creating the draft row so a
         // short wallet doesn't leave an orphan draft behind.
@@ -1934,7 +1954,7 @@ server.tool(
           // R-WIRE-ABSOLUTE-UNIX: backend expects int64 Unix seconds, not ISO-8601.
           // deadlineMs was validated at tool entry (Number.isFinite gate).
           votingDeadline: Math.floor(deadlineMs / 1000),
-          successCriteria: params.success_criteria,
+          successCriteria: params.successCriteria,
           assumptions: params.assumptions ?? [],
           context: params.context,
           example: params.example,
@@ -1945,7 +1965,7 @@ server.tool(
         // Steps 2-5 are wrapped: if any leg fails the draft row created
         // in step 1 is left behind (no DELETE /v1/questions/:id exists
         // yet). We re-throw a structured error pointing the caller at
-        // fund_question(question_id) to retry the sponsor leg without
+        // fund_question(questionId) to retry the sponsor leg without
         // re-running step 1.
         try {
           // Step 2 — sponsor preflight (Round-3 unified surface).
@@ -1968,7 +1988,7 @@ server.tool(
           // safeTransferFrom (no inline EIP-2612 permit); ensure the
           // wallet has approved the forge address.
           const amountWei = parseAmountToWei(
-            params.bounty_usd,
+            params.bountyUsd,
             pre.token.decimals,
           );
           await ensureUsdcCoverage(
@@ -2023,7 +2043,7 @@ server.tool(
             // contentHash so the chain can attest content immutability.
             title: params.title,
             body: params.description,
-            criteria: JSON.stringify(params.success_criteria),
+            criteria: JSON.stringify(params.successCriteria),
             tags: params.tags ?? [],
             oracle,
             sponsorshipFloor,
@@ -2071,7 +2091,7 @@ server.tool(
           throw new StructuredMCPError({
             code: "POST_QUESTION_SPONSOR_FAILED",
             message: `post_question: question row was created (id=${created.id}) but the sponsor leg failed. The draft is orphaned until you retry the sponsor leg or it ages out.`,
-            action: `Retry the sponsor leg with: fund_question { question_id: "${created.id}", amount: "${params.bounty_usd}" }. Do NOT re-call post_question — that creates a duplicate draft.`,
+            action: `Retry the sponsor leg with: fund_question { questionId: "${created.id}", amount: "${params.bountyUsd}" }. Do NOT re-call post_question — that creates a duplicate draft.`,
             details: {
               questionId: created.id,
               qid: created.qid,
@@ -2144,7 +2164,7 @@ interface QuestionRow {
 
 server.tool(
   "wait_for_questions",
-  "Long-poll the backend's question list and return as soon as new (unseen, action-eligible) questions appear. Designed to replace the swarm 'poll once and exit' anti-pattern that crashes when the question pool is empty for the first 60-120s of a run. Default cadence: 60s poll interval, 1800s (30min) max wait. Tracks 'seen' question IDs across calls in this MCP process — repeated invocations only return the new set since last call. Filter by `tags` (any-match) or `exclude_authors` (avoid your own questions). Returns immediately on first call if questions already exist. On timeout: returns { matched: [], waited: <seconds>, hint: 'no questions matched within deadline; widen tags or accept current empty state' }.",
+  "Long-poll the backend's question list and return as soon as new (unseen, action-eligible) questions appear. Designed to replace the swarm 'poll once and exit' anti-pattern that crashes when the question pool is empty for the first 60-120s of a run. Default cadence: 60s poll interval, 1800s (30min) max wait. Tracks 'seen' question IDs across calls in this MCP process — repeated invocations only return the new set since last call. Filter by `tags` (any-match) or `excludeAuthors` (avoid your own questions). Returns immediately on first call if questions already exist. On timeout: returns { matched: [], waited: <seconds>, hint: 'no questions matched within deadline; widen tags or accept current empty state' }.",
   {
     tags: z
       .array(z.string())
@@ -2152,13 +2172,13 @@ server.tool(
       .describe(
         "Lowercase tag(s) to filter on (any-match). Omit or empty array = match all open questions.",
       ),
-    exclude_authors: z
+    excludeAuthors: z
       .array(z.string())
       .optional()
       .describe(
         "0x-prefixed author addresses to filter out (e.g. your own wallet so you don't try to solve your own questions). Case-insensitive.",
       ),
-    poll_interval_seconds: z
+    pollIntervalSeconds: z
       .number()
       .int()
       .min(15)
@@ -2167,7 +2187,7 @@ server.tool(
       .describe(
         "Seconds between successive list_questions calls. Default 60 in testing, 300 in prod. Floor 15 prevents accidental DOS.",
       ),
-    max_wait_seconds: z
+    maxWaitSeconds: z
       .number()
       .int()
       .min(30)
@@ -2185,18 +2205,18 @@ server.tool(
       .describe("Max questions per list_questions call. Default 20."),
   },
   async (params) => {
-    const pollMs = (params.poll_interval_seconds ?? 60) * 1000;
-    const maxMs = (params.max_wait_seconds ?? 1800) * 1000;
+    const pollMs = (params.pollIntervalSeconds ?? 60) * 1000;
+    const maxMs = (params.maxWaitSeconds ?? 1800) * 1000;
     const limit = params.limit ?? 20;
-    // Validate exclude_authors at the boundary — agent-supplied
+    // Validate excludeAuthors at the boundary — agent-supplied
     // strings shouldn't bypass shape checks just because they go to
     // a local Set rather than a URL.
-    for (const a of params.exclude_authors ?? []) {
-      assertAddress(a, "exclude_authors[]");
+    for (const a of params.excludeAuthors ?? []) {
+      assertAddress(a, "excludeAuthors[]");
     }
     const wantTags = (params.tags ?? []).map((t) => t.toLowerCase());
     const excludeAuthors = new Set(
-      (params.exclude_authors ?? []).map((a) => a.toLowerCase()),
+      (params.excludeAuthors ?? []).map((a) => a.toLowerCase()),
     );
     const deadline = Date.now() + maxMs;
     let attempts = 0;
@@ -2374,14 +2394,14 @@ interface PendingIntentItem {
 
 server.tool(
   "wait_for_chain_confirmation",
-  "Block until the reconciler confirms (or rejects) a chain-bound intent the agent just broadcast. Pass `intent_hash` (the 0x-prefixed bytes32 returned by submit_solution / cast_vote / fund_question / withdraw). Polls /v1/accounts/me?include=pending until the intent leaves the pending list (confirmed) or its lifecyclePhase flips to 'rejected_revalidation' (Stage-4 reject — same intent will never confirm). Defaults: 2s poll, 60s timeout. Errors: WAIT_CONFIRMATION_TIMEOUT (deadline elapsed, intent still pending — try again with longer max_wait_seconds, or check the chain manually), WAIT_CONFIRMATION_REJECTED (chain event ↔ intent mismatch; do NOT retry the same intent).",
+  "Block until the reconciler confirms (or rejects) a chain-bound intent the agent just broadcast. Pass `intentHash` (the 0x-prefixed bytes32 returned by submit_solution / cast_vote / fund_question / withdraw). Polls /v1/accounts/me until the intent appears in the caller's CONFIRMED projection (sponsorships/solutions/votes/refunds/claims — positive confirmation, not mere absence from the pending list) or its lifecyclePhase flips to 'rejected_revalidation' (Stage-4 reject — same intent will never confirm). Defaults: 2s poll, 60s timeout. Errors: WAIT_CONFIRMATION_TIMEOUT (deadline elapsed and the intent is neither pending nor confirmed — likely the /intents POST was skipped or the broadcast never landed; inspect the chain, do NOT re-broadcast), WAIT_CONFIRMATION_REJECTED (chain event ↔ intent mismatch; do NOT retry the same intent).",
   {
-    intent_hash: z
+    intentHash: z
       .string()
       .describe(
         "0x-prefixed bytes32 intent hash returned by the chain-bound tool that broadcast this intent.",
       ),
-    poll_interval_seconds: z
+    pollIntervalSeconds: z
       .number()
       .int()
       .min(1)
@@ -2390,7 +2410,7 @@ server.tool(
       .describe(
         "Seconds between successive /accounts/me?include=pending polls. Default 2.",
       ),
-    max_wait_seconds: z
+    maxWaitSeconds: z
       .number()
       .int()
       .min(5)
@@ -2401,10 +2421,10 @@ server.tool(
       ),
   },
   async (params) => {
-    assertBytes32(params.intent_hash, "intent_hash");
-    const intentHash = params.intent_hash.toLowerCase();
-    const pollMs = (params.poll_interval_seconds ?? 2) * 1000;
-    const maxMs = (params.max_wait_seconds ?? 60) * 1000;
+    assertBytes32(params.intentHash, "intentHash");
+    const intentHash = params.intentHash.toLowerCase();
+    const pollMs = (params.pollIntervalSeconds ?? 2) * 1000;
+    const maxMs = (params.maxWaitSeconds ?? 60) * 1000;
     const startedAt = Date.now();
     const deadline = startedAt + maxMs;
     let attempts = 0;
@@ -2412,8 +2432,10 @@ server.tool(
 
     // Single helper: one /accounts/me?include=pending fetch + filter for
     // the caller-owned row whose intentHash matches. Returns null when
-    // the hash is no longer in the pending list — interpreted by the
-    // caller as "reconciler confirmed (or never staged it; see hint)".
+    // the hash is no longer in the pending list — which is NOT itself a
+    // confirmation (M18): absence conflates reconciler-confirmed with
+    // never-staged + reconciler-lag. We must positively verify against
+    // the CONFIRMED projection (findConfirmedRow) before claiming done.
     async function findPendingRow(): Promise<PendingIntentItem | null> {
       // Round-3 surfaces /v1/me/pending via /v1/accounts/me?include=pending.
       // The local-MCP drift fence (server.test.ts ALLOWED_API_PATHS)
@@ -2429,35 +2451,99 @@ server.tool(
       return null;
     }
 
+    // M18 / R-VERIFY-FOUR-LAYERS: positively confirm against the caller's
+    // CONFIRMED projections, not the absence of a pending row. Each
+    // chain-bound action surfaces, post-reconcile, on /v1/accounts/me as a
+    // confirmed-only list (R-CHAIN-IS-PUBLIC-TRUTH — a row's PRESENCE is
+    // the confirmation signal; the embeds carry the intentHash but no
+    // status field). We fold every action's projection (sponsorships /
+    // solutions / votes / refunds / claims) into one include and test for
+    // the intent_hash. A hit means the reconciler flipped the row to
+    // confirmed and projected it — the only state that means "done".
+    async function findConfirmedRow(): Promise<{ projection: string } | null> {
+      const raw = (await apiCall(
+        "GET",
+        "/v1/accounts/me?include=sponsorships,solutions,votes,refunds,claims",
+      )) as Record<string, unknown>;
+      // Each include surfaces either as `{ data: [...] }` or a bare array.
+      const projections = ["sponsorships", "solutions", "votes", "refunds", "claims"];
+      for (const proj of projections) {
+        const node = raw?.[proj] as
+          | { data?: Array<Record<string, unknown>> }
+          | Array<Record<string, unknown>>
+          | undefined;
+        const list = Array.isArray(node) ? node : (node?.data ?? []);
+        for (const row of list) {
+          const ih = (
+            (row.intentHash as string | undefined) ??
+            (row.intent_hash as string | undefined) ??
+            ""
+          )
+            .toString()
+            .toLowerCase();
+          if (ih && ih === intentHash) return { projection: proj };
+        }
+      }
+      return null;
+    }
+
     while (true) {
       attempts++;
       const found = await findPendingRow();
 
       if (found === null) {
-        // Two indistinguishable cases on the wire:
-        //   (a) reconciler flipped status='confirmed' (most common — the
-        //       happy path the agent waited for), OR
-        //   (b) the backend never staged a pending row for this hash
-        //       (the broadcast happened but the POST signed-envelope
-        //       step was skipped — operator error).
-        // The hint covers (b) so an agent that miswired the flow can
-        // diagnose without us inventing a per-hash endpoint.
-        return {
-          content: [
-            {
-              type: "text",
-              text: safeJSONStringify({
-                ok: true,
-                confirmed: true,
-                intentHash,
-                attempts,
-                waitedMs: Date.now() - startedAt,
-                hint:
-                  "Intent no longer in pending list — either Stage-4 confirmed it (happy path) or no pending row ever existed for this hash (skipped /intents POST). To inspect confirmed surface, query the parent resource (e.g. GET /v1/questions/<questionId> for sponsor/commit/vote effects).",
-              }),
+        // The row is NOT in the pending list. That is NOT a confirmation
+        // on its own (M18): it conflates (a) reconciler-confirmed, (b) no
+        // row ever staged (broadcast without the /intents POST), and (c)
+        // reconciler lag where the row briefly drops between projections.
+        // Resolve it by positively checking the CONFIRMED projection.
+        const confirmed = await findConfirmedRow();
+        if (confirmed !== null) {
+          // (a) — the reconciler flipped the row to confirmed and the
+          // chain-projected effect is visible on the caller's surface.
+          return {
+            content: [
+              {
+                type: "text",
+                text: safeJSONStringify({
+                  ok: true,
+                  confirmed: true,
+                  intentHash,
+                  confirmedVia: `/v1/accounts/me?include=${confirmed.projection}`,
+                  attempts,
+                  waitedMs: Date.now() - startedAt,
+                }),
+              },
+            ],
+          };
+        }
+        // Not pending AND not (yet) in the confirmed projection. Keep
+        // polling until the deadline — the reconciler may still be
+        // projecting (case c), or the POST was skipped / the broadcast
+        // never landed (case b). On timeout the WAIT_CONFIRMATION_TIMEOUT
+        // branch below surfaces the unresolved state with a hint covering
+        // the skipped-POST diagnosis, rather than a false-positive
+        // confirmed:true.
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) {
+          throw new StructuredMCPError({
+            code: "WAIT_CONFIRMATION_TIMEOUT",
+            message: `Intent ${intentHash} is neither pending nor confirmed after ${
+              Math.round(maxMs / 1000)
+            }s (${attempts} polls).`,
+            action:
+              "The intent is absent from both the pending list and the confirmed projection. Most likely the broadcast happened but the /intents POST that stages the signed_intents row was skipped (operator error), or the broadcast tx never landed. Inspect the broadcast tx on-chain and GET /v1/questions/<questionId> for the action's effect. If the row IS on-chain but never confirmed, file a backend incident — do NOT re-broadcast (it would burn a fresh nonce).",
+            details: {
+              intentHash,
+              attempts,
+              waitedMs: Date.now() - startedAt,
+              everSeenPending: lastSeenItem !== undefined,
             },
-          ],
-        };
+            retryable: true,
+          });
+        }
+        await new Promise((r) => setTimeout(r, Math.min(pollMs, remainingMs)));
+        continue;
       }
 
       lastSeenItem = found;

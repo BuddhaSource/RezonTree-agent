@@ -33,7 +33,7 @@ import { deriveAgentWallet } from "../src/wallet/derive.js";
 import { loadLoginDomain } from "../src/wallet/domain.js";
 import { SessionManager } from "../src/wallet/session.js";
 import type { AgentWallet } from "../src/wallet/types.js";
-import { parseAmountToWei } from "../src/intents/sponsor-intent.js";
+import { parseAmountToWei } from "../src/intents/amounts.js";
 import { canonicalStringify } from "../src/intents/commit-intent.js";
 import type {
   CommitPreflight,
@@ -425,7 +425,9 @@ async function runScenario(spec: ScenarioSpec) {
       expiresAt: BigInt(pre.recommendedExpiresAt ?? Math.floor(Date.now()/1000)+300),
       forgeAddress: FORGE, chainId: pre.chainId ?? CHAIN_ID,
       solutionBody: canonicalStringify(payload), references: [],
-      token: pre.token.contractAddress as Address, feeAmount: fee, stakeAmount: stake,
+      // H7: commit feeAmount is hard-set to 0 inside runCommitFlow (the
+      // `fee` local above is already 0n — realized-outcome). Don't pass it.
+      token: pre.token.contractAddress as Address, stakeAmount: stake,
       feeShareBps: pre.feeShareBps ?? 0, feeShares,
       walletClient: wc, privateKey: wallets[solverName].privateKey as Hex,
     });
@@ -499,7 +501,9 @@ async function runScenario(spec: ScenarioSpec) {
       // Stage 2 from the submitted payload. [SWARM FIX]
       expectedIntentHash: undefined as unknown as Hex, allocations,
       voteSalt: pre.voteSalt as Hex, voteSaltToken: pre.voteSaltToken as Hex,
-      token: pre.token.contractAddress as Address, feeAmount: fee, stakeAmount: stake,
+      // H7: vote feeAmount is hard-set to 0 inside runVoteFlow (the `fee`
+      // local above is already 0n — realized-outcome). Don't pass it.
+      token: pre.token.contractAddress as Address, stakeAmount: stake,
       feeShareBps: pre.feeShareBps ?? 0, feeShares,
       walletClient: wc, privateKey: wallets[voterName].privateKey as Hex,
     });

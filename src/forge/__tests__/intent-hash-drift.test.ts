@@ -29,6 +29,8 @@ import {
   runCommitFlow,
   runVoteFlow,
   runRefundFlow,
+  runAbandonFlow,
+  runSettleFlow,
 } from "../quadphase-flow.js";
 
 // NOTE: runClaimFlow is NOT in this drift fence. Claim is now
@@ -278,14 +280,18 @@ describe("Round-3 submit body: cosponsor mirrors sponsor's shape", () => {
 
     // 1. Identical top-level Round-3 field set — this is the load-bearing
     //    parity assertion (the Q9 crash was the two bodies drifting apart).
-    //    `expectedIntentHash` is undefined here (we skip the drift assert),
-    //    so stringifyWithBigInts omits it from BOTH bodies symmetrically;
-    //    the remaining four keys are the Round-3 shape.
+    //    Both flows route through the shared signAndSubmitEnvelope spine
+    //    (#615), which posts `expectedIntentHash: expectedIntentHash ??
+    //    localRecompute` — so the key is ALWAYS present (here it carries
+    //    the local recompute since the test passes undefined to skip the
+    //    drift assert). In production sponsor/cosponsor preflight always
+    //    supplies it. The five-key Round-3 shape is uniform across every
+    //    signed flow.
     expect(Object.keys(cosponsorBody).sort()).toEqual(
       Object.keys(sponsorBody).sort(),
     );
     expect(Object.keys(cosponsorBody).sort()).toEqual(
-      ["actionType", "content", "signature", "typedData"],
+      ["actionType", "content", "expectedIntentHash", "signature", "typedData"],
     );
 
     // 2. Discriminator.
@@ -298,5 +304,172 @@ describe("Round-3 submit body: cosponsor mirrors sponsor's shape", () => {
     const coFunds = (cosponsorBody.typedData as { funds: Record<string, unknown> }).funds;
     expect((coFunds.feeShares as unknown[]).length).toBe(1);
     expect(coFunds.feeShareBps).toBe(1000);
+  });
+});
+
+// ─── MERGE-1 (#615): unified spine emits byte-identical POST bodies ──
+//
+// commit / vote / refund / settle / abandon were re-routed through the
+// shared signAndSubmitEnvelope spine that sponsor + cosponsor already
+// used. This block proves the refactor preserved byte-identical
+// observable output: each flow POSTs the canonical Round-3 envelope body
+// `{actionType, typedData, content, signature, expectedIntentHash}` —
+// with vote's `voteSaltToken` as the ONLY extra key — and the H7
+// invariant (commit/vote funds.feeAmount serialized as 0). The stub
+// wallet would throw if broadcast ran; the captured POST returns
+// !ok so the flow throws AFTER the body is captured, BEFORE broadcast.
+describe("MERGE-1: unified spine POST body parity (#615)", () => {
+  const base = {
+    baseUrl: "http://localhost:9999",
+    bearerToken: "test-token",
+    signer: TEST_ADDR,
+    qid: ("0x" + "01".repeat(32)) as Hex,
+    questionId: "qst_test",
+    nonce: 0n,
+    expiresAt: 9_999_999_999n,
+    forgeAddress: FORGE,
+    chainId: 31337,
+    walletClient: stubWallet,
+    privateKey: TEST_KEY,
+  };
+
+  function captureFetch(): { bodies: Array<Record<string, unknown>> } {
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation((async (
+      _url: unknown,
+      init?: { body?: string },
+    ) => {
+      bodies.push(JSON.parse(init?.body ?? "{}"));
+      return {
+        ok: false,
+        status: 599,
+        statusText: "captured",
+        text: async () => "captured-by-test",
+      } as unknown as Response;
+    }) as typeof fetch);
+    return { bodies };
+  }
+
+  // The canonical Round-3 top-level key set every signed flow posts.
+  const ROUND3_KEYS = [
+    "actionType",
+    "content",
+    "expectedIntentHash",
+    "signature",
+    "typedData",
+  ];
+
+  it("commit posts the Round-3 shape with funds.feeAmount==0 (H7)", async () => {
+    const cap = captureFetch();
+    await runCommitFlow({
+      ...base,
+      expectedIntentHash: undefined,
+      solutionBody: "answer", references: [],
+      token: TOKEN, stakeAmount: 5n, feeShareBps: 0, feeShares: [],
+    }).catch(() => undefined);
+
+    expect(cap.bodies).toHaveLength(1);
+    const body = cap.bodies[0];
+    expect(Object.keys(body).sort()).toEqual(ROUND3_KEYS);
+    expect(body.actionType).toBe("commit");
+    // H7: commit fee MUST be 0 on the wire (sentinel → raw int 0).
+    const funds = (body.typedData as { funds: Record<string, unknown> }).funds;
+    expect(funds.feeAmount).toBe(0);
+    expect(funds.stakeAmount).toBe(5);
+  });
+
+  it("vote posts the Round-3 shape + voteSaltToken, funds.feeAmount==0 (H7)", async () => {
+    const cap = captureFetch();
+    await runVoteFlow({
+      ...base,
+      expectedIntentHash: undefined,
+      allocations: [
+        { solutionId: ("0x" + "aa".repeat(32)) as Hex, basisPoints: 10000 },
+      ],
+      voteSalt: ("0x" + "ff".repeat(32)) as Hex,
+      voteSaltToken: ("0x" + "ee".repeat(32)) as Hex,
+      token: TOKEN, stakeAmount: 7n, feeShareBps: 0, feeShares: [],
+    }).catch(() => undefined);
+
+    expect(cap.bodies).toHaveLength(1);
+    const body = cap.bodies[0];
+    // Vote is the ONE flow with an extra body key — the salt token.
+    expect(Object.keys(body).sort()).toEqual(
+      [...ROUND3_KEYS, "voteSaltToken"].sort(),
+    );
+    expect(body.actionType).toBe("vote");
+    expect(body.voteSaltToken).toBe("0x" + "ee".repeat(32));
+    const funds = (body.typedData as { funds: Record<string, unknown> }).funds;
+    // H7: vote fee MUST be 0 on the wire.
+    expect(funds.feeAmount).toBe(0);
+    expect(funds.stakeAmount).toBe(7);
+  });
+
+  it("refund posts the Round-3 shape (sponsor-refund sentinel)", async () => {
+    const cap = captureFetch();
+    await runRefundFlow({
+      ...base,
+      expectedIntentHash: undefined,
+      token: TOKEN,
+      sourceIntentHash: ZERO_HASH,
+      expectedAmount: 3n,
+      expectedStatus: 4,
+    }).catch(() => undefined);
+
+    expect(cap.bodies).toHaveLength(1);
+    const body = cap.bodies[0];
+    expect(Object.keys(body).sort()).toEqual(ROUND3_KEYS);
+    expect(body.actionType).toBe("refund");
+    const funds = (body.typedData as { funds: Record<string, unknown> }).funds;
+    expect(funds.poolOut).toBe(3);
+  });
+
+  it("abandon posts the Round-3 shape (no preflight → local hash)", async () => {
+    const cap = captureFetch();
+    await runAbandonFlow({
+      ...base,
+      token: TOKEN,
+      reason: ("0x" + "00".repeat(32)) as Hex,
+      expectedStatus: 1,
+    }).catch(() => undefined);
+
+    expect(cap.bodies).toHaveLength(1);
+    const body = cap.bodies[0];
+    expect(Object.keys(body).sort()).toEqual(ROUND3_KEYS);
+    expect(body.actionType).toBe("abandon");
+  });
+
+  it("settle posts the Round-3 shape; skipBackendPost suppresses the POST", async () => {
+    // 5a — normal: POST captured.
+    const cap = captureFetch();
+    await runSettleFlow({
+      ...base,
+      expectedIntentHash: undefined,
+      token: TOKEN,
+      merkleRoot: ("0x" + "bb".repeat(32)) as Hex,
+      totalClaimable: 0n, feeTotal: 0n, slashes: [],
+      leafCount: 0n, slashEntryOffset: 0n, totalSlashEntries: 0n,
+      feeDistributions: [],
+    }).catch(() => undefined);
+    expect(cap.bodies).toHaveLength(1);
+    const body = cap.bodies[0];
+    expect(Object.keys(body).sort()).toEqual(ROUND3_KEYS);
+    expect(body.actionType).toBe("settle");
+
+    // 5b — skipBackendPost: NO POST is made (broadcast-only). The stub
+    // wallet throws when broadcast runs, but crucially fetch is never
+    // called — proving skipPost suppresses the POST leg.
+    const cap2 = captureFetch();
+    await runSettleFlow({
+      ...base,
+      expectedIntentHash: undefined,
+      skipBackendPost: true,
+      token: TOKEN,
+      merkleRoot: ("0x" + "bb".repeat(32)) as Hex,
+      totalClaimable: 0n, feeTotal: 0n, slashes: [],
+      leafCount: 0n, slashEntryOffset: 0n, totalSlashEntries: 0n,
+      feeDistributions: [],
+    }).catch(() => undefined);
+    expect(cap2.bodies).toHaveLength(0);
   });
 });

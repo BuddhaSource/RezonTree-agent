@@ -49,7 +49,7 @@ import {
 } from "../src/testnet/rpc-fallback.js";
 import { makeSolutionBody } from "../src/testnet/solution-body.js";
 
-import { parseAmountToWei } from "../src/intents/sponsor-intent.js";
+import { parseAmountToWei } from "../src/intents/amounts.js";
 import { canonicalStringify } from "../src/intents/commit-intent.js";
 import type {
   CommitPreflight,
@@ -676,7 +676,10 @@ class BattleRunner {
           falsifiableBy: "audit failure",
         })),
       };
-      const fee = BigInt(commitPre.feeAmount);
+      // H7 / realized-outcome: commit feeAmount is always 0 (the fee is
+      // skimmed once at settlement; the chain reverts a non-zero commit
+      // fee). runCommitFlow hard-sets it; mirror 0 locally for the allowance.
+      const fee = 0n;
       const stake = BigInt(commitPre.stakeAmount);
       const wc = this.makeWalletClient(wallet);
       await ensureUsdcAllowance(wc, publicClient, {
@@ -689,7 +692,8 @@ class BattleRunner {
         expiresAt: BigInt(commitPre.recommendedExpiresAt ?? Math.floor(Date.now() / 1000) + 300),
         forgeAddress: FORGE!, chainId: commitPre.chainId ?? CHAIN_ID,
         solutionBody: canonicalStringify(solutionPayload), references: [],
-        token: commitPre.token.contractAddress as Address, feeAmount: fee, stakeAmount: stake,
+        // H7: feeAmount hard-set to 0 inside runCommitFlow; don't pass it.
+        token: commitPre.token.contractAddress as Address, stakeAmount: stake,
         feeShareBps: fees.feeShareBps, feeShares: fees.feeShares,
         walletClient: wc, privateKey: wallet.privateKey as Hex,
       });
@@ -771,7 +775,10 @@ class BattleRunner {
       if (!votePre.voteSalt || !votePre.voteSaltToken) {
         throw new Error(`vote preflight missing voteSalt; backend requires it for privacy`);
       }
-      const fee = BigInt(votePre.feeAmount);
+      // H7 / realized-outcome: vote feeAmount is always 0 (fee at
+      // settlement; chain reverts "vote:feeAmount-must-be-zero").
+      // runVoteFlow hard-sets it; mirror 0 locally for the allowance.
+      const fee = 0n;
       const stake = BigInt(votePre.stakeAmount);
       const wc = this.makeWalletClient(wallet);
       await ensureUsdcAllowance(wc, publicClient, {
@@ -787,7 +794,8 @@ class BattleRunner {
         expectedIntentHash: votePre.expectedIntentHash as Hex,
         allocations,
         voteSalt: votePre.voteSalt as Hex, voteSaltToken: votePre.voteSaltToken as Hex,
-        token: votePre.token.contractAddress as Address, feeAmount: fee, stakeAmount: stake,
+        // H7: feeAmount hard-set to 0 inside runVoteFlow; don't pass it.
+        token: votePre.token.contractAddress as Address, stakeAmount: stake,
         feeShareBps: fees.feeShareBps, feeShares: fees.feeShares,
         walletClient: wc, privateKey: wallet.privateKey as Hex,
       });
