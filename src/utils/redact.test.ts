@@ -72,29 +72,51 @@ describe("SDK flow helpers (src/forge/quadphase-flow.ts) redaction contract", ()
     expect(abandonStart, "runAbandonFlow must exist").toBeGreaterThan(-1);
     const refundStart = flowSrc.indexOf("export async function runRefundFlow");
     const abandonBody = flowSrc.slice(abandonStart, refundStart);
-    // Backend POST is the C1 fix — without it the chain Abandon event
-    // arrives with no staged signed_intents row to JOIN, the
-    // reconciler routes it to OutcomeHeld, and the question's DB
-    // status stays `open` even though the chain says `Abandoned`.
+    // C1 fix — without a staged signed_intents row the chain Abandon
+    // event arrives with nothing to JOIN, the reconciler routes it to
+    // OutcomeHeld, and the question's DB status stays `open` even though
+    // the chain says `Abandoned`. Post-#615 the POST is delegated to the
+    // shared signAndSubmitEnvelope spine, so the abandon flow passes
+    // `actionType: "abandon"` to the spine and broadcasts via the
+    // witness-bearing `abandonSubmit(env, sig, witnessBytes)` entry
+    // (plain `submit()` reverts "submit:abandon-needs-witness").
+    expect(abandonBody).toMatch(/actionType: "abandon"/);
     expect(
       abandonBody,
-      "runAbandonFlow must POST to /v1/questions/:id/intents before broadcastAbandonSubmit (audit C1)",
-    ).toMatch(/POST.*\/v1\/questions/);
-    expect(abandonBody).toMatch(/actionType: "abandon"/);
-    // And the POST must precede broadcastAbandonSubmit, not follow it.
-    // Abandon broadcasts via the witness-bearing `abandonSubmit(env, sig,
-    // witnessBytes)` entry — plain `submit()` reverts
-    // "submit:abandon-needs-witness" for an Abandon envelope.
-    const postIdx = abandonBody.indexOf("/v1/questions/");
-    const broadcastIdx = abandonBody.indexOf("broadcastAbandonSubmit(");
+      "runAbandonFlow must route through signAndSubmitEnvelope (which POSTs the staged row before broadcast)",
+    ).toMatch(/signAndSubmitEnvelope\(/);
     expect(
-      broadcastIdx,
+      abandonBody,
       "runAbandonFlow must broadcast via broadcastAbandonSubmit (witness-bearing abandonSubmit entry)",
+    ).toMatch(/broadcastAbandonSubmit\(/);
+
+    // The C1 stage-before-broadcast ordering is now structurally
+    // enforced by the spine: signAndSubmitEnvelope POSTs (unless
+    // skipPost) and only THEN invokes the broadcast callback. Lock that
+    // invariant at the spine so every flow inherits it.
+    const spineStart = flowSrc.indexOf(
+      "async function signAndSubmitEnvelope",
+    );
+    expect(spineStart, "signAndSubmitEnvelope spine must exist").toBeGreaterThan(
+      -1,
+    );
+    const spineEnd = flowSrc.indexOf(
+      "export async function ensureUsdcAllowance",
+    );
+    const spineBody = flowSrc.slice(spineStart, spineEnd);
+    const postIdx = spineBody.indexOf("/v1/questions/");
+    const broadcastCallIdx = spineBody.indexOf("await p.broadcast(");
+    expect(postIdx, "spine must POST to /v1/questions/:id/intents").toBeGreaterThan(
+      -1,
+    );
+    expect(
+      broadcastCallIdx,
+      "spine must invoke the broadcast callback",
     ).toBeGreaterThan(-1);
     expect(
       postIdx,
-      "POST must happen before broadcastAbandonSubmit (chain emits event → reconciler needs the row already staged)",
-    ).toBeLessThan(broadcastIdx);
+      "spine POST must precede the broadcast callback (reconciler needs the row staged before the chain event arrives)",
+    ).toBeLessThan(broadcastCallIdx);
   });
 
   it("runRefundFlow validates sourceIntentHash is bytes32 at entry (audit H2)", async () => {

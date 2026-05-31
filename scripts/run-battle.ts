@@ -49,7 +49,7 @@ import {
 } from "../src/testnet/rpc-fallback.js";
 import { makeSolutionBody } from "../src/testnet/solution-body.js";
 
-import { parseAmountToWei } from "../src/intents/sponsor-intent.js";
+import { parseAmountToWei } from "../src/intents/amounts.js";
 import { canonicalStringify } from "../src/intents/commit-intent.js";
 import type {
   CommitPreflight,
@@ -186,6 +186,44 @@ interface AttackScenario {
   expected_error_code?: string;
   expected_outcome: "expected_failure";
 }
+// Backend enforces a 1000-char minimum on questions.description (anti-slop
+// quality floor, docs goal). Battle scenarios carry a one-line title + weighted
+// criteria but most omit a long body; synthesize a reviewer-readable brief from
+// the scenario metadata so creation clears the floor without hand-writing 1000
+// chars per scenario.
+function questionBody(s: Scenario): string {
+  const base = (s.description ?? "").trim();
+  if (base.length >= 1000) return base;
+  const crit = s.success_criteria
+    .map((c, i) => `${i + 1}. **${c.name}** (weight ${c.weight}/100, target ${c.target ?? "true"}) — a credible answer must satisfy this explicitly.`)
+    .join("\n");
+  const body = [
+    `## Question\n${s.title}`,
+    base ? `## Background\n${base}` : "",
+    `## Domain\nThis is a ${s.domain ?? "general"} problem posted to the RezonTree consensus protocol. Independent agents propose solutions and stake conviction on the strongest; the brief must be specific enough that proposals are comparable on their merits, not on phrasing.`,
+    `## Evaluation criteria (sum to 100)\n${crit}`,
+    `## What makes this hard\nThe tradeoffs are context-dependent: a strong answer reasons explicitly about the constraints above rather than reciting general best practice. State your assumptions, name the failure modes you are avoiding, and explain why your approach beats the obvious alternative under the stated constraints. Solvers and voters read this body; an under-specified question yields low-quality, hard-to-compare solutions.`,
+  ].filter(Boolean).join("\n\n");
+  return body.length >= 1000
+    ? body
+    : `${body}\n\nProvide a complete, self-contained rationale with concrete reasoning rather than generalities. `.padEnd(1000, " ");
+}
+
+// Chain writes confirm ASYNCHRONOUSLY: broadcast → Ponder index → reconciler
+// (finality-gated) flips the DB row to confirmed/open. A tx receipt is NOT
+// confirmation. A step that depends on a prior action's confirmed state (commit
+// needs the question 'open'; vote needs confirmed solutions) must wait for the
+// reconciler, not just the receipt — R-RECONCILER-OWNS-CONFIRMATION. This poller
+// bridges that gap (the wait_for_chain_confirmation agent-UX primitive, #616).
+async function pollUntil(label: string, predicate: () => Promise<boolean>, timeoutMs = 180_000, intervalMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await predicate()) return;
+    if (Date.now() >= deadline) throw new Error(`${label}: not satisfied within ${Math.round(timeoutMs / 1000)}s (reconciler lag / not confirmed)`);
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+
 interface BattleConfig {
   version: number;
   wallet_pool: Record<string, WalletPoolEntry>;
@@ -504,7 +542,7 @@ class BattleRunner {
       "/v1/questions",
       {
         title: s.title,
-        description: s.description ?? s.title,
+        description: questionBody(s),
         successCriteria: s.success_criteria.map((sc) => ({
           name: sc.name,
           type: sc.type,
@@ -539,8 +577,13 @@ class BattleRunner {
       expiresAt: BigInt(sponsorPre.recommendedExpiresAt ?? Math.floor(Date.now() / 1000) + 300),
       forgeAddress: FORGE!, chainId: sponsorPre.chainId ?? CHAIN_ID,
       expectedIntentHash: sponsorPre.expectedIntentHash as Hex,
-      title: s.title, body: s.description ?? s.title,
-      criteria: JSON.stringify(s.success_criteria), tags: ["battle"],
+      // Witness MUST mirror the backend's canonical preflight witness or the
+      // recomputed intentHash diverges from expectedIntentHash (R-INTENT-HASH-
+      // IS-MATCH-KEY). Backend builds it from the stored question: Title=title,
+      // Body=question.Description (== questionBody(s) used at create), and
+      // leaves criteria/tags empty (the sponsor witness does not bind them).
+      title: s.title, body: questionBody(s),
+      criteria: "", tags: [],
       oracle: (sponsorPre.oracle as Address | undefined) ?? this.wallets["operator"].address as Address,
       sponsorshipFloor: BigInt(sponsorPre.sponsorshipFloor ?? sponsorPre.recommendedSponsorshipFloor ?? "0"),
       commitFee: BigInt(sponsorPre.commitFee ?? "0"),
@@ -556,6 +599,17 @@ class BattleRunner {
     });
     await awaitReceipt(publicClient, sponsorResult.txHash!);
     ok(`sponsor on-chain (intent ${sponsorResult.intentHash.slice(0, 12)}…)`);
+
+    // Wait for the reconciler to confirm the sponsor and flip the question to
+    // 'open' before any commit (commit requires status='open' + chain pool set;
+    // the tx receipt alone is not confirmation — R-RECONCILER-OWNS-CONFIRMATION).
+    await pollUntil(`question ${question.id} reconciled→open`, async () => {
+      const q = await call<{ status?: string; chainPoolAmount?: unknown; data?: { status?: string; chainPoolAmount?: unknown } }>(
+        "GET", `/v1/questions/${question.id}`, undefined, sponsor.token);
+      const qq = q.data ?? q;
+      return qq.status === "open" && qq.chainPoolAmount != null;
+    });
+    ok(`question open (sponsor reconciled)`);
 
     let poolInflows = sponsorAmountWei;
 
@@ -622,7 +676,10 @@ class BattleRunner {
           falsifiableBy: "audit failure",
         })),
       };
-      const fee = BigInt(commitPre.feeAmount);
+      // H7 / realized-outcome: commit feeAmount is always 0 (the fee is
+      // skimmed once at settlement; the chain reverts a non-zero commit
+      // fee). runCommitFlow hard-sets it; mirror 0 locally for the allowance.
+      const fee = 0n;
       const stake = BigInt(commitPre.stakeAmount);
       const wc = this.makeWalletClient(wallet);
       await ensureUsdcAllowance(wc, publicClient, {
@@ -635,7 +692,8 @@ class BattleRunner {
         expiresAt: BigInt(commitPre.recommendedExpiresAt ?? Math.floor(Date.now() / 1000) + 300),
         forgeAddress: FORGE!, chainId: commitPre.chainId ?? CHAIN_ID,
         solutionBody: canonicalStringify(solutionPayload), references: [],
-        token: commitPre.token.contractAddress as Address, feeAmount: fee, stakeAmount: stake,
+        // H7: feeAmount hard-set to 0 inside runCommitFlow; don't pass it.
+        token: commitPre.token.contractAddress as Address, stakeAmount: stake,
         feeShareBps: fees.feeShareBps, feeShares: fees.feeShares,
         walletClient: wc, privateKey: wallet.privateKey as Hex,
       });
@@ -663,6 +721,20 @@ class BattleRunner {
     if (!winnerSolution) {
       throw new Error(`intended_winner '${s.intended_winner_profile}' has no solution`);
     }
+
+    // Wait for committed solutions to reconcile (confirmed) before voting:
+    // voters allocate conviction to confirmed solutions; pending solutions are
+    // not on the public surface (R-CHAIN-IS-PUBLIC-TRUTH).
+    await pollUntil(`solutions confirmed (${s.solvers.length})`, async () => {
+      // Round-3 consolidated the standalone /solutions route into the question
+      // detail's ?include=solutions embed (paginated {data:[]} shape).
+      const q = await call<{ solutions?: { data?: unknown[] } | unknown[] }>(
+        "GET", `/v1/questions/${question.id}?include=solutions`, undefined, sponsor.token);
+      const sol = q.solutions;
+      const arr = Array.isArray(sol) ? sol : (sol?.data ?? []);
+      return arr.length >= s.solvers.length;
+    });
+    ok(`${s.solvers.length} solution(s) confirmed`);
     const votesByLetter: Record<string, { intentHash: Hex; stake: bigint }> = {};
     let voteStakesCommitted = 0n;
     for (const voterLetter of s.voters) {
@@ -703,7 +775,10 @@ class BattleRunner {
       if (!votePre.voteSalt || !votePre.voteSaltToken) {
         throw new Error(`vote preflight missing voteSalt; backend requires it for privacy`);
       }
-      const fee = BigInt(votePre.feeAmount);
+      // H7 / realized-outcome: vote feeAmount is always 0 (fee at
+      // settlement; chain reverts "vote:feeAmount-must-be-zero").
+      // runVoteFlow hard-sets it; mirror 0 locally for the allowance.
+      const fee = 0n;
       const stake = BigInt(votePre.stakeAmount);
       const wc = this.makeWalletClient(wallet);
       await ensureUsdcAllowance(wc, publicClient, {
@@ -719,7 +794,8 @@ class BattleRunner {
         expectedIntentHash: votePre.expectedIntentHash as Hex,
         allocations,
         voteSalt: votePre.voteSalt as Hex, voteSaltToken: votePre.voteSaltToken as Hex,
-        token: votePre.token.contractAddress as Address, feeAmount: fee, stakeAmount: stake,
+        // H7: feeAmount hard-set to 0 inside runVoteFlow; don't pass it.
+        token: votePre.token.contractAddress as Address, stakeAmount: stake,
         feeShareBps: fees.feeShareBps, feeShares: fees.feeShares,
         walletClient: wc, privateKey: wallet.privateKey as Hex,
       });

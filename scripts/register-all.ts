@@ -1,6 +1,7 @@
 #!/usr/bin/env tsx
 // One-shot agent registration — skips the funding wait.
-// Registers all agents from mnemonic against /auth/wallet.
+// Registers all agents from mnemonic against POST /v1/sessions
+// (WalletLoginIntent envelope; backend recovers signer + auto-registers).
 import "dotenv/config";
 import { deriveAgentWallets } from "../src/wallet/derive.js";
 import { signWalletLoginIntent } from "../src/wallet/signer.js";
@@ -31,7 +32,7 @@ for (let i = 0; i < wallets.length; i++) {
       expiresAt: Math.floor(Date.now() / 1000) + 300,
       domain,
     });
-    const resp = await fetch(`${backendUrl}/auth/wallet`, {
+    const resp = await fetch(`${backendUrl}/v1/sessions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

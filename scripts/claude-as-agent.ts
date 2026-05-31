@@ -46,7 +46,7 @@ import { deriveAgentWallets } from "../src/wallet/derive.js";
 import { getAgentBalance } from "../src/wallet/balance.js";
 import { loadLoginDomain } from "../src/wallet/domain.js";
 import { signWalletLoginIntent } from "../src/wallet/signer.js";
-import { parseAmountToWei } from "../src/intents/sponsor-intent.js";
+import { parseAmountToWei } from "../src/intents/amounts.js";
 import { canonicalStringify } from "../src/intents/commit-intent.js";
 import type {
   CommitPreflight,
@@ -316,7 +316,10 @@ async function actCommit(idx: number, qid: string, body: {
   const { publicClient, walletClient, privateKey, address } = clientsFor(idx);
   const bearer = await jwtFor(idx);
   const pre = await preflight<CommitPreflight>(idx, qid, "commit", "submitter", address);
-  const feeAmount = BigInt(pre.feeAmount);
+  // H7 / realized-outcome: commit feeAmount is always 0 (fee at settlement;
+  // chain reverts "commit:feeAmount-must-be-zero"). runCommitFlow hard-sets
+  // it; mirror 0 locally for the allowance + reporting.
+  const feeAmount = 0n;
   const stakeAmount = BigInt(pre.stakeAmount);
   const { feeShareBps, feeShares } = feeShareFromPreflight(pre, address);
 
@@ -335,7 +338,8 @@ async function actCommit(idx: number, qid: string, body: {
     expiresAt: BigInt(pre.recommendedExpiresAt ?? Math.floor(Date.now() / 1000) + 300),
     forgeAddress: FORGE!, chainId: pre.chainId ?? CHAIN_ID,
     solutionBody, references: [],
-    token: pre.token.contractAddress as Address, feeAmount, stakeAmount,
+    // H7: feeAmount hard-set to 0 inside runCommitFlow; don't pass it.
+    token: pre.token.contractAddress as Address, stakeAmount,
     feeShareBps, feeShares,
     walletClient, privateKey,
   });
@@ -371,7 +375,10 @@ async function actVote(idx: number, qid: string, allocations: Allocation[]) {
   });
   if (bpsSum !== 10000) throw new Error(`allocation points must sum to 100 (got ${bpsSum / 100})`);
 
-  const feeAmount = BigInt(pre.feeAmount);
+  // H7 / realized-outcome: vote feeAmount is always 0 (fee at settlement;
+  // chain reverts "vote:feeAmount-must-be-zero"). runVoteFlow hard-sets it;
+  // mirror 0 locally for the allowance.
+  const feeAmount = 0n;
   const stakeAmount = BigInt(pre.stakeAmount);
   const { feeShareBps, feeShares } = feeShareFromPreflight(pre, address);
 
@@ -392,7 +399,8 @@ async function actVote(idx: number, qid: string, allocations: Allocation[]) {
     expectedIntentHash: undefined,
     allocations: v2Allocations,
     voteSalt: pre.voteSalt as Hex, voteSaltToken: pre.voteSaltToken as Hex,
-    token: pre.token.contractAddress as Address, feeAmount, stakeAmount,
+    // H7: feeAmount hard-set to 0 inside runVoteFlow; don't pass it.
+    token: pre.token.contractAddress as Address, stakeAmount,
     feeShareBps, feeShares,
     walletClient, privateKey,
   });
