@@ -49,6 +49,7 @@ import {
   runCosponsorFlow,
 } from "../src/forge/quadphase-flow.js";
 import { makeSolutionBody } from "../src/testnet/solution-body.js";
+import { broadcastErrorMessage, isInsufficientFunds } from "../src/testnet/broadcast-error.js";
 
 // ── Env ──────────────────────────────────────────────────────────
 const BACKEND = process.env.RT_BACKEND_URL ?? "http://localhost:8080";
@@ -63,6 +64,11 @@ const AGENT_NAMES = (process.env.ORGANIC_AGENTS ?? "alice,bob,carol,dave,eve,fra
 const SPONSOR_AMOUNT = process.env.ORGANIC_SPONSOR_AMOUNT ?? "1";
 const TICK_MIN_MS = Number.parseInt(process.env.ORGANIC_TICK_MIN_MS ?? "3000", 10);
 const TICK_MAX_MS = Number.parseInt(process.env.ORGANIC_TICK_MAX_MS ?? "9000", 10);
+// Cap how many questions any one agent sponsors over the whole run, so a 7-agent
+// swarm with little to do can't flood the board (each ask sponsors real USDC).
+// The natural-run failure was every idle agent picking "ask" → over-production
+// far beyond the funding budget. A per-agent ceiling bounds production directly.
+const MAX_ASKS_PER_AGENT = Number.parseInt(process.env.ORGANIC_MAX_ASKS_PER_AGENT ?? "3", 10);
 
 if (!FORGE || !USDC || !MNEMONIC) throw new Error("RT_FORGE_ADDRESS/RT_USDC_ADDRESS/RT_AGENT_MNEMONIC required");
 
@@ -130,6 +136,7 @@ interface Agent {
   voted: Set<string>;
   cosponsored: Set<string>;
   acts: Record<string, number>; // action -> count
+  broke: boolean; // true once a funded action reverted on insufficient funds — pause funded actions
 }
 
 interface OpenQ { id: string; author: string; title: string }
@@ -163,7 +170,7 @@ async function actAsk(a: Agent): Promise<void> {
       { name: "criterion_two", type: "boolean", target: "true", weight: 35 },
       { name: "criterion_three", type: "boolean", target: "true", weight: 25 },
     ],
-    initialBounty: "0",
+    initialBounty: process.env.RT_INITIAL_BOUNTY ?? "1000000",
   }, a.token);
   if (qResp.status !== 201) throw new Error(`create question -> ${qResp.status} ${JSON.stringify(qResp.body).slice(0, 160)}`);
   const questionId = qResp.body.id;
@@ -306,16 +313,20 @@ async function tick(a: Agent): Promise<void> {
 
   // Weighted menu — only include actions whose candidates exist.
   const menu: [string, number][] = [["idle", 1]];
-  // Seed the platform when there's little to do.
-  menu.push(["ask", open.length < 3 ? 6 : 2]);
-  if (solvable.length) menu.push(["solve", 4]);
-  if (voteCand.length) menu.push(["vote", 5]);
-  // NOTE: cosponsor disabled — the unified POST /intents/preflight cosponsor
-  // branch returns feeShares=undefined + expectedIntentHash=undefined, so the
-  // money-in door is unreachable by any client (confirmed live, this run).
-  // Re-enable once the backend preflight populates resp.FeeShares + the
-  // expectedIntentHash for cosponsor. `cosponsorable` kept for the count.
-  void cosponsorable;
+  // Every non-idle action here stakes real USDC. Once a wallet has reverted on
+  // insufficient funds, all of them will keep reverting identically — so a
+  // broke agent only idles (a human/wallet stops at "insufficient funds" too;
+  // it doesn't retry). It resumes if/when refunded (reads stay free regardless).
+  if (!a.broke) {
+    // Seed the platform when there's little to do — but cap total questions per
+    // agent so an idle swarm can't over-produce beyond the funding budget.
+    if ((a.acts["ask"] ?? 0) < MAX_ASKS_PER_AGENT) menu.push(["ask", open.length < 3 ? 6 : 2]);
+    if (solvable.length) menu.push(["solve", 4]);
+    if (voteCand.length) menu.push(["vote", 5]);
+    // cosponsor RE-ENABLED — Finding-A fixed (4ddfdea); cosponsor preflight now
+    // populates feeShares + expectedIntentHash (validated live on Q9, 2026-06-01).
+    if (cosponsorable.length) menu.push(["cosponsor", 2]);
+  }
 
   const total = menu.reduce((s, [, w]) => s + w, 0);
   let roll = Math.random() * total;
@@ -338,8 +349,16 @@ async function tick(a: Agent): Promise<void> {
       a.acts["vote"]--; a.acts["idle_no_target"] = (a.acts["idle_no_target"] ?? 0) + 1;
     }
   } catch (e) {
-    const m = e instanceof Error ? e.message.split("\n")[0] : String(e);
-    log(a.name, `✗ ${choice}: ${m.slice(0, 320)}`);
+    // Surface the real revert reason: viem buries it in shortMessage, not the
+    // generic header that split("\n")[0] used to log (that hid every
+    // "insufficient balance" behind "The contract function reverted").
+    const m = broadcastErrorMessage(e);
+    if (isInsufficientFunds(e)) {
+      a.broke = true; // deterministic precondition failure — stop funded actions, don't loop
+      log(a.name, `✗ ${choice}: insufficient funds — pausing funded actions (fund the wallet to resume). ${m.slice(0, 200)}`);
+    } else {
+      log(a.name, `✗ ${choice}: ${m.slice(0, 320)}`);
+    }
   }
 }
 
@@ -366,6 +385,7 @@ async function main() {
     agents.push({
       name, wallet, address: wallet.address as Address, token,
       sponsored: new Set(), solved: new Set(), voted: new Set(), cosponsored: new Set(), acts: {},
+      broke: false,
     });
     log(name, `online (${wallet.address})`);
   }
