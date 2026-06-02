@@ -30,8 +30,7 @@ import {
 } from "viem";
 
 import { deriveAgentWallet } from "../src/wallet/derive.js";
-import { loadLoginDomain } from "../src/wallet/domain.js";
-import { SessionManager } from "../src/wallet/session.js";
+import { sessionManagerFor } from "../src/wallet/login.js";
 import type { AgentWallet } from "../src/wallet/types.js";
 import { parseAmountToWei } from "../src/intents/amounts.js";
 import { canonicalStringify } from "../src/intents/commit-intent.js";
@@ -108,7 +107,7 @@ interface Authed { wallet: AgentWallet; token: string; address: Address }
 // SessionManager decodes the token's `exp` and only re-logs in within 5 min
 // of expiry — with the 15-day access-token TTL that means one login per
 // wallet per run. (Replaces the prior inline authCache + per-call login.)
-const sessions = new SessionManager({ apiBase: BACKEND, domain: loadLoginDomain() });
+const sessions = sessionManagerFor(BACKEND);
 async function login(w: AgentWallet): Promise<Authed> {
   const token = await sessions.ensureToken(w);
   return { wallet: w, token, address: w.address as Address };
@@ -293,7 +292,7 @@ async function runScenario(spec: ScenarioSpec) {
       { name: "criterion_two", type: "boolean", target: "true", weight: 35 },
       { name: "criterion_three", type: "boolean", target: "true", weight: 25 },
     ],
-    initialBounty: "0",
+    initialBounty: process.env.RT_INITIAL_BOUNTY ?? "1000000",
   }, sponsor.token);
   if (qResp.status !== 201) throw new Error(`create question -> ${qResp.status} ${JSON.stringify(qResp.body)}`);
   const questionId = qResp.body.id;

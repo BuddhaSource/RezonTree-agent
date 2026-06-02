@@ -30,8 +30,7 @@ import "dotenv/config";
 import { createPublicClient, http, type Address, type Hex } from "viem";
 
 import { deriveAgentWallet } from "../src/wallet/derive.js";
-import { loadLoginDomain } from "../src/wallet/domain.js";
-import { SessionManager } from "../src/wallet/session.js";
+import { sessionManagerFor } from "../src/wallet/login.js";
 import type { AgentWallet } from "../src/wallet/types.js";
 import { parseAmountToWei } from "../src/intents/amounts.js";
 import { canonicalStringify } from "../src/intents/commit-intent.js";
@@ -141,7 +140,7 @@ interface Agent {
 
 interface OpenQ { id: string; author: string; title: string }
 
-const sessions = new SessionManager({ apiBase: BACKEND, domain: loadLoginDomain() });
+const sessions = sessionManagerFor(BACKEND);
 
 // ── Discovery ────────────────────────────────────────────────────
 async function listOpenQuestions(token: string): Promise<OpenQ[]> {
