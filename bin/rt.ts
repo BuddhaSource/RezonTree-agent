@@ -47,6 +47,7 @@ import { baseSepolia } from "viem/chains";
 import { requestUSDC, ethFaucetMessage, ETH_FAUCETS } from "../src/faucet/circle.js";
 import { loadPrompt } from "../src/prompts/index.js";
 import { renderCatalog } from "../src/catalog/index.js";
+import { scaffold, type ScaffoldKind } from "../src/bootstrap/scaffold.js";
 import {
   runOnboard,
   renderOnboardPlan,
@@ -134,6 +135,20 @@ program
   .description("Discovery: every action / persona / domain / skill, in one read")
   .action(() => {
     console.log(renderCatalog());
+  });
+
+program
+  .command("new <kind> [name]")
+  .description("Scaffold a private .local card to extend the swarm (kind: agent|skill|voice)")
+  .action((kind: string, name?: string) => {
+    const s = scaffold(kind as ScaffoldKind, name);
+    const abs = resolve(__dirname, "..", s.path);
+    if (fs.existsSync(abs)) {
+      console.error(`refusing to overwrite ${s.path} — it already exists`);
+      process.exit(1);
+    }
+    fs.writeFileSync(abs, s.content);
+    console.log(`created ${s.path}\nEdit THIS file — never the shipped card. It's gitignored (*.local.md) and overrides/extends the shipped set.`);
   });
 
 // rt init — get-started: specialization + team size + persona blend → plan

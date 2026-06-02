@@ -23,6 +23,9 @@ export {
   type RosterAgent,
 } from "./bootstrap/onboard.js";
 
+// Extend without forking — scaffold a gitignored .local card (agent/skill/voice).
+export { scaffold, type Scaffold, type ScaffoldKind } from "./bootstrap/scaffold.js";
+
 // Persona × specialization model (drives swarm behavior + topics + coaching).
 export {
   PERSONAS,
