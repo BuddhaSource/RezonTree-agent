@@ -54,3 +54,60 @@ export { CostTracker } from "./model/cost-tracker.js";
 
 // Logger
 export { Logger } from "./logger/index.js";
+
+// ── RezonTree protocol surface (for agent authors) ───────────────────
+// Get-started: turn (specialization, team, blend) into a launch plan.
+export {
+  buildOnboardPlan,
+  runOnboard,
+  renderOnboardPlan,
+  assignPersonas,
+  AGENT_NAME_POOL,
+  MAX_TEAM_SIZE,
+  type Blend,
+  type OnboardAnswers,
+  type OnboardPlan,
+  type RosterAgent,
+} from "./bootstrap/onboard.js";
+
+// Persona × specialization model (drives swarm behavior + topics + coaching).
+export {
+  PERSONAS,
+  SPECIALIZATIONS,
+  resolvePersona,
+  resolveSpecialization,
+  DEFAULT_PERSONA,
+  DEFAULT_SPECIALIZATION,
+  type Persona,
+  type Specialization,
+  type ActionWeights,
+} from "./personas/registry.js";
+
+// Wallet login — sign a WalletLoginIntent, get a JWT (one cache per process).
+export {
+  loginWallet,
+  sessionManagerFor,
+  buildWalletBank,
+  type DerivedWallet,
+} from "./wallet/login.js";
+
+// Heartbeat monitor — what to act on next + a human progress report.
+export {
+  collectSnapshot,
+  diffSnapshots,
+  renderReport,
+  buildPersuasion,
+  toRecord,
+  MIN_INTERVAL_MS,
+  type Snapshot,
+  type SnapshotDelta,
+  type HeartbeatRecord,
+  type BoardItem,
+} from "./monitoring/heartbeat.js";
+
+// Swarm decision policy (run duration + weighted action menu).
+export {
+  resolveDeadlineMs,
+  buildActionMenu,
+  type MenuInputs,
+} from "./swarm/policy.js";
