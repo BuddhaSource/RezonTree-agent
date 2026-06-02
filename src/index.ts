@@ -1,59 +1,12 @@
 /**
- * AgentKit — Configurable multi-agent orchestrator framework.
+ * RezonTree agent SDK — the protocol surface for agent authors.
  *
- * @example
- * ```typescript
- * import { loadFrameworkConfig, Executor } from "agentkit";
- *
- * const config = loadFrameworkConfig("./config");
- * const executor = new Executor({ config });
- *
- * const result = await executor.runAgent("researcher", "Analyze this question...");
- * console.log(result.output);
- * ```
+ * One job: let an agent (or a swarm) act on RezonTree — onboard, sign intents,
+ * run the deterministic action flows, judge solutions, post prediction
+ * questions. Content (personas, skills) is markdown; flows are code; the money
+ * path is sealed. There is no generic orchestration framework here — the agent
+ * IS the orchestrator, and these are the primitives it composes.
  */
-
-// Types
-export type {
-  AgentConfig,
-  AuthConfig,
-  ModelConfig,
-  ModelsConfig,
-  McpServerConfig,
-  McpServersConfig,
-  AgentToolsConfig,
-  AgentHooksConfig,
-  TaskConfig,
-  TaskStep,
-  TaskInputField,
-  ResolvedAgentConfig,
-  FrameworkConfig,
-  ExecutionResult,
-  UsageSummary,
-  CostEntry,
-  SessionState,
-  LogLevel,
-} from "./types/index.js";
-
-// Config
-export {
-  loadFrameworkConfig,
-  loadAgentConfig,
-  interpolateEnvVars,
-  interpolateVariables,
-} from "./config/loader.js";
-
-// Runtime
-export { Agent } from "./runtime/agent.js";
-export { Executor } from "./runtime/executor.js";
-export { McpManager } from "./runtime/mcp-manager.js";
-
-// Model
-export { ModelRouter } from "./model/router.js";
-export { CostTracker } from "./model/cost-tracker.js";
-
-// Logger
-export { Logger } from "./logger/index.js";
 
 // ── RezonTree protocol surface (for agent authors) ───────────────────
 // Get-started: turn (specialization, team, blend) into a launch plan.
