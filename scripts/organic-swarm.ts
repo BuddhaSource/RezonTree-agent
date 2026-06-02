@@ -119,6 +119,13 @@ const TOPICS: { title: string; framing: string }[] = TOPIC_TITLES.map((title) =>
   title,
   framing: `${title}. Solve with rigor — ${SPEC.qualityLens}`,
 }));
+if (TOPICS.length === 0) {
+  // Fail fast instead of silently swallowing every "ask" at runtime: an empty
+  // RT_TOPICS (e.g. "|") or a seedless specialization would leave nothing to post.
+  throw new Error(
+    "No topics resolved — set RT_TOPICS (| separated) or RT_SPECIALIZATION to a domain with topic seeds (rt init emits both).",
+  );
+}
 
 function makeDescription(framing: string, tag: string): string {
   let d = framing;
@@ -385,13 +392,16 @@ async function main() {
 
   const personas = assignPersonas(AGENT_NAMES.length, BLEND);
   const agents: Agent[] = [];
+  // pIdx advances only on KNOWN agents — a skipped unknown name must not
+  // misalign the surviving agents' personas (the persona cycle is positional).
+  let pIdx = 0;
   for (let i = 0; i < AGENT_NAMES.length; i++) {
     const name = AGENT_NAMES[i];
     const idx = POOL[name];
     if (idx === undefined) { console.log(`! unknown agent ${name}, skipping`); continue; }
     const wallet = deriveAgentWallet(MNEMONIC, idx, CHAIN_ID);
     const token = await sessions.ensureToken(wallet);
-    const persona = personas[i];
+    const persona = personas[pIdx++];
     agents.push({
       name, persona, wallet, address: wallet.address as Address, token,
       sponsored: new Set(), solved: new Set(), voted: new Set(), cosponsored: new Set(), acts: {},
