@@ -45,3 +45,48 @@ export function buildActionMenu(m: MenuInputs): [string, number][] {
   if (m.cosponsorableCount > 0) menu.push(["cosponsor", m.weights.cosponsor]);
   return menu;
 }
+
+export interface DecisionExplanation {
+  menu: [string, number][];
+  /** the chosen action. */
+  choice: string;
+  /** the chosen action's weight, and the total it competed against. */
+  weight: number;
+  total: number;
+  /** weight / total — the pick probability. */
+  share: number;
+  /** human/agent-readable why: what was available + what was chosen. */
+  reasons: string[];
+}
+
+/** Pick an action from the weighted menu AND explain WHY — a single pure call an
+ *  agent runs with zero network: it already knows the counts, so it never has to
+ *  fetch to reason about what to do next. `roll` in [0,1) is injectable for
+ *  determinism; omitted ⇒ Math.random(). The pick is identical to the inline
+ *  weighted walk the swarm used before. */
+export function explainDecision(m: MenuInputs, roll: number = Math.random()): DecisionExplanation {
+  const menu = buildActionMenu(m);
+  const total = menu.reduce((s, [, w]) => s + w, 0);
+  let r = roll * total;
+  let [choice, weight] = menu[0];
+  for (const [act, w] of menu) {
+    if ((r -= w) <= 0) {
+      choice = act;
+      weight = w;
+      break;
+    }
+  }
+  const reasons: string[] = [];
+  if (m.broke) {
+    reasons.push("wallet is broke (insufficient funds) — idling until refunded");
+  } else {
+    if (m.openCount < m.warmFloor) reasons.push(`board below warm floor (${m.openCount} < ${m.warmFloor}) — ask boosted to refill`);
+    else if (m.asksSoFar >= m.maxAsks) reasons.push(`ask cap reached (${m.asksSoFar}/${m.maxAsks})`);
+    if (m.solvableCount > 0) reasons.push(`${m.solvableCount} solvable`);
+    if (m.votableCount > 0) reasons.push(`${m.votableCount} votable`);
+    if (m.cosponsorableCount > 0) reasons.push(`${m.cosponsorableCount} cosponsorable`);
+  }
+  const share = total > 0 ? weight / total : 0;
+  reasons.push(`→ ${choice} (${weight}/${total}, ${Math.round(share * 100)}%)`);
+  return { menu, choice, weight, total, share, reasons };
+}

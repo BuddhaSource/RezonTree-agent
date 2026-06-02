@@ -34,7 +34,7 @@ import { sessionManagerFor } from "../src/wallet/login.js";
 import type { AgentWallet } from "../src/wallet/types.js";
 import { resolveSpecialization } from "../src/personas/registry.js";
 import { assignPersonas, type Blend } from "../src/bootstrap/onboard.js";
-import { resolveDeadlineMs, buildActionMenu } from "../src/swarm/policy.js";
+import { resolveDeadlineMs, explainDecision } from "../src/swarm/policy.js";
 import type { VoteSolution } from "../src/voting/matrix.js";
 import { makeAgentWalletClient } from "../src/forge/quadphase-broadcast.js";
 import { askFlow, solveFlow, voteFlow, cosponsorFlow } from "../src/orchestration/registry.js";
@@ -185,12 +185,12 @@ async function tick(a: Agent): Promise<void> {
   const cosponsorable = open.filter((q) => q.author !== self && !a.solved.has(q.id) && !a.sponsored.has(q.id));
   const voteCand = open.filter((q) => q.author !== self && !a.voted.has(q.id) && !a.solved.has(q.id));
 
-  // Weighted menu — pure policy (src/swarm/policy.ts). A broke agent only idles
-  // (insufficient-funds reverts are deterministic — don't retry, resume on
+  // Decide + explain in one pure call (src/swarm/policy.ts). A broke agent only
+  // idles (insufficient-funds reverts are deterministic — don't retry, resume on
   // refund). Below WARM_FLOOR every persona refills the board even past its ask
   // cap (keep-warm), so a forever-run never drains; above it the cap bounds
-  // production. Cosponsor re-enabled (Finding-A fix 4ddfdea, validated Q9).
-  const menu = buildActionMenu({
+  // production. The reasons surface WHY the action was chosen, no extra reads.
+  const decision = explainDecision({
     broke: a.broke,
     openCount: open.length,
     asksSoFar: a.acts["ask"] ?? 0,
@@ -201,11 +201,8 @@ async function tick(a: Agent): Promise<void> {
     cosponsorableCount: cosponsorable.length,
     weights: a.persona.weights,
   });
-
-  const total = menu.reduce((s, [, w]) => s + w, 0);
-  let roll = Math.random() * total;
-  let choice = "idle";
-  for (const [act, w] of menu) { if ((roll -= w) <= 0) { choice = act; break; } }
+  const choice = decision.choice;
+  if (choice !== "idle") log(a.name, `DECIDE ${decision.reasons.join("; ")}`);
 
   a.acts[choice] = (a.acts[choice] ?? 0) + 1;
   try {

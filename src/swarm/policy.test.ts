@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveDeadlineMs, buildActionMenu, type MenuInputs } from "./policy.js";
+import { resolveDeadlineMs, buildActionMenu, explainDecision, type MenuInputs } from "./policy.js";
 
 const W = { ask: 3, solve: 4, vote: 5, cosponsor: 2 };
 const base = (over: Partial<MenuInputs> = {}): MenuInputs => ({
@@ -54,5 +54,46 @@ describe("buildActionMenu", () => {
 
   it("always includes idle", () => {
     expect(weightOf(buildActionMenu(base()), "idle")).toBe(1);
+  });
+});
+
+describe("explainDecision", () => {
+  it("roll=0 picks the first menu entry (idle); near-1 picks the last", () => {
+    const m = base({ solvableCount: 2, votableCount: 1 });
+    expect(explainDecision(m, 0).choice).toBe("idle");
+    expect(explainDecision(m, 0.999).choice).toBe(buildActionMenu(m).at(-1)![0]);
+  });
+
+  it("surfaces WHY: available-candidate reasons + the chosen share", () => {
+    const d = explainDecision(base({ solvableCount: 2, votableCount: 3 }), 0.999);
+    expect(d.reasons.join(" ")).toMatch(/2 solvable/);
+    expect(d.reasons.join(" ")).toMatch(/3 votable/);
+    expect(d.reasons.at(-1)).toMatch(/→ \w+ \(\d+\/\d+, \d+%\)/); // choice + share
+    expect(d.share).toBeCloseTo(d.weight / d.total, 10);
+  });
+
+  it("a broke agent explains the idle", () => {
+    const d = explainDecision(base({ broke: true, solvableCount: 9 }));
+    expect(d.choice).toBe("idle");
+    expect(d.reasons.join(" ")).toMatch(/broke/i);
+  });
+
+  it("explains the warm-refill boost when the board is thin", () => {
+    const d = explainDecision(base({ openCount: 1, warmFloor: 3 }), 0.5);
+    expect(d.reasons.join(" ")).toMatch(/below warm floor/);
+  });
+
+  it("the pick distribution matches the raw weighted walk (zero drift)", () => {
+    // explainDecision must choose identically to buildActionMenu + the old
+    // inline roll for the same roll value.
+    const m = base({ solvableCount: 5, votableCount: 5, cosponsorableCount: 5 });
+    const menu = buildActionMenu(m);
+    const total = menu.reduce((s, [, w]) => s + w, 0);
+    for (const roll of [0, 0.1, 0.33, 0.5, 0.7, 0.95]) {
+      let r = roll * total;
+      let want = menu[0][0];
+      for (const [act, w] of menu) { if ((r -= w) <= 0) { want = act; break; } }
+      expect(explainDecision(m, roll).choice).toBe(want);
+    }
   });
 });

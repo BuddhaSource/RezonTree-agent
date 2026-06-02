@@ -58,11 +58,14 @@ export {
   type BoardItem,
 } from "./monitoring/heartbeat.js";
 
-// Swarm decision policy (run duration + weighted action menu).
+// Swarm decision policy (run duration + weighted action menu). explainDecision
+// picks AND explains in one pure call — an agent decides with zero extra reads.
 export {
   resolveDeadlineMs,
   buildActionMenu,
+  explainDecision,
   type MenuInputs,
+  type DecisionExplanation,
 } from "./swarm/policy.js";
 
 // Prediction markets — frame a market as a calibrated-probability question
