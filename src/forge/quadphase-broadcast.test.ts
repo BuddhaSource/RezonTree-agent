@@ -123,4 +123,30 @@ describe("witness-bytes encoders — round-trip (bytes decode to the struct)", (
     expect(d.feeDistributions[0].recipient).toBe(SETTLE.feeDistributions[0].recipient);
     expect(d.feeDistributions[0].amount).toBe(300_000n);
   });
+
+  // abandon + refund round-trips: golden alone can't catch a same-byte-width
+  // type regression (e.g. a uint8 widened to uint16 keeps the 32-byte slot),
+  // so decode-and-compare guards the field types too.
+  it("abandon round-trips field-for-field", () => {
+    const [d] = decodeAbiParameters(
+      parseAbiParameters("(uint8 actionTag, uint8 expectedStatus, bytes32 reason)"),
+      encodeAbandonWitnessBytes(ABANDON),
+    ) as unknown as [{ actionTag: number; expectedStatus: number; reason: string }];
+    expect(d.actionTag).toBe(ActionTag.Abandon);
+    expect(d.expectedStatus).toBe(1);
+    expect(d.reason).toBe(ABANDON.reason);
+  });
+
+  it("refund round-trips field-for-field", () => {
+    const [d] = decodeAbiParameters(
+      parseAbiParameters(
+        "(uint8 actionTag, bytes32 sourceIntentHash, uint256 expectedAmount, uint8 expectedStatus)",
+      ),
+      encodeRefundWitnessBytes(REFUND),
+    ) as unknown as [{ actionTag: number; sourceIntentHash: string; expectedAmount: bigint; expectedStatus: number }];
+    expect(d.actionTag).toBe(ActionTag.Refund);
+    expect(d.sourceIntentHash).toBe(REFUND.sourceIntentHash);
+    expect(d.expectedAmount).toBe(1_000_000n);
+    expect(d.expectedStatus).toBe(3);
+  });
 });
