@@ -123,3 +123,12 @@ export {
   type PredictionQuestion,
   type RoundTiming,
 } from "./markets/prediction-question.js";
+export {
+  polymarketSource,
+  parseGammaMarket,
+  filterClosingWindow,
+  GAMMA_MARKETS_URL,
+  type MarketSource,
+  type ClosingWindowOpts,
+  type FetchJson,
+} from "./markets/polymarket.js";
