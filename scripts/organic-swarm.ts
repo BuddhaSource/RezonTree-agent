@@ -34,6 +34,7 @@ import { sessionManagerFor } from "../src/wallet/login.js";
 import type { AgentWallet } from "../src/wallet/types.js";
 import { resolveSpecialization, type Persona } from "../src/personas/registry.js";
 import { assignPersonas, type Blend } from "../src/bootstrap/onboard.js";
+import { resolveDeadlineMs, buildActionMenu } from "../src/swarm/policy.js";
 import { parseAmountToWei } from "../src/intents/amounts.js";
 import { canonicalStringify } from "../src/intents/commit-intent.js";
 import type {
@@ -59,7 +60,8 @@ const CHAIN_ID = Number.parseInt(process.env.RT_CHAIN_ID ?? "31337", 10);
 const USDC = process.env.RT_USDC_ADDRESS as Address;
 const FORGE = process.env.RT_FORGE_ADDRESS as Address;
 const MNEMONIC = process.env.RT_AGENT_MNEMONIC!;
-const DURATION_MS = Number.parseInt(process.env.ORGANIC_DURATION_SECONDS ?? "1800", 10) * 1000;
+// ORGANIC_DURATION_SECONDS=0 (or negative) ⇒ run forever — continuous mode.
+const DURATION_SEC = Number.parseInt(process.env.ORGANIC_DURATION_SECONDS ?? "1800", 10);
 const AGENT_NAMES = (process.env.ORGANIC_AGENTS ?? "alice,bob,carol,dave,eve,frank,grace,heidi,ivan")
   .split(",").map((s) => s.trim()).filter(Boolean);
 const SPONSOR_AMOUNT = process.env.ORGANIC_SPONSOR_AMOUNT ?? "1";
@@ -70,6 +72,9 @@ const TICK_MAX_MS = Number.parseInt(process.env.ORGANIC_TICK_MAX_MS ?? "9000", 1
 // The natural-run failure was every idle agent picking "ask" → over-production
 // far beyond the funding budget. A per-agent ceiling bounds production directly.
 const MAX_ASKS_PER_AGENT = Number.parseInt(process.env.ORGANIC_MAX_ASKS_PER_AGENT ?? "3", 10);
+// Keep the board warm: when fewer than this many questions are open, agents
+// refill it even past their per-agent ask cap, so a forever-run never drains.
+const WARM_FLOOR = Number.parseInt(process.env.ORGANIC_WARM_FLOOR ?? "3", 10);
 // Persona blend across the team — sets each agent's action-weight profile
 // (researcher posts, solver solves, voter votes). Set by `rt init`.
 const BLEND = (process.env.ORGANIC_BLEND ?? "balanced") as Blend;
@@ -322,24 +327,22 @@ async function tick(a: Agent): Promise<void> {
   const cosponsorable = open.filter((q) => q.author !== self && !a.solved.has(q.id) && !a.sponsored.has(q.id));
   const voteCand = open.filter((q) => q.author !== self && !a.voted.has(q.id) && !a.solved.has(q.id));
 
-  // Weighted menu — only include actions whose candidates exist.
-  const menu: [string, number][] = [["idle", 1]];
-  // Every non-idle action here stakes real USDC. Once a wallet has reverted on
-  // insufficient funds, all of them will keep reverting identically — so a
-  // broke agent only idles (a human/wallet stops at "insufficient funds" too;
-  // it doesn't retry). It resumes if/when refunded (reads stay free regardless).
-  if (!a.broke) {
-    const w = a.persona.weights; // researcher/solver/voter action bias
-    // Seed the platform when there's little to do — every persona posts more
-    // when the board is thin (keep-it-warm), but cap total questions per agent
-    // so an idle swarm can't over-produce beyond the funding budget.
-    if ((a.acts["ask"] ?? 0) < MAX_ASKS_PER_AGENT) menu.push(["ask", open.length < 3 ? w.ask + 4 : w.ask]);
-    if (solvable.length) menu.push(["solve", w.solve]);
-    if (voteCand.length) menu.push(["vote", w.vote]);
-    // cosponsor RE-ENABLED — Finding-A fixed (4ddfdea); cosponsor preflight now
-    // populates feeShares + expectedIntentHash (validated live on Q9, 2026-06-01).
-    if (cosponsorable.length) menu.push(["cosponsor", w.cosponsor]);
-  }
+  // Weighted menu — pure policy (src/swarm/policy.ts). A broke agent only idles
+  // (insufficient-funds reverts are deterministic — don't retry, resume on
+  // refund). Below WARM_FLOOR every persona refills the board even past its ask
+  // cap (keep-warm), so a forever-run never drains; above it the cap bounds
+  // production. Cosponsor re-enabled (Finding-A fix 4ddfdea, validated Q9).
+  const menu = buildActionMenu({
+    broke: a.broke,
+    openCount: open.length,
+    asksSoFar: a.acts["ask"] ?? 0,
+    maxAsks: MAX_ASKS_PER_AGENT,
+    warmFloor: WARM_FLOOR,
+    solvableCount: solvable.length,
+    votableCount: voteCand.length,
+    cosponsorableCount: cosponsorable.length,
+    weights: a.persona.weights,
+  });
 
   const total = menu.reduce((s, [, w]) => s + w, 0);
   let roll = Math.random() * total;
@@ -387,7 +390,7 @@ async function runAgent(a: Agent, deadline: number): Promise<void> {
 // ── Main ─────────────────────────────────────────────────────────
 async function main() {
   console.log(`organic-swarm | backend ${BACKEND} | forge ${FORGE} | chain ${CHAIN_ID}`);
-  console.log(`agents: ${AGENT_NAMES.join(", ")} | duration ${DURATION_MS / 1000}s | tick ${TICK_MIN_MS}-${TICK_MAX_MS}ms`);
+  console.log(`agents: ${AGENT_NAMES.join(", ")} | duration ${DURATION_SEC <= 0 ? "∞ (continuous)" : DURATION_SEC + "s"} | tick ${TICK_MIN_MS}-${TICK_MAX_MS}ms`);
   console.log(`specialization: ${SPEC.label} | blend: ${BLEND} | ${TOPICS.length} topic seed(s)\n`);
 
   const personas = assignPersonas(AGENT_NAMES.length, BLEND);
@@ -410,13 +413,15 @@ async function main() {
     log(name, `online ${persona.label} (${wallet.address})`);
   }
 
-  const deadline = Date.now() + DURATION_MS;
+  const deadline = resolveDeadlineMs(DURATION_SEC, Date.now());
   // Periodic heartbeat summarizing aggregate activity.
   const hb = setInterval(() => {
     const agg: Record<string, number> = {};
     for (const a of agents) for (const [k, v] of Object.entries(a.acts)) agg[k] = (agg[k] ?? 0) + v;
-    const left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
-    console.log(`${ts()} ── heartbeat: ${Object.entries(agg).map(([k, v]) => `${k}=${v}`).join(" ")} | ${left}s left`);
+    const left = Number.isFinite(deadline)
+      ? `${Math.max(0, Math.round((deadline - Date.now()) / 1000))}s left`
+      : "continuous";
+    console.log(`${ts()} ── heartbeat: ${Object.entries(agg).map(([k, v]) => `${k}=${v}`).join(" ")} | ${left}`);
   }, 30000);
 
   await Promise.all(agents.map((a) => runAgent(a, deadline)));
