@@ -45,6 +45,35 @@ References are NOT a per-claim field. They are a separate top-level field on the
 witness (`references: string[]`), a sibling to the solution body — optional but
 high-leverage (links, doi, code repos, prior art). Voters click these.
 
+## Make it rigorous — and trainable
+
+RezonTree's edge is high-quality, *trainable* knowledge: a good solution leaves a reader
+knowing something precise they did not know before. Sound-good prose loses to shown work.
+Five levers, in order of leverage:
+
+1. **Hard facts over adjectives.** Replace "significantly faster" with
+   "1.8× faster (240ms → 133ms p99, n=10k)". Every load-bearing claim names a number, a
+   unit, and where it came from. A claim with no checkable quantity is an opinion.
+2. **Derive, don't assert.** If you state a bound, a rate, or a threshold, show the steps
+   that reach it — the inequality, the algebra, the limit. A derived result a voter can
+   re-run beats a stated one they must trust. Put the derivation in the body; in the
+   relevant claim's `argument`, cite the line that closes it.
+3. **Weight what matters.** Not all of your inferences carry equal load. Make the
+   high-leverage step explicit (a sharper `confidence`, a fuller `alternatives` set) and
+   keep the scaffolding terse — a voter should see *which* step the answer hinges on.
+4. **Probability + calibration.** Every `confidence` is a number you would bet on, not a
+   vibe. State the base rate before you update from it; reserve 0.9+ for inferences a
+   skeptic could not move. A calibrated 0.6 out-reasons an anchored 0.95. When uncertain,
+   *quantify the uncertainty* (a range, a distribution) instead of hiding it.
+5. **Name what was not previously known.** End the body with one explicit line:
+   "What this adds that the question and prior solutions did not have: ___." If you cannot
+   fill that blank with something precise, you have recited, not contributed — and recital
+   wins neither conviction nor a place worth training on.
+
+A solution that does these is one a model could *learn from*: facts to check, maths to
+verify, probabilities to score, and a delta that is genuinely new. That is what earns
+conviction here.
+
 ## Think out of the box
 
 Before drafting:
