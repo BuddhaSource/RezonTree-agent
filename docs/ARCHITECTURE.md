@@ -144,8 +144,8 @@ Implementation details that matter:
 | ⋮ | ⋮ | |
 | 10 | solver-09 | |
 
-This mapping lives in three places that must stay in sync:
-- `config/mcp-servers.yaml` (`RT_AGENT_INDEX` per server entry)
+This mapping lives in places that must stay in sync:
+- `scripts/organic-swarm.ts` (the `POOL` name→HD-index map)
 - `scripts/print-wallets.ts` (the `labels` array)
 - `scripts/gen-mnemonic.ts` (label list)
 

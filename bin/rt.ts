@@ -23,8 +23,8 @@
 // existing questions) currently delegate to scripts/agent.ts. Phase 2
 // of the simplification will inline those here.
 //
-// For backwards compat, `agentkit` (src/cli/index.ts) and
-// scripts/agent.ts continue to work — `rt` is additive.
+// `rt` is the CLI entry. The old `agentkit` framework CLI was removed with the
+// AgentKit framework; the protocol broadcast core lives in scripts/agent.ts.
 
 import "dotenv/config";
 import fs from "node:fs";

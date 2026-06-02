@@ -364,10 +364,9 @@ dotenv -- ./scripts/run-round.sh`).
 ### Agent logs show `[wallet auth mode]` errors
 
 MCP server logs this when the resolved auth mode doesn't match
-its config. Check the agent's YAML in
-`config/mcp-servers.yaml` — wallet-mode agents should have
-`RT_AGENT_MNEMONIC` + `RT_AGENT_INDEX`; legacy-mode should
-have `RT_AGENT_AUTH_MODE: "legacy"` + `REZONTREE_AGENT_SECRET`.
+its config. Wallet auth is env-driven — set `RT_AGENT_MNEMONIC` +
+`RT_AGENT_INDEX` (the swarm derives each agent's wallet from
+these). There is no longer a per-agent YAML.
 
 ## Re-running
 

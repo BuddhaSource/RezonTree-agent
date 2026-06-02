@@ -85,7 +85,9 @@ src/
   wallet/                         HD derivation + login signer
   prompts/                        advisory prompt scaffolds
   faucet/                         Circle testnet faucet integration
-  cli/                            agentkit framework runner (the multi-agent harness)
+  orchestration/                  deterministic action flows (code) + flow registry
+  agents/                         agent persona cards (md content)
+  skills/                         skill cards + the content loader
   bootstrap/                      preflight + testnet bootstrap
 mcp-servers/protocol-api/
   server.ts                       MCP tool registrations (composites + primitives)
