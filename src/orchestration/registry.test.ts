@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { ALL_FLOWS } from "./registry.js";
-import { loadPrompt, type PromptKey } from "../prompts/index.js";
+import { loadContext } from "../skills/load.js";
 import type { ActionKind } from "./types.js";
 
 const EXPECTED: ActionKind[] = ["ask", "solve", "vote", "cosponsor"];
@@ -16,13 +16,12 @@ describe("orchestration registry", () => {
     expect(new Set(names).size).toBe(names.length);
   });
 
-  it("every declared context card exists on disk (no dangling read)", () => {
-    // loadPrompt throws if the named card is missing — the fence that makes
-    // "the flow injects exactly these" a checked claim, not a hope.
+  it("every declared context card resolves through the unified loader (no dangling read)", () => {
+    // loadContext throws if any named card is missing from skills/ or prompts/
+    // — the fence that makes "the flow reads exactly these" a checked claim.
     for (const flow of ALL_FLOWS) {
-      for (const ref of flow.context) {
-        expect(() => loadPrompt(ref as PromptKey)).not.toThrow();
-      }
+      if (flow.context.length === 0) continue;
+      expect(() => loadContext(flow.context)).not.toThrow();
     }
   });
 });
