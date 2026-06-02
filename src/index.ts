@@ -176,3 +176,16 @@ export {
   type SharePost,
   type ShareSink,
 } from "./social/index.js";
+
+// Growth — pure funnel generators: referral CTA (→ referral signups), agent-
+// recruits-agent invite (compounding), beat-the-market forecast brag (viral
+// reach), streak flex (frequency). Each tied to a product metric.
+export {
+  resolveReferral,
+  referralCta,
+  withReferral,
+  composeInvite,
+  composeForecastBrag,
+  streakLine,
+  type Referral,
+} from "./social/growth.js";

@@ -39,6 +39,7 @@ import type { VoteSolution } from "../src/voting/matrix.js";
 import { makeAgentWalletClient } from "../src/forge/quadphase-broadcast.js";
 import { askFlow, solveFlow, voteFlow, cosponsorFlow } from "../src/orchestration/registry.js";
 import { resolveSink, loadVoice, shareAfterAction } from "../src/social/index.js";
+import { resolveReferral } from "../src/social/growth.js";
 import type { Agent, OpenQ, FlowCtx, SwarmConfig } from "../src/orchestration/types.js";
 import { broadcastErrorMessage, isInsufficientFunds } from "../src/testnet/broadcast-error.js";
 
@@ -136,6 +137,9 @@ const sessions = sessionManagerFor(BACKEND);
 const SITE_URL = process.env.RT_SITE_URL ?? "https://rezontree.com";
 const shareSink = resolveSink();
 const shareVoice = shareSink ? loadVoice() : undefined;
+// Referral CTA appended to every share when configured — the agent-native
+// referral funnel (toward the 30%-referral goal). No code ⇒ no CTA.
+const shareReferral = resolveReferral();
 
 const flowCtx: FlowCtx = {
   cfg: {
@@ -150,7 +154,7 @@ const flowCtx: FlowCtx = {
   share: shareSink
     ? async (ev) => {
         try {
-          await shareAfterAction({ ...ev, url: `${SITE_URL}/questions/${ev.questionId}` }, shareSink, shareVoice);
+          await shareAfterAction({ ...ev, url: `${SITE_URL}/questions/${ev.questionId}` }, shareSink, shareVoice, shareReferral);
         } catch (e) {
           log(ev.agent, `share failed (non-fatal): ${(e as Error).message?.slice(0, 120)}`);
         }

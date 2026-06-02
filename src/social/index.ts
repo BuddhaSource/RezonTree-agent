@@ -13,6 +13,7 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { loadCard } from "../skills/load.js";
+import { withReferral, type Referral } from "./growth.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -114,7 +115,9 @@ export function resolveSink(env: NodeJS.ProcessEnv = process.env, fetchImpl: typ
   }
 }
 
-/** Compose + emit. The after-action hook the flows call on every confirmed action. */
-export async function shareAfterAction(ctx: ShareContext, sink: ShareSink, voice?: string): Promise<void> {
-  await sink.emit(composeShare(ctx, voice));
+/** Compose + emit. The after-action hook the flows call on every confirmed
+ *  action. A configured referral appends its CTA (the funnel); none ⇒ no-op. */
+export async function shareAfterAction(ctx: ShareContext, sink: ShareSink, voice?: string, referral?: Referral): Promise<void> {
+  const post = composeShare(ctx, voice);
+  await sink.emit(referral ? withReferral(post, referral) : post);
 }
