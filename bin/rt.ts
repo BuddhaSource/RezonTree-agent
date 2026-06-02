@@ -52,6 +52,9 @@ import {
   type Blend,
   type OnboardAnswers,
 } from "../src/bootstrap/onboard.js";
+import { selectPredictionQuestions } from "../src/markets/prediction-question.js";
+import { polymarketSource } from "../src/markets/polymarket.js";
+import { loginWallet } from "../src/wallet/login.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -145,6 +148,60 @@ program
     if (opts.write) {
       fs.writeFileSync(String(opts.write), plan.envSnippet + "\n");
       console.log(`  env written → ${opts.write}\n`);
+    }
+  });
+
+// rt predict — crowdsource a prediction-market outcome's probability
+program
+  .command("predict")
+  .description("Fetch Polymarket markets closing soon → build timed probability question(s) (dry-run by default)")
+  .option("--min-hours <n>", "earliest market close, hours from now", "18")
+  .option("--max-hours <n>", "latest market close, hours from now", "24")
+  .option("-l, --limit <n>", "max markets to build", "1")
+  .option("--post", "create the question(s) on the backend (default: print only)")
+  .action(async (opts) => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const src = polymarketSource(async (url) => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Polymarket Gamma ${res.status}`);
+      return res.json();
+    });
+    const markets = await src.fetchClosingMarkets({
+      nowSec,
+      minHours: Number(opts.minHours),
+      maxHours: Number(opts.maxHours),
+    });
+    const picks = selectPredictionQuestions(markets, nowSec, { limit: Number(opts.limit) });
+    if (picks.length === 0) {
+      console.log(`No Polymarket markets closing in ${opts.minHours}-${opts.maxHours}h. Widen with --max-hours.`);
+      return;
+    }
+    for (const { market, question } of picks) {
+      const roundClose = new Date(question.timing.roundClosesAtSec * 1000).toISOString();
+      console.log(`\n── ${market.question}`);
+      console.log(`   market closes ${new Date(market.closesAt * 1000).toISOString()} | round should close by ${roundClose}`);
+      console.log(`   title:    ${question.title}`);
+      console.log(`   criteria: ${question.successCriteria.map((c) => `${c.name}(${c.weight})`).join(" · ")}`);
+      console.log(`   body:     ${question.description.length} chars`);
+      if (opts.post) {
+        const token = (await loginWallet(BACKEND, MNEMONIC, Number(process.env.RT_AGENT_INDEX ?? 0))).bearer;
+        const res = await fetch(`${BACKEND}/v1/questions`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({
+            title: question.title,
+            description: question.description,
+            successCriteria: question.successCriteria,
+            initialBounty: process.env.RT_INITIAL_BOUNTY ?? "1000000",
+          }),
+        });
+        const body = (await res.json()) as { id?: string };
+        console.log(
+          `   posted ${res.status}${body.id ? ` ${body.id} — now sponsor with fundingDeadline ≈ ${roundClose} so the round closes before the market` : ` ${JSON.stringify(body).slice(0, 120)}`}`,
+        );
+      } else {
+        console.log(`   (dry-run — pass --post to create; then sponsor with fundingDeadline before ${roundClose})`);
+      }
     }
   });
 

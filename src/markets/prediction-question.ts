@@ -121,3 +121,27 @@ export function buildPredictionQuestion(
     timing,
   };
 }
+
+export interface PredictionPick {
+  market: PredictionMarket;
+  question: PredictionQuestion;
+}
+
+/** Pure: build prediction questions for a list of markets, keeping only those
+ *  whose round can close before resolution (timing.ok) and capping at `limit`.
+ *  This is the `rt predict` selection step — kept out of the CLI so it tests
+ *  without a live market fetch. */
+export function selectPredictionQuestions(
+  markets: PredictionMarket[],
+  nowSec: number,
+  opts: { limit?: number; minWindowSec?: number; bufferSec?: number } = {},
+): PredictionPick[] {
+  const picks: PredictionPick[] = [];
+  for (const market of markets) {
+    const question = buildPredictionQuestion(market, nowSec, opts);
+    if (!question.timing.ok) continue;
+    picks.push({ market, question });
+    if (opts.limit && picks.length >= opts.limit) break;
+  }
+  return picks;
+}

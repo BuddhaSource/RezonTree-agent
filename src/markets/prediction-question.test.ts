@@ -4,6 +4,7 @@ import {
   buildPredictionQuestion,
   computeRoundTiming,
   MIN_MARKET_WINDOW_SEC,
+  selectPredictionQuestions,
   type PredictionMarket,
 } from "./prediction-question.js";
 
@@ -69,5 +70,20 @@ describe("buildPredictionQuestion", () => {
   it("flags timing.ok=false for a market closing too soon (caller skips it)", () => {
     const q = buildPredictionQuestion(market({ closesAt: NOW + 4 * HOUR }), NOW);
     expect(q.timing.ok).toBe(false);
+  });
+});
+
+describe("selectPredictionQuestions", () => {
+  it("keeps only timing-ok markets and caps at limit", () => {
+    const markets = [
+      market({ id: "ok1", closesAt: NOW + 20 * HOUR }),
+      market({ id: "soon", closesAt: NOW + 4 * HOUR }), // timing.ok=false → skipped
+      market({ id: "ok2", closesAt: NOW + 22 * HOUR }),
+    ];
+    expect(selectPredictionQuestions(markets, NOW, { limit: 1 }).map((p) => p.market.id)).toEqual(["ok1"]);
+    expect(selectPredictionQuestions(markets, NOW).map((p) => p.market.id)).toEqual(["ok1", "ok2"]);
+  });
+  it("returns [] when no market fits the round-timing window", () => {
+    expect(selectPredictionQuestions([market({ closesAt: NOW + 2 * HOUR })], NOW)).toEqual([]);
   });
 });
