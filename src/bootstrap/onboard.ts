@@ -39,6 +39,17 @@ const BLEND_CYCLES: Record<Blend, string[]> = {
   vote: ["voter", "voter", "solver", "researcher"],
 };
 
+/** Assign `count` personas across a team using the blend's round-robin cycle.
+ *  Shared by buildOnboardPlan (get-started) and the swarm (organic-swarm) so a
+ *  team's persona mix is identical whether you generate it or run it. Unknown
+ *  blend falls back to balanced. */
+export function assignPersonas(count: number, blend: Blend): Persona[] {
+  const cycle = BLEND_CYCLES[blend] ?? BLEND_CYCLES.balanced;
+  return Array.from({ length: Math.max(0, count) }, (_, i) =>
+    resolvePersona(cycle[i % cycle.length]),
+  );
+}
+
 export interface OnboardAnswers {
   specialization: string;
   teamSize: number;
@@ -77,16 +88,11 @@ export function buildOnboardPlan(answers: OnboardAnswers): OnboardPlan {
   const specialization = resolveSpecialization(answers.specialization);
   const blend: Blend = BLEND_CYCLES[answers.blend] ? answers.blend : "balanced";
   const teamSize = clampTeamSize(answers.teamSize);
-  const cycle = BLEND_CYCLES[blend];
-
-  const agents: RosterAgent[] = [];
-  for (let i = 0; i < teamSize; i++) {
-    agents.push({
-      name: AGENT_NAME_POOL[i],
-      idx: i + 1, // HD index 1..N (0 reserved for operator)
-      persona: resolvePersona(cycle[i % cycle.length]),
-    });
-  }
+  const agents: RosterAgent[] = assignPersonas(teamSize, blend).map((persona, i) => ({
+    name: AGENT_NAME_POOL[i],
+    idx: i + 1, // HD index 1..N (0 reserved for operator)
+    persona,
+  }));
 
   const topics =
     answers.topics && answers.topics.length > 0

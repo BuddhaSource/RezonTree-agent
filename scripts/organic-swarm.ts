@@ -32,6 +32,8 @@ import { createPublicClient, http, type Address, type Hex } from "viem";
 import { deriveAgentWallet } from "../src/wallet/derive.js";
 import { sessionManagerFor } from "../src/wallet/login.js";
 import type { AgentWallet } from "../src/wallet/types.js";
+import { resolveSpecialization, type Persona } from "../src/personas/registry.js";
+import { assignPersonas, type Blend } from "../src/bootstrap/onboard.js";
 import { parseAmountToWei } from "../src/intents/amounts.js";
 import { canonicalStringify } from "../src/intents/commit-intent.js";
 import type {
@@ -68,6 +70,9 @@ const TICK_MAX_MS = Number.parseInt(process.env.ORGANIC_TICK_MAX_MS ?? "9000", 1
 // The natural-run failure was every idle agent picking "ask" → over-production
 // far beyond the funding budget. A per-agent ceiling bounds production directly.
 const MAX_ASKS_PER_AGENT = Number.parseInt(process.env.ORGANIC_MAX_ASKS_PER_AGENT ?? "3", 10);
+// Persona blend across the team — sets each agent's action-weight profile
+// (researcher posts, solver solves, voter votes). Set by `rt init`.
+const BLEND = (process.env.ORGANIC_BLEND ?? "balanced") as Blend;
 
 if (!FORGE || !USDC || !MNEMONIC) throw new Error("RT_FORGE_ADDRESS/RT_USDC_ADDRESS/RT_AGENT_MNEMONIC required");
 
@@ -102,19 +107,18 @@ async function preflightV2<T>(qid: string, actionType: string, callerKey: string
   return (r as any).body as T;
 }
 
-// ── Content pool (questions an agent might ask) ──────────────────
-const TOPICS: { title: string; framing: string }[] = [
-  { title: "Detecting deceptive alignment before deployment", framing: "We want a concrete, testable battery for surfacing deceptive alignment in a frontier model prior to release — behavioral probes, interpretability signals, and honeypot evaluations that a scheming model cannot cheaply game." },
-  { title: "Robust watermarking for LLM-generated text", framing: "Propose a watermarking scheme that survives paraphrase, translation, and mixing with human text, while keeping false-positive rates low enough for academic-integrity use." },
-  { title: "Scalable oversight via recursive reward modeling", framing: "Evaluate whether recursive reward modeling closes the gap between human judgment and superhuman capability, and where it breaks under adversarial decomposition." },
-  { title: "Post-deployment drift detection for shipped models", framing: "Rank leading indicators of capability or behavioral drift after a model ships — refusal-rate shifts, jailbreak telemetry, tool-call distribution shift — and propose a low-false-positive detector." },
-  { title: "Privacy-preserving training-data attribution", framing: "Design a method to attribute a model output to training examples without leaking the examples themselves, with a measurable fidelity criterion." },
-  { title: "Sub-second deterministic finality for payment ledgers", framing: "Compare Tangle, DAG-BFT, and PBFT for sub-second finality at hundreds of validators under partition, stating the network/adversary model and citing measured latencies." },
-  { title: "Perovskite solar stability under tropical conditions", framing: "Identify the materials-science interventions that most extend perovskite cell lifetime under high humidity and heat cycling, ranked by tractability and impact." },
-  { title: "Post-quantum signatures for high-throughput chains", framing: "Evaluate NIST round-4 finalists for on-chain signature verification under tight gas/latency budgets, with a concrete migration path from ECDSA." },
-  { title: "Mechanistic interpretability of in-context learning", framing: "What circuits implement in-context learning in small transformers, and do they transfer to frontier-scale models? Propose at least one falsifiable prediction." },
-  { title: "Incentive design against low-quality AI submissions", framing: "Design an economic mechanism that surfaces high-quality work and prices out slop in a crowdsourced research market, robust to sybil and collusion." },
-];
+// ── Content pool — topics + framing come from the specialization registry,
+// set by `rt init` via RT_SPECIALIZATION / RT_TOPICS (no hardcoded list). The
+// specialization's quality lens is baked into each framing so every question
+// pushes solvers toward precise, falsifiable, trainable answers.
+const SPEC = resolveSpecialization(process.env.RT_SPECIALIZATION);
+const TOPIC_TITLES = process.env.RT_TOPICS
+  ? process.env.RT_TOPICS.split("|").map((t) => t.trim()).filter(Boolean)
+  : SPEC.topicSeeds;
+const TOPICS: { title: string; framing: string }[] = TOPIC_TITLES.map((title) => ({
+  title,
+  framing: `${title}. Solve with rigor — ${SPEC.qualityLens}`,
+}));
 
 function makeDescription(framing: string, tag: string): string {
   let d = framing;
@@ -127,6 +131,7 @@ function makeDescription(framing: string, tag: string): string {
 // ── Agent state ──────────────────────────────────────────────────
 interface Agent {
   name: string;
+  persona: Persona; // role + action-weight profile (researcher/solver/voter/…)
   wallet: AgentWallet;
   address: Address;
   token: string;
@@ -317,14 +322,16 @@ async function tick(a: Agent): Promise<void> {
   // broke agent only idles (a human/wallet stops at "insufficient funds" too;
   // it doesn't retry). It resumes if/when refunded (reads stay free regardless).
   if (!a.broke) {
-    // Seed the platform when there's little to do — but cap total questions per
-    // agent so an idle swarm can't over-produce beyond the funding budget.
-    if ((a.acts["ask"] ?? 0) < MAX_ASKS_PER_AGENT) menu.push(["ask", open.length < 3 ? 6 : 2]);
-    if (solvable.length) menu.push(["solve", 4]);
-    if (voteCand.length) menu.push(["vote", 5]);
+    const w = a.persona.weights; // researcher/solver/voter action bias
+    // Seed the platform when there's little to do — every persona posts more
+    // when the board is thin (keep-it-warm), but cap total questions per agent
+    // so an idle swarm can't over-produce beyond the funding budget.
+    if ((a.acts["ask"] ?? 0) < MAX_ASKS_PER_AGENT) menu.push(["ask", open.length < 3 ? w.ask + 4 : w.ask]);
+    if (solvable.length) menu.push(["solve", w.solve]);
+    if (voteCand.length) menu.push(["vote", w.vote]);
     // cosponsor RE-ENABLED — Finding-A fixed (4ddfdea); cosponsor preflight now
     // populates feeShares + expectedIntentHash (validated live on Q9, 2026-06-01).
-    if (cosponsorable.length) menu.push(["cosponsor", 2]);
+    if (cosponsorable.length) menu.push(["cosponsor", w.cosponsor]);
   }
 
   const total = menu.reduce((s, [, w]) => s + w, 0);
@@ -373,20 +380,24 @@ async function runAgent(a: Agent, deadline: number): Promise<void> {
 // ── Main ─────────────────────────────────────────────────────────
 async function main() {
   console.log(`organic-swarm | backend ${BACKEND} | forge ${FORGE} | chain ${CHAIN_ID}`);
-  console.log(`agents: ${AGENT_NAMES.join(", ")} | duration ${DURATION_MS / 1000}s | tick ${TICK_MIN_MS}-${TICK_MAX_MS}ms\n`);
+  console.log(`agents: ${AGENT_NAMES.join(", ")} | duration ${DURATION_MS / 1000}s | tick ${TICK_MIN_MS}-${TICK_MAX_MS}ms`);
+  console.log(`specialization: ${SPEC.label} | blend: ${BLEND} | ${TOPICS.length} topic seed(s)\n`);
 
+  const personas = assignPersonas(AGENT_NAMES.length, BLEND);
   const agents: Agent[] = [];
-  for (const name of AGENT_NAMES) {
+  for (let i = 0; i < AGENT_NAMES.length; i++) {
+    const name = AGENT_NAMES[i];
     const idx = POOL[name];
     if (idx === undefined) { console.log(`! unknown agent ${name}, skipping`); continue; }
     const wallet = deriveAgentWallet(MNEMONIC, idx, CHAIN_ID);
     const token = await sessions.ensureToken(wallet);
+    const persona = personas[i];
     agents.push({
-      name, wallet, address: wallet.address as Address, token,
+      name, persona, wallet, address: wallet.address as Address, token,
       sponsored: new Set(), solved: new Set(), voted: new Set(), cosponsored: new Set(), acts: {},
       broke: false,
     });
-    log(name, `online (${wallet.address})`);
+    log(name, `online ${persona.label} (${wallet.address})`);
   }
 
   const deadline = Date.now() + DURATION_MS;
@@ -403,7 +414,7 @@ async function main() {
 
   console.log(`\n── organic swarm complete ──`);
   for (const a of agents) {
-    console.log(`  ${a.name.padEnd(6)} sponsored=${a.sponsored.size} solved=${a.solved.size} voted=${a.voted.size} cosponsored=${a.cosponsored.size} | acts ${JSON.stringify(a.acts)}`);
+    console.log(`  ${a.name.padEnd(6)} ${a.persona.label.padEnd(11)} sponsored=${a.sponsored.size} solved=${a.solved.size} voted=${a.voted.size} cosponsored=${a.cosponsored.size} | acts ${JSON.stringify(a.acts)}`);
   }
 }
 
