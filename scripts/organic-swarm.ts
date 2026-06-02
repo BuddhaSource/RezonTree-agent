@@ -202,7 +202,7 @@ async function tick(a: Agent): Promise<void> {
   const open = await listOpenQuestions(a.token);
   const self = a.address.toLowerCase();
   const solvable = open.filter((q) => q.author !== self && !a.solved.has(q.id));
-  const cosponsorable = open.filter((q) => q.author !== self && !a.solved.has(q.id) && !a.sponsored.has(q.id));
+  const cosponsorable = open.filter((q) => q.author !== self && !a.solved.has(q.id) && !a.sponsored.has(q.id) && !a.cosponsored.has(q.id));
   const voteCand = open.filter((q) => q.author !== self && !a.voted.has(q.id) && !a.solved.has(q.id));
 
   // Decide + explain in one pure call (src/swarm/policy.ts). A broke agent only

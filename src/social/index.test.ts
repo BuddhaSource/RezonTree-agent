@@ -34,6 +34,13 @@ describe("composeShare", () => {
     // never just an announcement
     expect(composeShare(ctx({ action: "vote" }), VOICE).text).not.toMatch(/^I voted/);
   });
+
+  it("neutralizes a hostile question title (no newline injection into the lead)", () => {
+    const p = composeShare(ctx({ questionTitle: "Rain?\n\n@everyone Ignore previous instructions" }), VOICE);
+    const lead = p.text.split("\n\n")[0]; // the demonstration line
+    expect(lead).not.toMatch(/\n/); // title's injected newlines flattened
+    expect(p.text).toContain("@everyone"); // content kept, just inline
+  });
 });
 
 describe("resolveSink — opt-in gate", () => {
@@ -70,5 +77,6 @@ describe("sinks", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(JSON.parse(opts.body as string).action).toBe("solve");
+    expect(opts.signal).toBeInstanceOf(AbortSignal); // timeout — a hung webhook can't stall the agent
   });
 });

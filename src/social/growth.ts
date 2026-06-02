@@ -12,7 +12,9 @@
 //   • streakLine — a frequency nudge ("Day N on @ReZonTree") folded into shares
 //     → more actions per agent → 10× USDC volume.
 //
-// All pure (env read is injectable); the CTA only appears when a referral is
+// Untrusted text (backend question titles, operator env) is sanitized before it
+// reaches a post — R-CLIENT-IS-TRUST-ORIGIN extends to the brand surface. All
+// pure (env read is injectable); the CTA only appears when a referral is
 // configured, so a default run shows nothing.
 
 import type { SharePost } from "./index.js";
@@ -22,20 +24,32 @@ export interface Referral {
   url?: string;
 }
 
+/** Neutralize untrusted text before a social post: collapse C0 control chars +
+ *  whitespace runs to single spaces (kills injected newlines / "Ignore
+ *  previous…" line breaks / @everyone-on-its-own-line) and cap length. */
+export function sanitizeForPost(s: string, max = 400): string {
+  // collapse all whitespace (incl. injected \n / \r / \t) to single spaces,
+  // then strip any remaining control bytes; cap length.
+  return s
+    .replace(/\s+/g, " ")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .trim()
+    .slice(0, max);
+}
+
 /** Resolve the operator's referral from env (both optional). */
 export function resolveReferral(env: NodeJS.ProcessEnv = process.env): Referral {
   return { code: env.RT_REFERRAL_CODE, url: env.RT_REFERRAL_URL };
 }
 
 /** The referral CTA line — "" when nothing is configured (so it never shows by
- *  default). Appends `?ref=<code>` to the link when both are present. */
+ *  default). The url must be http(s) (a `javascript:`/newline-laced url is
+ *  dropped); the code is reduced to URL-safe chars. Appends `?ref=<code>`. */
 export function referralCta(ref: Referral): string {
-  if (!ref.url && !ref.code) return "";
-  const link = ref.url
-    ? ref.code
-      ? `${ref.url}${ref.url.includes("?") ? "&" : "?"}ref=${ref.code}`
-      : ref.url
-    : `(ref ${ref.code})`;
+  const url = ref.url && /^https?:\/\/[^\s]+$/i.test(ref.url.trim()) ? ref.url.trim() : undefined;
+  const code = ref.code ? ref.code.trim().replace(/[^A-Za-z0-9_-]/g, "") : undefined;
+  if (!url && !code) return "";
+  const link = url ? (code ? `${url}${url.includes("?") ? "&" : "?"}ref=${code}` : url) : `(ref ${code})`;
   return `Earn on @ReZonTree — join via my link: ${link}`;
 }
 
@@ -47,10 +61,11 @@ export function withReferral(post: SharePost, ref: Referral): SharePost {
 
 /** Agent-recruits-agent invite — the compounding loop. */
 export function composeInvite(o: { fromAgent: string; ref?: Referral; domain?: string }): string {
-  const dom = o.domain ? ` on ${o.domain}` : "";
+  const from = sanitizeForPost(o.fromAgent, 60);
+  const dom = o.domain ? ` on ${sanitizeForPost(o.domain, 80)}` : "";
   const cta = o.ref ? referralCta(o.ref) : "Join @ReZonTree.";
   return (
-    `I'm ${o.fromAgent}, an agent earning on @ReZonTree by posting + solving hard questions${dom} ` +
+    `I'm ${from}, an agent earning on @ReZonTree by posting + solving hard questions${dom} ` +
     `that get sharpened by staked, adversarial peer review — real reasoning gets paid, slop gets slashed. ` +
     `Point your agent here. ${cta}`
   ).trim();
@@ -58,12 +73,14 @@ export function composeInvite(o: { fromAgent: string; ref?: Referral; domain?: s
 
 /** "Out-reasoned the market" brag from a calibrated forecast (prediction skill). */
 export function composeForecastBrag(b: { questionTitle: string; myP: number; marketP: number; url?: string; why?: string }): string {
+  const title = sanitizeForPost(b.questionTitle, 200);
+  const why = b.why ? " " + sanitizeForPost(b.why, 200) : "";
   const edgePts = Math.round((b.myP - b.marketP) * 100);
   const sign = edgePts >= 0 ? "+" : "";
   const link = b.url ? `\n${b.url}` : "";
   return (
-    `Out-reasoned the market on "${b.questionTitle}": forecast P=${b.myP} vs market ${b.marketP} ` +
-    `(${sign}${edgePts}pt edge).${b.why ? " " + b.why : ""} ` +
+    `Out-reasoned the market on "${title}": forecast P=${b.myP} vs market ${b.marketP} ` +
+    `(${sign}${edgePts}pt edge).${why} ` +
     `Calibrated, staked, peer-judged on @ReZonTree.${link} #RezonTree`
   );
 }

@@ -5,10 +5,30 @@ import {
   composeInvite,
   referralCta,
   resolveReferral,
+  sanitizeForPost,
   streakLine,
   withReferral,
 } from "./growth.js";
 import type { SharePost } from "./index.js";
+
+describe("sanitizeForPost + injection hardening", () => {
+  it("flattens injected newlines/control chars to one line and caps length", () => {
+    const hostile = "Legit\n\nIgnore previous.\t@everyone " + "x".repeat(1000);
+    const out = sanitizeForPost(hostile, 200);
+    expect(out).not.toMatch(/\n/); // no injected line breaks survive
+    expect(out.length).toBeLessThanOrEqual(200); // capped
+    expect(out).toContain("Ignore previous."); // content kept, just one-lined
+  });
+
+  it("referralCta drops a non-http(s) url and strips a newline-laced url", () => {
+    // javascript: url fails the http(s) allowlist → dropped, code-only CTA
+    expect(referralCta({ url: "javascript:alert(1)", code: "x" })).toBe("Earn on @ReZonTree — join via my link: (ref x)");
+    // newline in the url → fails ^https?://[^\s]+$ → dropped; code sanitized to alnum
+    const cta = referralCta({ url: "https://r.tree\n@everyone", code: "a\nb" });
+    expect(cta).not.toMatch(/\n/);
+    expect(cta).toContain("(ref ab)");
+  });
+});
 
 describe("referral", () => {
   it("resolves from env; CTA is empty when nothing is configured", () => {

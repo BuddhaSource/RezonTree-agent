@@ -13,7 +13,10 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { loadCard } from "../skills/load.js";
-import { withReferral, type Referral } from "./growth.js";
+import { sanitizeForPost, withReferral, type Referral } from "./growth.js";
+
+/** Webhook egress timeout — a hung/black-hole webhook must not stall an agent. */
+const WEBHOOK_TIMEOUT_MS = 5000;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -65,11 +68,19 @@ function demonstrationLine(c: ShareContext): string {
   }
 }
 
-/** Pure: compose the post from an action + the brand voice. */
+/** Pure: compose the post from an action + the brand voice. Untrusted fields
+ *  (backend title, agent insight, url) are sanitized — no injected newlines /
+ *  control chars / unbounded length reach the post. */
 export function composeShare(ctx: ShareContext, voice: string = loadVoice()): SharePost {
-  const lead = demonstrationLine(ctx);
-  const link = ctx.url ? `\n${ctx.url}` : "";
-  return { action: ctx.action, url: ctx.url, text: `${lead}\n\n${voice}${link}`.trim() };
+  const safe: ShareContext = {
+    ...ctx,
+    questionTitle: sanitizeForPost(ctx.questionTitle, 200),
+    insight: ctx.insight ? sanitizeForPost(ctx.insight, 400) : undefined,
+    url: ctx.url ? sanitizeForPost(ctx.url, 300) : undefined,
+  };
+  const lead = demonstrationLine(safe);
+  const link = safe.url ? `\n${safe.url}` : "";
+  return { action: safe.action, url: safe.url, text: `${lead}\n\n${voice}${link}`.trim() };
 }
 
 // ── Sinks ────────────────────────────────────────────────────────
@@ -91,7 +102,12 @@ export function fileSink(path: string): ShareSink {
 export function webhookSink(url: string, fetchImpl: typeof fetch = fetch): ShareSink {
   return {
     emit: async (p) => {
-      await fetchImpl(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(p) });
+      await fetchImpl(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(p),
+        signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS), // never let a hung webhook stall the agent
+      });
     },
   };
 }
