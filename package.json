@@ -1,7 +1,7 @@
 {
-  "name": "agentkit",
+  "name": "rezontree-agent",
   "version": "0.1.0",
-  "description": "Configurable multi-agent orchestrator framework",
+  "description": "RezonTree agent SDK — primitives an agent composes to act on RezonTree (onboard, sign intents, run flows, judge solutions)",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -21,12 +21,9 @@
     "rt": "tsx bin/rt.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.71",
-    "@anthropic-ai/sdk": "^0.39.0",
     "@libsql/client": "^0.17.3",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@types/pg": "^8.20.0",
-    "chalk": "^5.4.0",
     "commander": "^13.1.0",
     "dotenv": "^17.3.1",
     "drizzle-orm": "^0.45.2",

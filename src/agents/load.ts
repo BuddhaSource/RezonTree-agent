@@ -24,15 +24,32 @@ interface PersonaFrontmatter {
 }
 
 function splitFrontmatter(raw: string): { frontmatter: string; body: string } {
-  const m = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  if (!m) throw new Error("agent card missing --- frontmatter --- block");
+  // Opening `---` on line 1; closing `---` on its own line. Non-greedy stops at
+  // the first such close, which for a well-formed card is the end of frontmatter.
+  const m = raw.match(/^---\n([\s\S]*?)\n---[ \t]*\n([\s\S]*)$/);
+  if (!m) throw new Error("missing `--- frontmatter ---` block");
   return { frontmatter: m[1], body: m[2] };
+}
+
+const WEIGHT_KEYS = ["ask", "solve", "vote", "cosponsor"] as const;
+
+/** Validate weights at the source — every key present, finite, non-negative.
+ *  buildActionMenu consumes these; a malformed override (negative / NaN /
+ *  missing) would skew or stall the swarm, so fail loud on the bad card. */
+function assertWeights(w: unknown): asserts w is ActionWeights {
+  if (typeof w !== "object" || w === null) throw new Error("weights must be a map");
+  for (const k of WEIGHT_KEYS) {
+    const v = (w as Record<string, unknown>)[k];
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+      throw new Error(`weights.${k} must be a finite number ≥ 0 (got ${String(v)})`);
+    }
+  }
 }
 
 /** Load every agent card (agents/<id>.md) into a Persona map keyed by id.
  *  A private `<id>.local.md` (gitignored) overrides the shipped `<id>.md`
  *  whole; a `<id>.local.md` with no shipped sibling adds a new persona.
- *  `dir` is overridable for tests. */
+ *  `dir` is overridable for tests. A malformed card fails loud, naming itself. */
 export function loadPersonaCards(dir: string = __dirname): Record<string, Persona> {
   const files = readdirSync(dir).filter((f) => f.endsWith(".md"));
   const ids = new Set(files.map((f) => f.replace(/\.local\.md$/, "").replace(/\.md$/, "")));
@@ -40,9 +57,15 @@ export function loadPersonaCards(dir: string = __dirname): Record<string, Person
   for (const id of [...ids].sort()) {
     // local sibling wins, whole-card.
     const file = files.includes(`${id}.local.md`) ? `${id}.local.md` : `${id}.md`;
-    const { frontmatter, body } = splitFrontmatter(readFileSync(join(dir, file), "utf8"));
-    const fm = parseYaml(frontmatter) as PersonaFrontmatter;
-    out[id] = { id, label: fm.label, weights: fm.weights, blurb: body.trim() };
+    try {
+      const { frontmatter, body } = splitFrontmatter(readFileSync(join(dir, file), "utf8"));
+      const fm = parseYaml(frontmatter) as PersonaFrontmatter;
+      assertWeights(fm.weights);
+      if (typeof fm.label !== "string" || fm.label.length === 0) throw new Error("missing `label`");
+      out[id] = { id, label: fm.label, weights: fm.weights, blurb: body.trim() };
+    } catch (e) {
+      throw new Error(`agent card '${file}' is malformed: ${(e as Error).message}`);
+    }
   }
   return out;
 }

@@ -16,9 +16,11 @@ describe("loadPersonaCards", () => {
     expect(Object.keys(personas).sort()).toEqual(["generalist", "researcher", "solver", "voter"]);
   });
 
-  it("preserves the action weights byte-for-byte (fund-path drift fence)", () => {
-    // buildActionMenu consumes these numbers; a change here shifts the swarm's
-    // posting/voting distribution. Pin them so a card edit can't drift silently.
+  it("preserves the shipped-default action weights byte-for-byte", () => {
+    // buildActionMenu consumes these numbers; this pins the SHIPPED cards so a
+    // default edit can't drift the swarm's posting/voting distribution silently.
+    // (A private .local override is by-design unpinned — weights only pick WHICH
+    // flow runs, never a signing input, so an override can't touch the fund path.)
     expect(personas.researcher.weights).toEqual({ ask: 6, solve: 3, vote: 3, cosponsor: 1 });
     expect(personas.solver.weights).toEqual({ ask: 1, solve: 6, vote: 3, cosponsor: 1 });
     expect(personas.voter.weights).toEqual({ ask: 1, solve: 2, vote: 6, cosponsor: 1 });
@@ -53,5 +55,17 @@ describe("loadPersonaCards — .local overlay", () => {
     const p = loadPersonaCards(dir);
     expect(Object.keys(p).sort()).toEqual(["skeptic", "solver"]);
     expect(p.skeptic.weights).toEqual({ ask: 1, solve: 1, vote: 8, cosponsor: 0 });
+  });
+
+  it("fails loud and NAMES the file on a malformed card", () => {
+    dir = mkdtempSync(join(tmpdir(), "rt-agents-"));
+    writeFileSync(join(dir, "broken.local.md"), "no frontmatter here");
+    expect(() => loadPersonaCards(dir)).toThrow(/broken\.local\.md' is malformed/);
+  });
+
+  it("rejects out-of-range weights (negative / missing) at the source", () => {
+    dir = mkdtempSync(join(tmpdir(), "rt-agents-"));
+    writeFileSync(join(dir, "bad.md"), CARD("Bad", [-1, 6, 3, 1]));
+    expect(() => loadPersonaCards(dir)).toThrow(/weights\.ask must be a finite number/);
   });
 });
