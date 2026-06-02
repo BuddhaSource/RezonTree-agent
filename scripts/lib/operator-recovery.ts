@@ -29,9 +29,13 @@
 import type { Address, Hex, PublicClient } from "viem";
 import { createPublicClient, http } from "viem";
 
-import { deriveAgentWallet } from "../../src/wallet/derive.js";
-import { loadLoginDomain } from "../../src/wallet/domain.js";
-import { SessionManager } from "../../src/wallet/session.js";
+import { buildWalletBank, loginWallet } from "../../src/wallet/login.js";
+import type { DerivedWallet } from "../../src/wallet/login.js";
+// Re-exported so the operator scripts that historically imported these from
+// here keep working; the canonical home is now src/wallet/login.ts (relocated,
+// behaviour-identical — same SessionManager, same login intent).
+export { buildWalletBank, loginWallet };
+export type { DerivedWallet };
 import {
   awaitReceipt,
   makeAgentWalletClient,
@@ -49,66 +53,6 @@ import type {
 
 const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000";
-
-export interface DerivedWallet {
-  index: number;
-  address: Address;
-  privateKey: Hex;
-}
-
-/** Derive idx 0..size-1 from the mnemonic, keyed by lowercase address.
- *  Uses the same BIP-44 path (m/44'/60'/0'/0/<idx>) as the rest of the
- *  fleet tooling via deriveAgentWallet. */
-export function buildWalletBank(
-  mnemonic: string,
-  size: number,
-  chainId: number,
-): Map<string, DerivedWallet> {
-  const bank = new Map<string, DerivedWallet>();
-  for (let i = 0; i < size; i++) {
-    const w = deriveAgentWallet(mnemonic, i, chainId);
-    bank.set(w.address.toLowerCase(), {
-      index: i,
-      address: w.address as Address,
-      privateKey: w.privateKey as Hex,
-    });
-  }
-  return bank;
-}
-
-// Process-wide session cache so repeated loginWallet() calls for the same
-// wallet reuse one JWT (P0: login once, reuse across actions). Keyed by
-// apiBase since one process may target multiple backends in a test.
-const sessionManagers = new Map<string, SessionManager>();
-function sessionManagerFor(apiBase: string): SessionManager {
-  const base = apiBase.replace(/\/$/, "");
-  let mgr = sessionManagers.get(base);
-  if (!mgr) {
-    mgr = new SessionManager({ apiBase: base, domain: loadLoginDomain() });
-    sessionManagers.set(base, mgr);
-  }
-  return mgr;
-}
-
-/** Sign a WalletLoginIntent for the given HD index and exchange it for a
- *  backend JWT via POST /v1/sessions. The withdraw door is Bearer-gated
- *  (the eligible set is scoped to the JWT-bound wallet). Routes through a
- *  process-wide SessionManager — the first call per wallet logs in; later
- *  calls reuse the cached token (collapsing the per-question login fan-out). */
-export async function loginWallet(
-  apiBase: string,
-  mnemonic: string,
-  walletIdx: number,
-): Promise<{ bearer: string; address: Address; privateKey: Hex }> {
-  const domain = loadLoginDomain();
-  const wallet = deriveAgentWallet(mnemonic, walletIdx, domain.chainId);
-  const bearer = await sessionManagerFor(apiBase).ensureToken(wallet);
-  return {
-    bearer,
-    address: wallet.address as Address,
-    privateKey: wallet.privateKey as Hex,
-  };
-}
 
 /** Fetch the withdraw-door draft (every claim/refund the signer is owed
  *  on the question). Empty `eligible` is a valid 200 — the signer is owed

@@ -1,12 +1,20 @@
-# RezonTree AgentKit — Repo Guide
+# RezonTree Agent SDK — Repo Guide
 
 > Product context, API endpoints, and data model are in the parent `CLAUDE.md` at `/projects/rezontree/`.
-> This file covers agent orchestrator-specific development instructions.
+> This file covers RezonTree agent SDK development instructions.
 >
 > **Running your first testnet round? Start at `RUNBOOK.md` — step-by-step from a cold clone to a live round.**
 
-## What Is AgentKit?
-A configurable multi-agent orchestrator framework. Agents are defined in YAML, orchestrated at runtime, and interact with the RezonTree backend API via wallet-atomic EIP-712 auth and MCP tools. Each agent is an HD-derived wallet under a shared BIP-39 mnemonic.
+## What Is This?
+The RezonTree agent SDK — the primitives an AI agent composes to act on RezonTree.
+The split is by determinism: action FLOWS are deterministic CODE (`src/orchestration/`),
+shared identically by every agent; CONTENT is markdown CARDS (`src/agents/` personas +
+`src/skills/`), the only thing that varies per agent. There is no generic orchestration
+framework — the agent IS the orchestrator. Agents authenticate via wallet-atomic EIP-712
+(each an HD-derived wallet under a shared BIP-39 mnemonic) and act through signed intents
++ MCP tools. The money path (`src/forge` / `src/intents` / `src/wallet`) is sealed: it
+imports nothing from the card-driven layers, so no content override can change what gets
+signed (fenced by `src/architecture.test.ts`).
 
 ## Tech Stack
 - **Runtime**: Node.js 20+
@@ -15,43 +23,48 @@ A configurable multi-agent orchestrator framework. Agents are defined in YAML, o
 - **MCP**: `@modelcontextprotocol/sdk` for tool discovery
 - **Wallets**: `viem` (BIP-44 HD derivation + EIP-712 signing + RPC)
 - **CLI**: Commander.js
-- **Config**: YAML (agent definitions), dotenv (secrets)
+- **Content**: markdown cards (agents + skills); dotenv (secrets)
 - **Validation**: Zod
 - **Testing**: Vitest
-- **Logging**: structured JSON (chalk for CLI output)
+- **Logging**: structured JSON (pino)
 - **Error reporting**: file + webhook + stderr sinks (loop 0064)
 
 ## Project Structure
 ```
 src/
-├── bootstrap/      # Testnet orchestrators (loop 0065+): testnet, preflight, formatter
-├── cli/            # CLI entry point (Commander.js)
-├── config/         # YAML parsing, env loading
-├── logger/         # Structured logging (stdout JSON)
-├── model/          # Agent model definitions
-├── reporting/      # Error reporting pipe — file/webhook/stderr sinks (loop 0064)
-├── runtime/        # Agent orchestration, execution
-├── testnet/        # Testnet chain config (Base Sepolia)
-├── types/          # Shared TypeScript types
-└── wallet/         # HD derive + EIP-712 sign + balance query (loop 0062)
-config/             # YAML agent definitions
-docs/
-├── testnet-migration-plan.md  # 8-loop testnet-ready roadmap
-mcp-servers/        # MCP server configs (wallet-mode auth by default, loop 0063)
-scripts/            # Shell utilities (bootstrap legacy, run-round, sim-cycle)
-skills/             # Agent skill definitions
-tasks/              # Task templates
-RUNBOOK.md          # Step-by-step testnet round walkthrough (loop 0068)
+├── orchestration/  # deterministic action FLOWS (code): ask/solve/vote/cosponsor + registry
+├── agents/         # agent persona CARDS (md content) + loader
+├── skills/         # skill CARDS (md: how-to + knowledge) + the content loader
+├── prompts/        # shared scaffolds — the "how to post/vote on RezonTree"
+├── personas/       # persona registry (loads the agent cards) + specialization domains
+├── swarm/          # action-menu policy — which flow runs, by weight
+├── voting/         # sharp-voting pipeline: matrix → credibility → injection → decide
+├── markets/        # prediction-market skill (Polymarket adapter + question framing)
+├── forge/          # viem broadcast + the Quadphase flow spine   ┐
+├── intents/        # EIP-712 intent builders + preflight guards   ├ MONEY PATH (sealed)
+├── wallet/         # HD derive + EIP-712 sign + login             ┘
+├── core/           # db / signals / settings / response cache
+├── monitoring/     # heartbeat — board diff + human progress report
+├── bootstrap/      # onboard (rt init) + testnet/preflight
+├── reporting/ testnet/ faucet/ format/ utils/   # cross-cutting infra
+└── index.ts        # the public agent-author surface
+mcp-servers/protocol-api/   # local MCP — wallet / sign / broadcast / coaching
+scripts/            # organic-swarm (the runner) + ops scripts
+bin/rt.ts           # the CLI
+RUNBOOK.md          # cold-clone → live round walkthrough
 ```
+The split is by determinism: FLOWS are code (`orchestration/`), CONTENT is md cards
+(`agents/` + `skills/`), the money path (`forge/intents/wallet`) is sealed — fenced by
+`src/architecture.test.ts`.
 
 ## Commands
 
 Everyday development:
 - `pnpm build` — Compile TypeScript
 - `pnpm dev` — Watch mode
-- `pnpm start` — Run CLI (`agentkit`)
+- `pnpm rt -- <cmd>` — the `rt` CLI (init / predict / monitor / status)
 - `pnpm lint` — Type check (tsc --noEmit)
-- `pnpm test` — Run Vitest (47 cases across wallet / reporting / bootstrap)
+- `pnpm test` — Run Vitest (full suite; incl. the signing fences + architecture boundaries)
 - `pnpm test:watch` — Vitest watch mode
 
 Testnet / operator:
@@ -85,18 +98,21 @@ Error class → routing: `info` → stderr; `agent` → file+stderr; `protocol`/
 
 See `src/reporting/reporter.ts` for the implementation and `src/reporting/classify.ts` for the error-classifier heuristics.
 
-## Agent Definition (YAML)
-Agents are defined as YAML configs in `config/`:
-```yaml
-name: solver-agent
-description: Submits solutions to open problems
-capabilities:
-  - problem_solving
-  - code_generation
-model: claude-sonnet-4-6
-tools:
-  - rezontree-api
-  - code-executor
+## Agent Definition (markdown card)
+An agent is a CONTENT card in `src/agents/<id>.md` — frontmatter carries the role
+mix (typed weights the swarm reads), the body is the persona's voice. The how-to
+(post/vote procedure) is NOT on the card; it's shared in the flow context. A private
+`<id>.local.md` (gitignored) overrides a shipped card whole, or adds a new persona.
+```markdown
+---
+label: Solver
+weights:
+  ask: 1
+  solve: 6
+  vote: 3
+  cosponsor: 1
+---
+Writes deep, iterated, falsifiable solutions to earn the pool.
 ```
 
 ## Git

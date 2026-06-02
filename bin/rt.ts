@@ -23,8 +23,8 @@
 // existing questions) currently delegate to scripts/agent.ts. Phase 2
 // of the simplification will inline those here.
 //
-// For backwards compat, `agentkit` (src/cli/index.ts) and
-// scripts/agent.ts continue to work — `rt` is additive.
+// `rt` is the CLI entry. The old `agentkit` framework CLI was removed with the
+// AgentKit framework; the protocol broadcast core lives in scripts/agent.ts.
 
 import "dotenv/config";
 import fs from "node:fs";
@@ -46,6 +46,17 @@ import { baseSepolia } from "viem/chains";
 
 import { requestUSDC, ethFaucetMessage, ETH_FAUCETS } from "../src/faucet/circle.js";
 import { loadPrompt } from "../src/prompts/index.js";
+import { renderCatalog } from "../src/catalog/index.js";
+import { scaffold, type ScaffoldKind } from "../src/bootstrap/scaffold.js";
+import {
+  runOnboard,
+  renderOnboardPlan,
+  type Blend,
+  type OnboardAnswers,
+} from "../src/bootstrap/onboard.js";
+import { selectPredictionQuestions } from "../src/markets/prediction-question.js";
+import { polymarketSource } from "../src/markets/polymarket.js";
+import { loginWallet } from "../src/wallet/login.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -118,6 +129,104 @@ program.command("cold-start").description("Print cold-start prompt + your situat
   console.log("\n---\n\n## Your situation\n");
   console.log(JSON.stringify({ role: ROLES[idx] ?? `idx-${idx}`, address: addr, ...bal }, null, 2));
 });
+
+program
+  .command("catalog")
+  .description("Discovery: every action / persona / domain / skill, in one read")
+  .action(() => {
+    console.log(renderCatalog());
+  });
+
+program
+  .command("new <kind> [name]")
+  .description("Scaffold a private .local card to extend the swarm (kind: agent|skill|voice)")
+  .action((kind: string, name?: string) => {
+    const s = scaffold(kind as ScaffoldKind, name);
+    const abs = resolve(__dirname, "..", s.path);
+    if (fs.existsSync(abs)) {
+      console.error(`refusing to overwrite ${s.path} — it already exists`);
+      process.exit(1);
+    }
+    fs.writeFileSync(abs, s.content);
+    console.log(`created ${s.path}\nEdit THIS file — never the shipped card. It's gitignored (*.local.md) and overrides/extends the shipped set.`);
+  });
+
+// rt init — get-started: specialization + team size + persona blend → plan
+program
+  .command("init")
+  .description("Get started: pick specialization, team size, persona blend → launch plan")
+  .option("-s, --specialization <id>", "ai-alignment | distributed-systems | mechanism-design | security | general")
+  .option("-t, --team <n>", "team size 1-9")
+  .option("-b, --blend <blend>", "balanced | research | solve | vote")
+  .option("--topics <list>", "| separated topic overrides")
+  .option("--write <path>", "write the env snippet to a file")
+  .action(async (opts) => {
+    const flags: Partial<OnboardAnswers> = {};
+    if (opts.specialization) flags.specialization = String(opts.specialization);
+    if (opts.team) flags.teamSize = Number(opts.team);
+    if (opts.blend) flags.blend = String(opts.blend) as Blend;
+    if (opts.topics) flags.topics = String(opts.topics).split("|").map((t) => t.trim()).filter(Boolean);
+    const plan = await runOnboard({ flags });
+    console.log(renderOnboardPlan(plan));
+    if (opts.write) {
+      fs.writeFileSync(String(opts.write), plan.envSnippet + "\n");
+      console.log(`  env written → ${opts.write}\n`);
+    }
+  });
+
+// rt predict — crowdsource a prediction-market outcome's probability
+program
+  .command("predict")
+  .description("Fetch Polymarket markets closing soon → build timed probability question(s) (dry-run by default)")
+  .option("--min-hours <n>", "earliest market close, hours from now", "18")
+  .option("--max-hours <n>", "latest market close, hours from now", "24")
+  .option("-l, --limit <n>", "max markets to build", "1")
+  .option("--post", "create the question(s) on the backend (default: print only)")
+  .action(async (opts) => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const src = polymarketSource(async (url) => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Polymarket Gamma ${res.status}`);
+      return res.json();
+    });
+    const markets = await src.fetchClosingMarkets({
+      nowSec,
+      minHours: Number(opts.minHours),
+      maxHours: Number(opts.maxHours),
+    });
+    const picks = selectPredictionQuestions(markets, nowSec, { limit: Number(opts.limit) });
+    if (picks.length === 0) {
+      console.log(`No Polymarket markets closing in ${opts.minHours}-${opts.maxHours}h. Widen with --max-hours.`);
+      return;
+    }
+    for (const { market, question } of picks) {
+      const roundClose = new Date(question.timing.roundClosesAtSec * 1000).toISOString();
+      console.log(`\n── ${market.question}`);
+      console.log(`   market closes ${new Date(market.closesAt * 1000).toISOString()} | round should close by ${roundClose}`);
+      console.log(`   title:    ${question.title}`);
+      console.log(`   criteria: ${question.successCriteria.map((c) => `${c.name}(${c.weight})`).join(" · ")}`);
+      console.log(`   body:     ${question.description.length} chars`);
+      if (opts.post) {
+        const token = (await loginWallet(BACKEND, MNEMONIC, Number(process.env.RT_AGENT_INDEX ?? 0))).bearer;
+        const res = await fetch(`${BACKEND}/v1/questions`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({
+            title: question.title,
+            description: question.description,
+            successCriteria: question.successCriteria,
+            initialBounty: process.env.RT_INITIAL_BOUNTY ?? "1000000",
+          }),
+        });
+        const body = (await res.json()) as { id?: string };
+        console.log(
+          `   posted ${res.status}${body.id ? ` ${body.id} — now sponsor with fundingDeadline ≈ ${roundClose} so the round closes before the market` : ` ${JSON.stringify(body).slice(0, 120)}`}`,
+        );
+      } else {
+        console.log(`   (dry-run — pass --post to create; then sponsor with fundingDeadline before ${roundClose})`);
+      }
+    }
+  });
 
 // rt wallet ...
 const wallet = program.command("wallet").description("Wallet utilities");

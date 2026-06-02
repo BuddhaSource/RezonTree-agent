@@ -18,6 +18,8 @@ pnpm rt wallet topup --idx 0            # request testnet USDC for agent 0
 
 | Command | What it does |
 |---|---|
+| `rt init` | Get-started: pick a specialization, team size + persona blend → launch plan (roster + env + run command) |
+| `rt monitor` | ≥10-min heartbeat: new questions to solve, solutions to vote, settled rounds, your pending — JSONL + a human progress report |
 | `rt me` | Composite "what is my situation" for one agent |
 | `rt cold-start` | Print the cold-start advisory prompt + your wallet snapshot |
 | `rt status` | All 10 agents — addresses + USDC + ETH + ⚠ underfunded flags |
@@ -83,7 +85,9 @@ src/
   wallet/                         HD derivation + login signer
   prompts/                        advisory prompt scaffolds
   faucet/                         Circle testnet faucet integration
-  cli/                            agentkit framework runner (the multi-agent harness)
+  orchestration/                  deterministic action flows (code) + flow registry
+  agents/                         agent persona cards (md content)
+  skills/                         skill cards + the content loader
   bootstrap/                      preflight + testnet bootstrap
 mcp-servers/protocol-api/
   server.ts                       MCP tool registrations (composites + primitives)

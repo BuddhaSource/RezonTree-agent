@@ -7,27 +7,13 @@
 // about its own next move: "I'm alice, I want to sponsor this question —
 // call agent.ts sponsor --idx 1 --question-file ...".
 //
-// v1 → v2 rewrite (#595). Every command moved from the removed v1
-// per-action chain functions + v1 endpoints to the Quadphase v2 unified-
-// envelope model, mirroring the live MCP server:
-//   • auth:    /auth/wallet  →  /v1/sessions (WalletLoginIntent).
-//   • sponsor: GET /sponsorships/draft + buildSponsorIntent + signUSDCPermit
-//              + broadcastSponsor  →  POST /intents/preflight {sponsor} +
-//              runSponsorFlow (preflight → sign Envelope(Sponsor) → POST
-//              /intents → sponsorSubmit). USDC permit removed (EIP-2612
-//              gone); pre-approve via ensureUsdcAllowance.
-//   • commit:  /commit + buildCommitIntent + broadcastCommit  →
-//              runCommitFlow (submit env).
-//   • vote:    /vote-intent + buildVoteIntent + broadcastVote  →
-//              runVoteFlow (submit env, voteSalt from preflight).
-//   • settle:  client-side merkle + v1 publishSettlement(SettlementIntent)
-//              → the backend ORACLE KEEPER owns settlement now. This
-//              command AWAITS the keeper (or, with --witness-file, signs +
-//              broadcasts a publishSettlement(env,sig,witness) via
-//              runSettleFlow). It no longer re-derives the tree.
-//   • claim:   claimAllForQuestion  →  the unified withdraw door +
-//              runClaimFlow / runRefundFlow (pullValue). Recovers winner
-//              payout AND stake/sponsor refunds.
+// Each command runs the Quadphase lifecycle for one action: preflight →
+// sign the Envelope → POST /intents → broadcast → confirm. Auth is a
+// WalletLoginIntent → /v1/sessions; USDC is pre-approved via
+// ensureUsdcAllowance. Settlement is awaited from the oracle keeper (or
+// signed + broadcast with --witness-file via runSettleFlow); claim/refund
+// go through the unified withdraw door (runClaimFlow / runRefundFlow →
+// pullValue), recovering the winner payout AND stake/sponsor refunds.
 
 import "dotenv/config";
 import fs from "node:fs";
