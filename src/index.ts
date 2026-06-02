@@ -158,3 +158,21 @@ export {
   type CatalogDomain,
   type CatalogSkill,
 } from "./catalog/index.js";
+
+// Social share — every confirmed action can DEMONSTRATE polished intelligence
+// (the insight itself + a link-back funnel), gated behind an explicit opt-in so
+// nothing ever posts by default. Voice frame is a .local-overridable card.
+export {
+  composeShare,
+  shareAfterAction,
+  resolveSink,
+  loadVoice,
+  stdoutSink,
+  fileSink,
+  webhookSink,
+  type ShareAction,
+  type ShareContext,
+  type ShareEvent,
+  type SharePost,
+  type ShareSink,
+} from "./social/index.js";

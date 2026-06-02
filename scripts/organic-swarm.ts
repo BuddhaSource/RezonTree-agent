@@ -38,6 +38,7 @@ import { resolveDeadlineMs, explainDecision } from "../src/swarm/policy.js";
 import type { VoteSolution } from "../src/voting/matrix.js";
 import { makeAgentWalletClient } from "../src/forge/quadphase-broadcast.js";
 import { askFlow, solveFlow, voteFlow, cosponsorFlow } from "../src/orchestration/registry.js";
+import { resolveSink, loadVoice, shareAfterAction } from "../src/social/index.js";
 import type { Agent, OpenQ, FlowCtx, SwarmConfig } from "../src/orchestration/types.js";
 import { broadcastErrorMessage, isInsufficientFunds } from "../src/testnet/broadcast-error.js";
 
@@ -130,6 +131,12 @@ const sessions = sessionManagerFor(BACKEND);
 // Build the flow context once — config + clients + HTTP helpers the
 // deterministic flows capture. Flows read nothing from module scope; the
 // selector below picks which one runs, identically for every agent.
+// Social share — opt-in (RT_SOCIAL_SHARE=1); undefined ⇒ no share hook. A share
+// failure is swallowed: it must never undo or block a confirmed on-chain action.
+const SITE_URL = process.env.RT_SITE_URL ?? "https://rezontree.com";
+const shareSink = resolveSink();
+const shareVoice = shareSink ? loadVoice() : undefined;
+
 const flowCtx: FlowCtx = {
   cfg: {
     backend: BACKEND, rpc: RPC, chainId: CHAIN_ID, forge: FORGE, usdc: USDC,
@@ -140,6 +147,15 @@ const flowCtx: FlowCtx = {
   call,
   preflight: preflightV2,
   log,
+  share: shareSink
+    ? async (ev) => {
+        try {
+          await shareAfterAction({ ...ev, url: `${SITE_URL}/questions/${ev.questionId}` }, shareSink, shareVoice);
+        } catch (e) {
+          log(ev.agent, `share failed (non-fatal): ${(e as Error).message?.slice(0, 120)}`);
+        }
+      }
+    : undefined,
 };
 
 // ── Discovery ────────────────────────────────────────────────────

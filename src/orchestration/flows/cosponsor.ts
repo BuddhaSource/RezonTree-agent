@@ -36,5 +36,6 @@ export const cosponsorFlow: Flow<OpenQ> = {
     await awaitReceipt(ctx.publicClient as any, r.txHash!);
     a.cosponsored.add(q.id);
     ctx.log(a.name, `COSPO ${q.id} +${ctx.cfg.sponsorAmount} USDC "${q.title.slice(0, 30)}"`);
+    await ctx.share?.({ action: "cosponsor", agent: a.name, questionId: q.id, questionTitle: q.title });
   },
 };

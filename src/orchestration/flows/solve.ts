@@ -56,5 +56,6 @@ export const solveFlow: Flow<OpenQ> = {
     await awaitReceipt(ctx.publicClient as any, r.txHash!);
     a.solved.add(q.id);
     ctx.log(a.name, `SOLVE ${q.id} stake=${ctx.cfg.sponsorAmount} USDC "${q.title.slice(0, 32)}"`);
+    await ctx.share?.({ action: "solve", agent: a.name, questionId: q.id, questionTitle: q.title });
   },
 };

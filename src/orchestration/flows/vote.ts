@@ -102,5 +102,6 @@ export const voteFlow: Flow<VoteTarget> = {
     await awaitReceipt(ctx.publicClient as any, r.txHash!);
     a.voted.add(q.id);
     ctx.log(a.name, `VOTE  ${q.id} across ${allocations.length} sol(s) stake=${ctx.cfg.sponsorAmount} USDC`);
+    await ctx.share?.({ action: "vote", agent: a.name, questionId: q.id, questionTitle: q.title, insight: decision.rationale });
   },
 };

@@ -21,6 +21,7 @@ import { createPublicClient, type Address } from "viem";
 
 import { makeAgentWalletClient } from "../forge/quadphase-broadcast.js";
 import type { Persona } from "../personas/registry.js";
+import type { ShareEvent } from "../social/index.js";
 import type { VoteSolution } from "../voting/matrix.js";
 import type { AgentWallet } from "../wallet/types.js";
 
@@ -67,6 +68,10 @@ export interface FlowCtx {
   call<T = any>(method: string, path: string, body?: unknown, token?: string): Promise<{ status: number; body: T }>;
   preflight<T>(qid: string, actionType: string, callerKey: string, caller: Address, token: string): Promise<T>;
   log(name: string, m: string): void;
+  /** Optional after-action hook — emit a social share for a CONFIRMED action.
+   *  Undefined unless the operator opts in (RT_SOCIAL_SHARE=1); never throws the
+   *  flow (a share failure must not undo a settled on-chain action). */
+  share?(ev: ShareEvent): Promise<void>;
 }
 
 /** Vote needs both the question and its (already-fetched) candidate solutions. */

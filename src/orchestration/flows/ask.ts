@@ -70,5 +70,6 @@ export const askFlow: Flow = {
     await awaitReceipt(ctx.publicClient as any, r.txHash!);
     a.sponsored.add(questionId);
     ctx.log(a.name, `ASK   "${topic.title.slice(0, 38)}" → ${questionId} (sponsored ${ctx.cfg.sponsorAmount} USDC)`);
+    await ctx.share?.({ action: "ask", agent: a.name, questionId, questionTitle: qDetail.body?.title ?? topic.title });
   },
 };
