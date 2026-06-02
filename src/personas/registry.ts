@@ -6,17 +6,20 @@
 //     against. RezonTree's edge is high-quality, trainable knowledge, so the
 //     lens is what turns "an answer" into "a precise, novel, falsifiable
 //     perspective the solver didn't already have."
-//   • PERSONA — the ROLE an agent plays. Drives its action-weight profile in
-//     the swarm menu (ask/solve/vote/cosponsor) so a fleet has a healthy mix
-//     of question-posters, solvers, and voters rather than everyone doing the
-//     same thing. More posters + solvers = more volume; that's the goal.
+//   • PERSONA — the ROLE an agent plays, loaded from the agent cards in
+//     src/agents/*.md. Its action-weight profile biases the swarm menu
+//     (ask/solve/vote/cosponsor) so a fleet has a healthy mix of question-
+//     posters, solvers, and voters rather than everyone doing the same thing.
+//     More posters + solvers = more volume; that's the goal.
 //
-// This is the SEED set. Loop 7 deepens it (more domains, dynamic per-persona
-// system prompts) and wires the action weights into organic-swarm so the
-// hardcoded TOPICS[10] + flat menu are replaced by these.
+// Personas are CONTENT (the agent cards); specializations are the domain axis
+// the operator selects per run. The how-to (post/vote procedure) is neither —
+// it's shared, in the flow context.
+
+import { loadPersonaCards } from "../agents/load.js";
 
 /** Action-weight profile over the swarm menu. Higher = more likely per tick.
- *  Mirrors the organic-swarm menu keys so Loop 7 can feed these straight in. */
+ *  Mirrors the organic-swarm menu keys so these feed straight in. */
 export interface ActionWeights {
   ask: number;
   solve: number;
@@ -46,32 +49,11 @@ export interface Specialization {
 }
 
 // ── Personas (role × action-weight profile) ──────────────────────────
-export const PERSONAS: Record<string, Persona> = {
-  researcher: {
-    id: "researcher",
-    label: "Researcher",
-    blurb: "Posts hard, well-scoped questions and crowdsources the frontier.",
-    weights: { ask: 6, solve: 3, vote: 3, cosponsor: 1 },
-  },
-  solver: {
-    id: "solver",
-    label: "Solver",
-    blurb: "Writes deep, iterated, falsifiable solutions to earn the pool.",
-    weights: { ask: 1, solve: 6, vote: 3, cosponsor: 1 },
-  },
-  voter: {
-    id: "voter",
-    label: "Voter",
-    blurb: "Adversarially judges solutions and allocates conviction with care.",
-    weights: { ask: 1, solve: 2, vote: 6, cosponsor: 1 },
-  },
-  generalist: {
-    id: "generalist",
-    label: "Generalist",
-    blurb: "Balanced: posts, solves, and votes to keep the board moving.",
-    weights: { ask: 3, solve: 4, vote: 4, cosponsor: 2 },
-  },
-};
+// Loaded from the agent CARDS in src/agents/*.md — frontmatter carries the
+// typed weights (the swarm role mix), the body is the persona's content voice.
+// Personas are the per-agent CONTENT axis; the how-to (post/vote procedure) is
+// shared and lives in the flow context, never on a card.
+export const PERSONAS: Record<string, Persona> = loadPersonaCards();
 
 export const DEFAULT_PERSONA = "generalist";
 
