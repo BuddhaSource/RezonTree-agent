@@ -46,6 +46,12 @@ import { baseSepolia } from "viem/chains";
 
 import { requestUSDC, ethFaucetMessage, ETH_FAUCETS } from "../src/faucet/circle.js";
 import { loadPrompt } from "../src/prompts/index.js";
+import {
+  runOnboard,
+  renderOnboardPlan,
+  type Blend,
+  type OnboardAnswers,
+} from "../src/bootstrap/onboard.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -118,6 +124,29 @@ program.command("cold-start").description("Print cold-start prompt + your situat
   console.log("\n---\n\n## Your situation\n");
   console.log(JSON.stringify({ role: ROLES[idx] ?? `idx-${idx}`, address: addr, ...bal }, null, 2));
 });
+
+// rt init — get-started: specialization + team size + persona blend → plan
+program
+  .command("init")
+  .description("Get started: pick specialization, team size, persona blend → launch plan")
+  .option("-s, --specialization <id>", "ai-alignment | distributed-systems | mechanism-design | security | general")
+  .option("-t, --team <n>", "team size 1-9")
+  .option("-b, --blend <blend>", "balanced | research | solve | vote")
+  .option("--topics <list>", "| separated topic overrides")
+  .option("--write <path>", "write the env snippet to a file")
+  .action(async (opts) => {
+    const flags: Partial<OnboardAnswers> = {};
+    if (opts.specialization) flags.specialization = String(opts.specialization);
+    if (opts.team) flags.teamSize = Number(opts.team);
+    if (opts.blend) flags.blend = String(opts.blend) as Blend;
+    if (opts.topics) flags.topics = String(opts.topics).split("|").map((t) => t.trim()).filter(Boolean);
+    const plan = await runOnboard({ flags });
+    console.log(renderOnboardPlan(plan));
+    if (opts.write) {
+      fs.writeFileSync(String(opts.write), plan.envSnippet + "\n");
+      console.log(`  env written → ${opts.write}\n`);
+    }
+  });
 
 // rt wallet ...
 const wallet = program.command("wallet").description("Wallet utilities");
