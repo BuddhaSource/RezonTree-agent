@@ -147,3 +147,19 @@ export {
   type SolutionScore,
   type VoteMatrix,
 } from "./voting/matrix.js";
+
+// Slop filter — lexical evidence-vs-filler scorer (0 AI-slop tolerance). A
+// prior, not a truth oracle: numbers/citations/operators raise it, canonical
+// filler suppresses it multiplicatively. The agent still verifies the facts.
+export {
+  scoreCredibility,
+  scoreClaimCredibility,
+  scoreSolutionCredibility,
+  SLOP_PHRASES,
+  EVIDENCE_NUMBER_TARGET,
+  SLOP_RATIO_CEILING,
+  type CredibilitySignals,
+  type CredibilityScore,
+  type CredibilityVerdict,
+  type SolutionCredibility,
+} from "./voting/credibility.js";
