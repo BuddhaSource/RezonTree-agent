@@ -25,3 +25,6 @@ votes/
 # Per-wallet JWT session cache (SessionManager disk cache) — holds bearer
 # tokens; never commit.
 .sessions/
+
+# Private content overrides — a <name>.local.md card shadows its shipped <name>.md (whole-card replace). Never committed.
+*.local.md

@@ -13,22 +13,27 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Search order: skills/ (this dir) then the prompt scaffolds next door.
-const ROOTS = [__dirname, join(__dirname, "..", "prompts")];
+const DEFAULT_ROOTS = [__dirname, join(__dirname, "..", "prompts")];
 
 const cache = new Map<string, string>();
 
 /** Read a named card (basename, no extension) from skills/ or prompts/.
- *  Cached; throws if the card exists in neither root. */
-export function loadCard(name: string): string {
-  const hit = cache.get(name);
+ *  A private `<name>.local.md` (gitignored) overrides the shipped `<name>.md`
+ *  — whole-card replace, the one overlay rule. Cached; throws if the card
+ *  exists in neither root. `roots` is overridable for tests. */
+export function loadCard(name: string, roots: string[] = DEFAULT_ROOTS): string {
+  const key = `${roots.join(",")}::${name}`;
+  const hit = cache.get(key);
   if (hit !== undefined) return hit;
-  for (const root of ROOTS) {
-    try {
-      const content = readFileSync(join(root, `${name}.md`), "utf8");
-      cache.set(name, content);
-      return content;
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; // real error ≠ "try next root"
+  for (const root of roots) {
+    for (const variant of [`${name}.local.md`, `${name}.md`]) {
+      try {
+        const content = readFileSync(join(root, variant), "utf8");
+        cache.set(key, content);
+        return content;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; // real error ≠ "try next variant"
+      }
     }
   }
   throw new Error(`context card '${name}' not found in skills/ or prompts/`);
@@ -37,5 +42,5 @@ export function loadCard(name: string): string {
 /** Assemble the cards a flow declared, in order, separated for readability.
  *  This is the deterministic "read x, y, z" the flow's `context` names. */
 export function loadContext(names: readonly string[]): string {
-  return names.map(loadCard).join("\n\n---\n\n");
+  return names.map((n) => loadCard(n)).join("\n\n---\n\n");
 }

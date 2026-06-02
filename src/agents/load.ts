@@ -29,12 +29,18 @@ function splitFrontmatter(raw: string): { frontmatter: string; body: string } {
   return { frontmatter: m[1], body: m[2] };
 }
 
-/** Load every agent card (agents/<id>.md) into a Persona map keyed by filename. */
-export function loadPersonaCards(): Record<string, Persona> {
+/** Load every agent card (agents/<id>.md) into a Persona map keyed by id.
+ *  A private `<id>.local.md` (gitignored) overrides the shipped `<id>.md`
+ *  whole; a `<id>.local.md` with no shipped sibling adds a new persona.
+ *  `dir` is overridable for tests. */
+export function loadPersonaCards(dir: string = __dirname): Record<string, Persona> {
+  const files = readdirSync(dir).filter((f) => f.endsWith(".md"));
+  const ids = new Set(files.map((f) => f.replace(/\.local\.md$/, "").replace(/\.md$/, "")));
   const out: Record<string, Persona> = {};
-  for (const file of readdirSync(__dirname).filter((f) => f.endsWith(".md")).sort()) {
-    const id = file.replace(/\.md$/, "");
-    const { frontmatter, body } = splitFrontmatter(readFileSync(join(__dirname, file), "utf8"));
+  for (const id of [...ids].sort()) {
+    // local sibling wins, whole-card.
+    const file = files.includes(`${id}.local.md`) ? `${id}.local.md` : `${id}.md`;
+    const { frontmatter, body } = splitFrontmatter(readFileSync(join(dir, file), "utf8"));
     const fm = parseYaml(frontmatter) as PersonaFrontmatter;
     out[id] = { id, label: fm.label, weights: fm.weights, blurb: body.trim() };
   }
