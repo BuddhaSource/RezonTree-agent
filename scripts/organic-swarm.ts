@@ -32,28 +32,13 @@ import { createPublicClient, http, type Address, type Hex } from "viem";
 import { deriveAgentWallet } from "../src/wallet/derive.js";
 import { sessionManagerFor } from "../src/wallet/login.js";
 import type { AgentWallet } from "../src/wallet/types.js";
-import { resolveSpecialization, type Persona } from "../src/personas/registry.js";
+import { resolveSpecialization } from "../src/personas/registry.js";
 import { assignPersonas, type Blend } from "../src/bootstrap/onboard.js";
 import { resolveDeadlineMs, buildActionMenu } from "../src/swarm/policy.js";
-import { decideVote } from "../src/voting/decide.js";
-import { scanSolutionInjection } from "../src/voting/injection.js";
-import type { VoteSolution, VoteCriterion } from "../src/voting/matrix.js";
-import { parseAmountToWei } from "../src/intents/amounts.js";
-import { canonicalStringify } from "../src/intents/commit-intent.js";
-import type {
-  FundPreflight,
-  CommitPreflight,
-  VotePreflight,
-} from "../src/intents/preflight-types.js";
-import { awaitReceipt, makeAgentWalletClient } from "../src/forge/quadphase-broadcast.js";
-import {
-  ensureUsdcAllowance,
-  runSponsorFlow,
-  runCommitFlow,
-  runVoteFlow,
-  runCosponsorFlow,
-} from "../src/forge/quadphase-flow.js";
-import { makeSolutionBody } from "../src/testnet/solution-body.js";
+import type { VoteSolution } from "../src/voting/matrix.js";
+import { makeAgentWalletClient } from "../src/forge/quadphase-broadcast.js";
+import { askFlow, solveFlow, voteFlow, cosponsorFlow } from "../src/orchestration/registry.js";
+import type { Agent, OpenQ, FlowCtx, SwarmConfig } from "../src/orchestration/types.js";
 import { broadcastErrorMessage, isInsufficientFunds } from "../src/testnet/broadcast-error.js";
 
 // ── Env ──────────────────────────────────────────────────────────
@@ -68,6 +53,7 @@ const DURATION_SEC = Number.parseInt(process.env.ORGANIC_DURATION_SECONDS ?? "18
 const AGENT_NAMES = (process.env.ORGANIC_AGENTS ?? "alice,bob,carol,dave,eve,frank,grace,heidi,ivan")
   .split(",").map((s) => s.trim()).filter(Boolean);
 const SPONSOR_AMOUNT = process.env.ORGANIC_SPONSOR_AMOUNT ?? "1";
+const INITIAL_BOUNTY = process.env.RT_INITIAL_BOUNTY ?? "1000000";
 const TICK_MIN_MS = Number.parseInt(process.env.ORGANIC_TICK_MIN_MS ?? "3000", 10);
 const TICK_MAX_MS = Number.parseInt(process.env.ORGANIC_TICK_MAX_MS ?? "9000", 10);
 // Cap how many questions any one agent sponsors over the whole run, so a 7-agent
@@ -135,32 +121,26 @@ if (TOPICS.length === 0) {
   );
 }
 
-function makeDescription(framing: string, tag: string): string {
-  let d = framing;
-  while (d.length < 1050) {
-    d += `\n\nSubmissions are scored against the success criteria below; the strongest answer wins by voter conviction. Address the stated model, cite evidence where it exists, and identify the gaps current approaches cannot close. (${tag})`;
-  }
-  return d;
-}
-
-// ── Agent state ──────────────────────────────────────────────────
-interface Agent {
-  name: string;
-  persona: Persona; // role + action-weight profile (researcher/solver/voter/…)
-  wallet: AgentWallet;
-  address: Address;
-  token: string;
-  sponsored: Set<string>;
-  solved: Set<string>;
-  voted: Set<string>;
-  cosponsored: Set<string>;
-  acts: Record<string, number>; // action -> count
-  broke: boolean; // true once a funded action reverted on insufficient funds — pause funded actions
-}
-
-interface OpenQ { id: string; author: string; title: string }
+// Agent / OpenQ / FlowCtx types now live in src/orchestration/types.ts — the
+// flows and this harness share them. Question authoring (makeDescription) moved
+// into flows/ask.ts with the flow that uses it.
 
 const sessions = sessionManagerFor(BACKEND);
+
+// Build the flow context once — config + clients + HTTP helpers the
+// deterministic flows capture. Flows read nothing from module scope; the
+// selector below picks which one runs, identically for every agent.
+const flowCtx: FlowCtx = {
+  cfg: {
+    backend: BACKEND, rpc: RPC, chainId: CHAIN_ID, forge: FORGE, usdc: USDC,
+    sponsorAmount: SPONSOR_AMOUNT, initialBounty: INITIAL_BOUNTY, topics: TOPICS,
+  } satisfies SwarmConfig,
+  publicClient,
+  makeWc,
+  call,
+  preflight: preflightV2,
+  log,
+};
 
 // ── Discovery ────────────────────────────────────────────────────
 async function listOpenQuestions(token: string): Promise<OpenQ[]> {
@@ -193,197 +173,9 @@ async function confirmedSolutions(qid: string, token: string): Promise<VoteSolut
     .filter((s) => s.intentHash.startsWith("0x"));
 }
 
-/** Map question success-criteria to matrix VoteCriterion[]; equal weights when
- *  the projection carries none. */
-function normalizeCriteria(raw: { id: string; name: string; weight?: number }[]): VoteCriterion[] {
-  if (raw.length === 0) return [];
-  const weighted = raw.some((c) => Number(c.weight ?? 0) > 0);
-  const equal = 100 / raw.length;
-  return raw.map((c) => ({ id: c.id, name: c.name, weight: weighted ? Number(c.weight ?? 0) : equal }));
-}
-
-/** conviction points (Σ=100) → basis points (Σ=10000); last takes the remainder. */
-function convictionToBps(allocs: { intentHash: string; conviction: number }[]): { solutionId: Hex; basisPoints: number }[] {
-  let assigned = 0;
-  return allocs.map((al, i) => {
-    const bps = i === allocs.length - 1 ? 10000 - assigned : al.conviction * 100;
-    assigned += bps;
-    return { solutionId: al.intentHash as Hex, basisPoints: bps };
-  });
-}
-
-/** even split across ids → Σ=10000 bps; last takes the remainder. */
-function evenSplitBps(ids: Hex[]): { solutionId: Hex; basisPoints: number }[] {
-  let assigned = 0;
-  return ids.map((id, i) => {
-    const bps = i === ids.length - 1 ? 10000 - assigned : Math.floor(10000 / ids.length);
-    assigned += bps;
-    return { solutionId: id, basisPoints: bps };
-  });
-}
-
-// ── Actions ──────────────────────────────────────────────────────
-async function actAsk(a: Agent): Promise<void> {
-  const topic = pick(TOPICS);
-  const tag = `${a.name}-${Date.now().toString(36)}`;
-  const qResp = await call<{ id: string; successCriteria: { id: string; name: string }[] }>("POST", "/v1/questions", {
-    title: topic.title,
-    description: makeDescription(topic.framing, tag),
-    successCriteria: [
-      { name: "criterion_one", type: "boolean", target: "true", weight: 40 },
-      { name: "criterion_two", type: "boolean", target: "true", weight: 35 },
-      { name: "criterion_three", type: "boolean", target: "true", weight: 25 },
-    ],
-    initialBounty: process.env.RT_INITIAL_BOUNTY ?? "1000000",
-  }, a.token);
-  if (qResp.status !== 201) throw new Error(`create question -> ${qResp.status} ${JSON.stringify(qResp.body).slice(0, 160)}`);
-  const questionId = qResp.body.id;
-  const qDetail = await call<{ title: string; description: string }>("GET", `/v1/questions/${questionId}`, undefined, a.token);
-
-  const pre = await preflightV2<FundPreflight>(questionId, "sponsor", "sponsor", a.address, a.token);
-  const qid = pre.qid as Hex;
-  const amount = parseAmountToWei(SPONSOR_AMOUNT, pre.token.decimals);
-  const wc = makeWc(a.wallet);
-  await ensureUsdcAllowance(wc, publicClient as any, { usdc: USDC, forge: FORGE, owner: a.address, required: amount });
-  const r = await runSponsorFlow({
-    baseUrl: BACKEND, bearerToken: a.token, signer: a.address, questionId, qid,
-    nonce: BigInt(pre.nonce ?? "0"),
-    expiresAt: BigInt(pre.recommendedExpiresAt ?? Math.floor(Date.now() / 1000) + 300),
-    forgeAddress: FORGE, chainId: pre.chainId ?? CHAIN_ID,
-    expectedIntentHash: pre.expectedIntentHash as Hex,
-    title: qDetail.body?.title ?? topic.title, body: qDetail.body?.description ?? "", criteria: "", tags: [],
-    oracle: (pre.oracle as Address),
-    sponsorshipFloor: BigInt(pre.sponsorshipFloor ?? pre.recommendedSponsorshipFloor ?? "0"),
-    commitFee: BigInt(pre.commitFee ?? "0"), voteFee: BigInt(pre.voteFee ?? "0"),
-    stakeFloor: BigInt(pre.stakeFloor ?? "0"), stakeBasisPoints: Number(pre.stakeBasisPoints ?? "0"),
-    fundingDeadline: BigInt(pre.recommendedFundingDeadline ?? Math.floor(Date.now() / 1000) + 30 * 86400),
-    noSolutionGracePeriod: BigInt(pre.noSolutionGracePeriod ?? "120"),
-    token: pre.token.contractAddress as Address, amount, feeAmount: 0n,
-    feeShareBps: Number(pre.feeShareBps ?? 0),
-    feeShares: [{ recipient: pre.platformFeeRecipient as Address, basisPoints: 10000 }],
-    walletClient: wc, privateKey: a.wallet.privateKey as Hex,
-  });
-  await awaitReceipt(publicClient as any, r.txHash!);
-  a.sponsored.add(questionId);
-  log(a.name, `ASK   "${topic.title.slice(0, 38)}" → ${questionId} (sponsored ${SPONSOR_AMOUNT} USDC)`);
-}
-
-async function actSolve(a: Agent, q: OpenQ): Promise<void> {
-  // Claims must reference the question's REAL success-criterion IDs (FK on
-  // claims.criterion_id); a bogus id FK-violates → 500. Fetch them.
-  const detail = await call<{ successCriteria?: { id: string; name: string }[] }>("GET", `/v1/questions/${q.id}`, undefined, a.token);
-  const criteria = detail.body?.successCriteria ?? [];
-  const pre = await preflightV2<CommitPreflight>(q.id, "commit", "submitter", a.address, a.token);
-  const stake = BigInt(pre.stakeAmount);
-  const wc = makeWc(a.wallet);
-  await ensureUsdcAllowance(wc, publicClient as any, { usdc: USDC, forge: FORGE, owner: a.address, required: stake });
-  // Backend requires 6-25 reasoningTree nodes, each {because, therefore, confidence}.
-  const payload = {
-    body: makeSolutionBody(a.name, q.id),
-    reasoningTree: [
-      { because: `${a.name} parsed the question's success criteria`, therefore: "each criterion gets a falsifiable claim", confidence: 0.9 },
-      { because: "the strongest answer wins by voter conviction", therefore: "the argument is structured for adversarial review", confidence: 0.8 },
-      { because: "the realized-outcome fee model skims once at settlement", therefore: "no per-action fee distorts the incentive to submit quality", confidence: 0.85 },
-      { because: "losers forfeit their full stake into the pool", therefore: "low-effort submissions are priced out (anti-slop)", confidence: 0.8 },
-      { because: "winners recover stake plus a conviction-weighted pool share", therefore: "effort is rewarded proportionally to peer-judged quality", confidence: 0.75 },
-      { because: "the claim is grounded in cited, checkable evidence", therefore: "a skeptical voter can verify rather than trust", confidence: 0.7 },
-    ],
-    claims: criteria.map((c) => ({ criterionId: c.id, value: true, argument: `${a.name}: evidence-backed claim against ${c.name}`, falsifiableBy: "audit failure" })),
-  };
-  const feeShares = (pre.feeShares && pre.feeShares.length > 0)
-    ? pre.feeShares.map((s: any) => ({ recipient: s.recipient as Address, basisPoints: s.basisPoints }))
-    : [{ recipient: pre.platformFeeRecipient as Address, basisPoints: 10000 }];
-  const r = await runCommitFlow({
-    baseUrl: BACKEND, bearerToken: a.token, signer: a.address, questionId: q.id, qid: pre.qid as Hex,
-    nonce: BigInt(pre.nonce ?? "0"),
-    expiresAt: BigInt(pre.recommendedExpiresAt ?? Math.floor(Date.now() / 1000) + 300),
-    forgeAddress: FORGE, chainId: pre.chainId ?? CHAIN_ID,
-    solutionBody: canonicalStringify(payload), references: [],
-    token: pre.token.contractAddress as Address, stakeAmount: stake,
-    feeShareBps: pre.feeShareBps ?? 0, feeShares,
-    walletClient: wc, privateKey: a.wallet.privateKey as Hex,
-  });
-  await awaitReceipt(publicClient as any, r.txHash!);
-  a.solved.add(q.id);
-  log(a.name, `SOLVE ${q.id} stake=${SPONSOR_AMOUNT} USDC "${q.title.slice(0, 32)}"`);
-}
-
-async function actVote(a: Agent, q: OpenQ, sols: VoteSolution[]): Promise<void> {
-  const self = a.address.toLowerCase();
-  const votable = sols.filter((s) => s.author !== self);
-  if (votable.length === 0) throw new Error("no votable solutions (all self-authored)");
-
-  // Sharp decider: sanitize injection → structural matrix → credibility → vote
-  // the most-probable winner(s). Falls back to an even split only when the
-  // decider can't separate candidates (claims absent from the projection),
-  // which keeps the vote path live on testnet without casting a blind vote on
-  // an injection-flagged solution.
-  const detail = await call<{ successCriteria?: { id: string; name: string; weight?: number }[] }>("GET", `/v1/questions/${q.id}`, undefined, a.token);
-  const criteria = normalizeCriteria(detail.body?.successCriteria ?? []);
-  const decision = decideVote(criteria, votable);
-  let allocations: { solutionId: Hex; basisPoints: number }[];
-  if (decision.allocations.length > 0) {
-    allocations = convictionToBps(decision.allocations);
-    log(a.name, `JUDGE ${q.id} ${decision.rationale}`);
-  } else {
-    // No decisive winner (e.g. claims absent from the projection). Even-split
-    // as a liveness fallback — but NEVER over an injection-flagged solution, or
-    // an attacker's directive would capture the conviction. If nothing clean
-    // remains, cast nothing rather than vote blind.
-    const clean = votable.filter((s) => !scanSolutionInjection(s).detected);
-    if (clean.length === 0) {
-      log(a.name, `JUDGE ${q.id} all candidates flagged for manipulation — no vote cast`);
-      return;
-    }
-    allocations = evenSplitBps(clean.slice(0, 3).map((s) => s.intentHash as Hex));
-    log(a.name, `JUDGE ${q.id} no decisive winner — even split across ${allocations.length} clean sol(s)`);
-  }
-
-  const pre = await preflightV2<VotePreflight>(q.id, "vote", "voter", a.address, a.token);
-  if (!pre.voteSalt || !pre.voteSaltToken || !pre.voteSaltExpiresAt) throw new Error("vote preflight missing voteSalt/voteSaltExpiresAt");
-  const stake = BigInt(pre.stakeAmount);
-  const wc = makeWc(a.wallet);
-  await ensureUsdcAllowance(wc, publicClient as any, { usdc: USDC, forge: FORGE, owner: a.address, required: stake });
-  const feeShares = (pre.feeShares && pre.feeShares.length > 0)
-    ? pre.feeShares.map((s: any) => ({ recipient: s.recipient as Address, basisPoints: s.basisPoints }))
-    : [{ recipient: pre.platformFeeRecipient as Address, basisPoints: 10000 }];
-  const r = await runVoteFlow({
-    baseUrl: BACKEND, bearerToken: a.token, signer: a.address, questionId: q.id, qid: pre.qid as Hex,
-    nonce: BigInt(pre.nonce ?? "0"), expiresAt: BigInt(pre.voteSaltExpiresAt!),
-    forgeAddress: FORGE, chainId: pre.chainId ?? CHAIN_ID,
-    expectedIntentHash: undefined as unknown as Hex, allocations,
-    voteSalt: pre.voteSalt as Hex, voteSaltToken: pre.voteSaltToken as Hex,
-    token: pre.token.contractAddress as Address, stakeAmount: stake,
-    feeShareBps: pre.feeShareBps ?? 0, feeShares,
-    walletClient: wc, privateKey: a.wallet.privateKey as Hex,
-  });
-  await awaitReceipt(publicClient as any, r.txHash!);
-  a.voted.add(q.id);
-  log(a.name, `VOTE  ${q.id} across ${allocations.length} sol(s) stake=${SPONSOR_AMOUNT} USDC`);
-}
-
-async function actCosponsor(a: Agent, q: OpenQ): Promise<void> {
-  const pre = await preflightV2<FundPreflight>(q.id, "cosponsor", "cosponsor", a.address, a.token);
-  const amount = parseAmountToWei(SPONSOR_AMOUNT, pre.token.decimals);
-  const wc = makeWc(a.wallet);
-  await ensureUsdcAllowance(wc, publicClient as any, { usdc: USDC, forge: FORGE, owner: a.address, required: amount });
-  const r = await runCosponsorFlow({
-    baseUrl: BACKEND, bearerToken: a.token, signer: a.address, questionId: q.id, qid: pre.qid as Hex,
-    nonce: BigInt(pre.nonce ?? "0"),
-    expiresAt: BigInt(pre.recommendedExpiresAt ?? Math.floor(Date.now() / 1000) + 300),
-    forgeAddress: FORGE, chainId: pre.chainId ?? CHAIN_ID,
-    expectedIntentHash: pre.expectedIntentHash as Hex,
-    token: pre.token.contractAddress as Address, amount, feeAmount: 0n,
-    // Echo the backend-advertised policy feeShares verbatim (realized-outcome;
-    // chain requires non-empty per shape:cosponsor:feeShares-required).
-    feeShares: (pre.feeShares ?? []).map((s) => ({ recipient: s.recipient as Address, basisPoints: s.basisPoints })),
-    feeShareBps: Number(pre.feeShareBps ?? 0),
-    walletClient: wc, privateKey: a.wallet.privateKey as Hex,
-  });
-  await awaitReceipt(publicClient as any, r.txHash!);
-  a.cosponsored.add(q.id);
-  log(a.name, `COSPO ${q.id} +${SPONSOR_AMOUNT} USDC "${q.title.slice(0, 30)}"`);
-}
+// The four action flows are deterministic CODE in src/orchestration/flows/.
+// This harness builds a FlowCtx (config + clients + HTTP helpers) once and the
+// selector below picks which flow to run per tick — same flow for every agent.
 
 // ── Decide + act one tick ────────────────────────────────────────
 async function tick(a: Agent): Promise<void> {
@@ -417,15 +209,16 @@ async function tick(a: Agent): Promise<void> {
 
   a.acts[choice] = (a.acts[choice] ?? 0) + 1;
   try {
-    if (choice === "ask") await actAsk(a);
-    else if (choice === "solve") await actSolve(a, pick(solvable));
-    else if (choice === "cosponsor") await actCosponsor(a, pick(cosponsorable));
+    if (choice === "ask") await askFlow.run(a, undefined, flowCtx);
+    else if (choice === "solve") await solveFlow.run(a, pick(solvable), flowCtx);
+    else if (choice === "cosponsor") await cosponsorFlow.run(a, pick(cosponsorable), flowCtx);
     else if (choice === "vote") {
-      // Resolve a votable question (one with confirmed, non-self solutions).
+      // Resolve a votable question (one with confirmed, non-self solutions),
+      // then hand the question + its solutions to the vote flow.
       const shuffled = [...voteCand].sort(() => Math.random() - 0.5);
       for (const q of shuffled.slice(0, 4)) {
         const sols = await confirmedSolutions(q.id, a.token);
-        if (sols.some((s) => s.author !== self)) { await actVote(a, q, sols); return; }
+        if (sols.some((s) => s.author !== self)) { await voteFlow.run(a, { q, sols }, flowCtx); return; }
       }
       // No votable target right now — fall back to a cheap read tick.
       a.acts["vote"]--; a.acts["idle_no_target"] = (a.acts["idle_no_target"] ?? 0) + 1;
