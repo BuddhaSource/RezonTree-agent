@@ -163,3 +163,18 @@ export {
   type CredibilityVerdict,
   type SolutionCredibility,
 } from "./voting/credibility.js";
+
+// Prompt-injection defense — a solution is DATA, never an INSTRUCTION. Detect
+// steering attempts (bad-faith downweight) and sanitize the spans BEFORE the
+// matrix/credibility scorers read them, so injection can't inflate a score.
+export {
+  scanInjection,
+  scanSolutionInjection,
+  sanitizeClaim,
+  sanitizeSolution,
+  isManipulative,
+  type InjectionCategory,
+  type InjectionDetection,
+  type InjectionScan,
+  type SolutionInjection,
+} from "./voting/injection.js";
