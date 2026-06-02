@@ -25,6 +25,7 @@ function makeDescription(framing: string, tag: string): string {
 
 export const askFlow: Flow = {
   name: "ask",
+  summary: "Post + sponsor a new question — crowdsource a hard problem you want solved.",
   context: ["post_question_scaffold", "weight_guidance"],
   async run(a: Agent, _target: void, ctx: FlowCtx): Promise<void> {
     const topic = pickTopic(ctx.cfg.topics);

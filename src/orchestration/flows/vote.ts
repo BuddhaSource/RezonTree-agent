@@ -48,6 +48,7 @@ export function evenSplitBps(ids: Hex[]): { solutionId: Hex; basisPoints: number
 
 export const voteFlow: Flow<VoteTarget> = {
   name: "vote",
+  summary: "Judge solutions against the criteria and allocate conviction to the most-probable winner.",
   context: ["voter_workflow"],
   async run(a: Agent, { q, sols }: VoteTarget, ctx: FlowCtx): Promise<void> {
     const self = a.address.toLowerCase();

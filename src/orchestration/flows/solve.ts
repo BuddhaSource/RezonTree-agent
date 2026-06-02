@@ -16,6 +16,7 @@ import type { Flow, FlowCtx, Agent, OpenQ } from "../types.js";
 
 export const solveFlow: Flow<OpenQ> = {
   name: "solve",
+  summary: "Submit a falsifiable, evidence-backed solution to an open question — stake to earn the pool.",
   context: ["solve_solution_scaffold"],
   async run(a: Agent, q: OpenQ, ctx: FlowCtx): Promise<void> {
     // Claims must reference the question's REAL success-criterion IDs (FK on

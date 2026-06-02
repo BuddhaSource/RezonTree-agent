@@ -143,3 +143,15 @@ export {
   type ConvictionAllocation,
   type VoteDecision,
 } from "./voting/decide.js";
+
+// Discovery catalog — one read tells an agent every action / persona / domain /
+// skill available. Assembled from the live registries, so it can't drift.
+export {
+  buildCatalog,
+  renderCatalog,
+  type Catalog,
+  type CatalogAction,
+  type CatalogPersona,
+  type CatalogDomain,
+  type CatalogSkill,
+} from "./catalog/index.js";

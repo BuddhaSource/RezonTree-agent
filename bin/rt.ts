@@ -46,6 +46,7 @@ import { baseSepolia } from "viem/chains";
 
 import { requestUSDC, ethFaucetMessage, ETH_FAUCETS } from "../src/faucet/circle.js";
 import { loadPrompt } from "../src/prompts/index.js";
+import { renderCatalog } from "../src/catalog/index.js";
 import {
   runOnboard,
   renderOnboardPlan,
@@ -127,6 +128,13 @@ program.command("cold-start").description("Print cold-start prompt + your situat
   console.log("\n---\n\n## Your situation\n");
   console.log(JSON.stringify({ role: ROLES[idx] ?? `idx-${idx}`, address: addr, ...bal }, null, 2));
 });
+
+program
+  .command("catalog")
+  .description("Discovery: every action / persona / domain / skill, in one read")
+  .action(() => {
+    console.log(renderCatalog());
+  });
 
 // rt init — get-started: specialization + team size + persona blend → plan
 program

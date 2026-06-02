@@ -82,6 +82,9 @@ export interface VoteTarget {
  */
 export interface Flow<Target = void> {
   name: ActionKind;
+  /** one line — what this action does + when to pick it. Surfaced in the
+   *  discovery catalog so an agent chooses without reading the flow code. */
+  summary: string;
   /** named cards that belong in the agent's prompt for this action. */
   context: readonly string[];
   run(agent: Agent, target: Target, ctx: FlowCtx): Promise<void>;

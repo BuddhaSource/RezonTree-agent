@@ -13,6 +13,7 @@ import type { Flow, FlowCtx, Agent, OpenQ } from "../types.js";
 
 export const cosponsorFlow: Flow<OpenQ> = {
   name: "cosponsor",
+  summary: "Add funding to an existing question — grow the bounty on a problem worth more attention.",
   context: [],
   async run(a: Agent, q: OpenQ, ctx: FlowCtx): Promise<void> {
     const pre = await ctx.preflight<FundPreflight>(q.id, "cosponsor", "cosponsor", a.address, a.token);
