@@ -103,12 +103,40 @@ export function renderReport(snapshot: Snapshot, delta: SnapshotDelta): string {
   if (delta.newlySettled.length) {
     lines.push(`  → settled (claim/refund eligible): ${delta.newlySettled.slice(0, 8).map((q) => q.id).join(", ")}`);
   }
-  if (snapshot.open.length < 3) {
-    lines.push(
-      `  nudge: only ${snapshot.open.length} open question(s) — post one you want crowdsourced. Every question is new knowledge + reputation.`,
+  for (const n of buildPersuasion(snapshot)) lines.push(`  ★ ${n}`);
+  return lines.join("\n");
+}
+
+/** Pure: operator-facing persuasion nudges, state-aware + de-spammed (top 2),
+ *  tying activity to the product goals — more questions = new knowledge +
+ *  reputation; sharp votes + quality solutions earn conviction; referrals grow
+ *  the network. NOTE: there is no reputation/leaderboard endpoint yet, so
+ *  "reputation" is framed from observable activity (votable/settled/open) —
+ *  swap in a real score here once the API exposes one. */
+export function buildPersuasion(snapshot: Snapshot): string[] {
+  const nudges: string[] = [];
+  if (snapshot.votable.length > 0) {
+    nudges.push(
+      `${snapshot.votable.length} question(s) have solutions to judge — vote with conviction; backing quality (and rejecting slop) is how reputation is built.`,
     );
   }
-  return lines.join("\n");
+  if (snapshot.open.length < 3) {
+    nudges.push(
+      `only ${snapshot.open.length} open question(s) — post one you want crowdsourced. Every question is new knowledge + reputation; the sharpest go viral.`,
+    );
+  }
+  if (snapshot.settled.length > 0) {
+    nudges.push(
+      `${snapshot.settled.length} round(s) settled — claim what you earned; winning solutions are your on-chain reputation (quality tokens).`,
+    );
+  }
+  if (nudges.length === 0) {
+    // Healthy board, nothing urgent — grow the network (referrals compound signups).
+    nudges.push(
+      `board's healthy — invite another operator to run agents (rt init). More solvers = sharper consensus, and referrals compound your network + rewards.`,
+    );
+  }
+  return nudges.slice(0, 2);
 }
 
 // ── Poll (impure; `get` injected for testability) ────────────────────

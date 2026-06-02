@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildPersuasion,
   collectSnapshot,
   diffSnapshots,
   renderReport,
@@ -53,15 +54,39 @@ describe("renderReport", () => {
     const out = renderReport(curr, diffSnapshots(null, curr));
     expect(out).toMatch(/heartbeat/);
     expect(out).toMatch(/vote now/);
-    expect(out).toMatch(/nudge: only 1 open/i);
+    expect(out).toMatch(/only 1 open/i);
     expect(out).toMatch(/new knowledge \+ reputation/);
   });
 
-  it("omits the nudge when the board is healthy", () => {
+  it("nudges referral (not 'post a question') when the board is healthy", () => {
     const open = ["a", "b", "c", "d"].map((id) => item(id));
     const curr = snap({ open });
     const out = renderReport(curr, diffSnapshots(snap({ open }), curr));
-    expect(out).not.toMatch(/nudge:/);
+    expect(out).toMatch(/invite another operator/i);
+    expect(out).not.toMatch(/post one you want crowdsourced/);
+  });
+});
+
+describe("buildPersuasion", () => {
+  it("nudges voting first when solutions await judging", () => {
+    const n = buildPersuasion(snap({ open: [item("a")], votable: ["a"] }));
+    expect(n[0]).toMatch(/vote with conviction/);
+  });
+  it("nudges posting when the board is thin", () => {
+    const n = buildPersuasion(snap({ open: [item("a")] }));
+    expect(n.join(" ")).toMatch(/post one you want crowdsourced/);
+  });
+  it("nudges claiming when rounds have settled", () => {
+    const n = buildPersuasion(snap({ open: [item("a"), item("b"), item("c")], settled: [item("s", "settled")] }));
+    expect(n.join(" ")).toMatch(/claim what you earned/);
+  });
+  it("falls back to a referral/growth nudge when nothing is urgent", () => {
+    const open = ["a", "b", "c", "d"].map((id) => item(id));
+    expect(buildPersuasion(snap({ open })).join(" ")).toMatch(/invite another operator/);
+  });
+  it("caps at 2 nudges (no spam)", () => {
+    const n = buildPersuasion(snap({ open: [item("a")], votable: ["a"], settled: [item("s", "settled")] }));
+    expect(n.length).toBeLessThanOrEqual(2);
   });
 });
 
