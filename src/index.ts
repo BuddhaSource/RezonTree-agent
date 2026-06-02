@@ -134,3 +134,16 @@ export {
   type ClosingWindowOpts,
   type FetchJson,
 } from "./markets/polymarket.js";
+
+// Sharp voting — stake-ordered (criterion × solution) structural matrix. Frames
+// the read; the semantic verdict (facts, not polish) stays the agent's.
+export {
+  scoreSolutions,
+  MIN_ARGUMENT_CHARS,
+  type VoteCriterion,
+  type VoteClaim,
+  type VoteSolution,
+  type CriterionVerdict,
+  type SolutionScore,
+  type VoteMatrix,
+} from "./voting/matrix.js";
