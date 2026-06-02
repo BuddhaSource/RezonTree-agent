@@ -70,6 +70,16 @@ describe("scoreCredibility", () => {
   it("SLOP_RATIO_CEILING anchors the fully-slop threshold", () => {
     expect(SLOP_RATIO_CEILING).toBe(3);
   });
+
+  it("credits a rigorous qualitative argument (reasoning connectives, no numbers) — not slop", () => {
+    const proof =
+      "If the mechanism lacks a dominant-strategy equilibrium, rational agents defect; therefore the scheme is not strategyproof — the classic Gibbard-Satterthwaite contradiction.";
+    const s = scoreCredibility(proof);
+    expect(s.signals.numberCount).toBe(0); // genuinely qualitative
+    expect(s.signals.hasOperator).toBe(true); // "therefore" / "contradiction"
+    expect(s.evidence).toBeGreaterThanOrEqual(0.2);
+    expect(s.verdict).not.toBe("slop"); // correct reasoning is not slop
+  });
 });
 
 describe("scoreSolutionCredibility", () => {

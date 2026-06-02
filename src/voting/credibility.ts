@@ -15,6 +15,13 @@
 // Slop suppresses multiplicatively, not additively: credibility = evidence ×
 // (1 − slop). Filler can't be offset by sprinkling in a number, and prose with
 // no evidence scores 0 no matter how clean it reads.
+//
+// KNOWN LIMITATION (by design): this is a lexical PRIOR, not a gate. Numbers are
+// counted by density, not by load-bearing-ness, so content-free prose stuffed
+// with figures can score high; the agent's Pass-3 fact-verification is the
+// actual filter (see voter_workflow.md). decideVote treats credibility as a
+// BOOST (1 + w·credibility), never a kill, precisely so this prior's blind
+// spots can't zero a solution on their own.
 
 import type { VoteClaim, VoteSolution } from "./matrix.js";
 
@@ -64,7 +71,13 @@ const CITATION_RES: readonly RegExp[] = [
   /\[\d+\]/, // bracketed reference
   /\(\d{4}\)/, // (year) reference
 ];
-const OPERATOR_RE = /[<>=≤≥≈±]|\b(?:per|vs\.?|versus)\b/i;
+// Relational/derivation operators AND explicit reasoning connectives. The
+// connectives matter: a rigorous QUALITATIVE argument (a proof, a mechanism-
+// design case, a threat model) carries no numbers but is real evidence — the
+// reasoning markers let it clear the floor instead of being scored as slop for
+// lacking a digit. "0 AI-slop" must not mean "0 prose".
+const OPERATOR_RE =
+  /[<>=≤≥≈±∴∎]|\b(?:per|vs\.?|versus|therefore|hence|thus|because|implies?|contradiction|counterexample|lemma|theorem|QED)\b/i;
 
 const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
 

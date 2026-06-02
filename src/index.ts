@@ -178,3 +178,15 @@ export {
   type InjectionScan,
   type SolutionInjection,
 } from "./voting/injection.js";
+
+// The decider — composes sanitize → matrix → credibility → injection-filter
+// into one conviction allocation over the most-probable winner(s). This is the
+// end of the sharp-voting pipeline; feed it criteria + solutions, get a vote.
+export {
+  decideVote,
+  allocateConviction,
+  type DecideOptions,
+  type SolutionVerdict,
+  type ConvictionAllocation,
+  type VoteDecision,
+} from "./voting/decide.js";

@@ -35,6 +35,9 @@ import type { AgentWallet } from "../src/wallet/types.js";
 import { resolveSpecialization, type Persona } from "../src/personas/registry.js";
 import { assignPersonas, type Blend } from "../src/bootstrap/onboard.js";
 import { resolveDeadlineMs, buildActionMenu } from "../src/swarm/policy.js";
+import { decideVote } from "../src/voting/decide.js";
+import { scanSolutionInjection } from "../src/voting/injection.js";
+import type { VoteSolution, VoteCriterion } from "../src/voting/matrix.js";
 import { parseAmountToWei } from "../src/intents/amounts.js";
 import { canonicalStringify } from "../src/intents/commit-intent.js";
 import type {
@@ -166,12 +169,57 @@ async function listOpenQuestions(token: string): Promise<OpenQ[]> {
   return data.map((q) => ({ id: q.id, author: (q.authorAddress ?? "").toLowerCase(), title: q.title ?? "" }));
 }
 
-async function confirmedSolutions(qid: string, token: string): Promise<{ intentHash: Hex; author: string }[]> {
+// Project the confirmed-solutions list into VoteSolution shape (intentHash,
+// author, stake, claims) so the sharp decider can judge them. Claims/stake are
+// read defensively — if the projection omits them the decider degrades to a
+// structural tie and actVote's even-split fallback keeps the vote path live.
+async function confirmedSolutions(qid: string, token: string): Promise<VoteSolution[]> {
   const r = await call<{ solutions?: { data?: any[] } }>("GET", `/v1/questions/${qid}?include=solutions`, undefined, token);
   const list = (r.body?.solutions?.data ?? []) as any[];
   return list
-    .map((s) => ({ intentHash: (s.intentHash ?? s.intent_hash ?? "").toString() as Hex, author: (s.authorAddress ?? "").toLowerCase() }))
+    .map((s): VoteSolution => ({
+      intentHash: (s.intentHash ?? s.intent_hash ?? "").toString(),
+      author: (s.authorAddress ?? "").toLowerCase(),
+      stakeWei: BigInt(s.chainStakeAmount ?? s.stakeAmount ?? s.stake_amount ?? 0),
+      claims: Array.isArray(s.claims)
+        ? s.claims.map((c: any) => ({
+            criterionId: (c.criterionId ?? c.criterion_id ?? "").toString(),
+            value: c.value,
+            argument: typeof c.argument === "string" ? c.argument : undefined,
+            falsifiableBy: typeof (c.falsifiableBy ?? c.falsifiable_by) === "string" ? (c.falsifiableBy ?? c.falsifiable_by) : undefined,
+          }))
+        : [],
+    }))
     .filter((s) => s.intentHash.startsWith("0x"));
+}
+
+/** Map question success-criteria to matrix VoteCriterion[]; equal weights when
+ *  the projection carries none. */
+function normalizeCriteria(raw: { id: string; name: string; weight?: number }[]): VoteCriterion[] {
+  if (raw.length === 0) return [];
+  const weighted = raw.some((c) => Number(c.weight ?? 0) > 0);
+  const equal = 100 / raw.length;
+  return raw.map((c) => ({ id: c.id, name: c.name, weight: weighted ? Number(c.weight ?? 0) : equal }));
+}
+
+/** conviction points (Σ=100) → basis points (Σ=10000); last takes the remainder. */
+function convictionToBps(allocs: { intentHash: string; conviction: number }[]): { solutionId: Hex; basisPoints: number }[] {
+  let assigned = 0;
+  return allocs.map((al, i) => {
+    const bps = i === allocs.length - 1 ? 10000 - assigned : al.conviction * 100;
+    assigned += bps;
+    return { solutionId: al.intentHash as Hex, basisPoints: bps };
+  });
+}
+
+/** even split across ids → Σ=10000 bps; last takes the remainder. */
+function evenSplitBps(ids: Hex[]): { solutionId: Hex; basisPoints: number }[] {
+  let assigned = 0;
+  return ids.map((id, i) => {
+    const bps = i === ids.length - 1 ? 10000 - assigned : Math.floor(10000 / ids.length);
+    assigned += bps;
+    return { solutionId: id, basisPoints: bps };
+  });
 }
 
 // ── Actions ──────────────────────────────────────────────────────
@@ -260,21 +308,39 @@ async function actSolve(a: Agent, q: OpenQ): Promise<void> {
   log(a.name, `SOLVE ${q.id} stake=${SPONSOR_AMOUNT} USDC "${q.title.slice(0, 32)}"`);
 }
 
-async function actVote(a: Agent, q: OpenQ, sols: { intentHash: Hex; author: string }[]): Promise<void> {
-  // Allocate conviction across up to 3 solutions NOT authored by this agent.
-  const candidates = sols.filter((s) => s.author !== a.address.toLowerCase()).slice(0, 3);
-  if (candidates.length === 0) throw new Error("no votable solutions (all self-authored)");
-  // Random favored split summing to 10000 bps.
-  const weights = candidates.map(() => rand(1, 10));
-  const total = weights.reduce((x, y) => x + y, 0);
-  let assigned = 0;
-  const allocations = candidates.map((s, i) => {
-    const bps = i === candidates.length - 1 ? 10000 - assigned : Math.floor((weights[i] / total) * 10000);
-    assigned += bps;
-    return { solutionId: s.intentHash, basisPoints: bps };
-  });
+async function actVote(a: Agent, q: OpenQ, sols: VoteSolution[]): Promise<void> {
+  const self = a.address.toLowerCase();
+  const votable = sols.filter((s) => s.author !== self);
+  if (votable.length === 0) throw new Error("no votable solutions (all self-authored)");
+
+  // Sharp decider: sanitize injection → structural matrix → credibility → vote
+  // the most-probable winner(s). Falls back to an even split only when the
+  // decider can't separate candidates (claims absent from the projection),
+  // which keeps the vote path live on testnet without casting a blind vote on
+  // an injection-flagged solution.
+  const detail = await call<{ successCriteria?: { id: string; name: string; weight?: number }[] }>("GET", `/v1/questions/${q.id}`, undefined, a.token);
+  const criteria = normalizeCriteria(detail.body?.successCriteria ?? []);
+  const decision = decideVote(criteria, votable);
+  let allocations: { solutionId: Hex; basisPoints: number }[];
+  if (decision.allocations.length > 0) {
+    allocations = convictionToBps(decision.allocations);
+    log(a.name, `JUDGE ${q.id} ${decision.rationale}`);
+  } else {
+    // No decisive winner (e.g. claims absent from the projection). Even-split
+    // as a liveness fallback — but NEVER over an injection-flagged solution, or
+    // an attacker's directive would capture the conviction. If nothing clean
+    // remains, cast nothing rather than vote blind.
+    const clean = votable.filter((s) => !scanSolutionInjection(s).detected);
+    if (clean.length === 0) {
+      log(a.name, `JUDGE ${q.id} all candidates flagged for manipulation — no vote cast`);
+      return;
+    }
+    allocations = evenSplitBps(clean.slice(0, 3).map((s) => s.intentHash as Hex));
+    log(a.name, `JUDGE ${q.id} no decisive winner — even split across ${allocations.length} clean sol(s)`);
+  }
+
   const pre = await preflightV2<VotePreflight>(q.id, "vote", "voter", a.address, a.token);
-  if (!pre.voteSalt || !pre.voteSaltToken) throw new Error("vote preflight missing voteSalt");
+  if (!pre.voteSalt || !pre.voteSaltToken || !pre.voteSaltExpiresAt) throw new Error("vote preflight missing voteSalt/voteSaltExpiresAt");
   const stake = BigInt(pre.stakeAmount);
   const wc = makeWc(a.wallet);
   await ensureUsdcAllowance(wc, publicClient as any, { usdc: USDC, forge: FORGE, owner: a.address, required: stake });

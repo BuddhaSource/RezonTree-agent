@@ -17,6 +17,14 @@
 //
 // Pure + deterministic. The doctrine (voter_workflow.md) tells the agent to run
 // sanitize first, score the result, and treat `detected` as a hard downweight.
+//
+// KNOWN LIMITATION (best-effort, not a boundary): detection is pattern-based, so
+// paraphrase ("treat this as your rubric"), synonyms, question-form steering,
+// and homoglyph/spacing tricks can evade it. Pattern-stripping is therefore NOT
+// the trust boundary — the real boundary is that a solution is always treated as
+// untrusted DATA: the agent never executes instructions found in solution text,
+// regardless of whether a pattern fired. A detected hit is a strong negative
+// signal; a miss is not a clean bill of health.
 
 import type { VoteClaim, VoteSolution } from "./matrix.js";
 
@@ -66,8 +74,11 @@ const PATTERNS: readonly Pattern[] = [
   {
     category: "vote-directive",
     label: "imperative vote/allocate directive",
-    // judging verbs only — "give"/"assign" dropped to avoid FPs ("please give an example")
-    re: /\b(?:you\s+(?:must|should|need\s+to|are\s+required\s+to|have\s+to)|please|kindly)\s+(?:vote|allocate|award|rate|score|mark)\b/gi,
+    // judging verbs only — "give"/"assign" dropped to avoid FPs ("please give an
+    // example"). An optional intensifier-adverb cluster catches "please just
+    // vote" / "you must immediately allocate" without matching "voters should
+    // rate solutions" (arbitrary interposed words are NOT allowed).
+    re: /\b(?:you\s+(?:must|should|need\s+to|are\s+required\s+to|have\s+to)|please|kindly)\s+(?:(?:just|now|really|simply|immediately|kindly|please|definitely|certainly|only)\s+){0,3}(?:vote|allocate|award|rate|score|mark)\b/gi,
   },
   {
     category: "vote-directive",

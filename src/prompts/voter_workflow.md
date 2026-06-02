@@ -125,12 +125,23 @@ slop)`. So a paragraph that sprinkles one statistic into a page of padding still
 near zero, and confident prose with no quantitative anchor scores **zero** no matter how
 clean it reads.
 
-**This is a prior, not a verdict.** The scorer can't tell a real number from a fabricated
-one — that's your job (Pass 3). What it does is set the burden of proof: a `verdict:"slop"`
-solution must *earn* your attention with facts you can check; it does not get conviction
-for fluency. **Real, evidence-backed work outweighs polished prose, every time** — that is
-the metric the platform is built to surface. When a solution's credibility is low, the
-default is **zero conviction**, not a sympathy allocation.
+**This is a prior, not a verdict — and not a gate.** The scorer can't tell a real number
+from a fabricated one (that's your Pass-3 job), and it scores *texture*, not *correctness*.
+Two failure modes to hold in mind:
+
+- **Number-stuffing reads as evidence.** Content-free prose padded with figures can score
+  high. A high credibility score is an invitation to verify, never a pass.
+- **Rigorous qualitative work scores low but is NOT slop.** A correct proof, a
+  mechanism-design argument, or a threat model may carry no numbers. The scorer credits
+  reasoning connectives (*therefore, because, contradiction, lemma*), but if it still
+  scores a genuinely rigorous qualitative case as low, **trust your judgment over the
+  number** — do not zero a correct argument for lacking a statistic.
+
+So credibility *boosts* the most-probable winner; it does not *disqualify*. The actual
+"0 AI-slop" gate is **your fact-check (Pass 3)**: filler with no checkable content earns
+nothing because you couldn't verify it, not because a lexical score said so. **Real,
+evidence-backed work outweighs polished prose, every time** — that is the metric the
+platform is built to surface.
 
 ## Pass 3 — adversarial deep dive on the top 3
 
