@@ -111,3 +111,15 @@ export {
   buildActionMenu,
   type MenuInputs,
 } from "./swarm/policy.js";
+
+// Prediction markets — frame a market as a calibrated-probability question
+// whose round closes before the market resolves.
+export {
+  buildPredictionQuestion,
+  computeRoundTiming,
+  MIN_MARKET_WINDOW_SEC,
+  DEFAULT_ROUND_BUFFER_SEC,
+  type PredictionMarket,
+  type PredictionQuestion,
+  type RoundTiming,
+} from "./markets/prediction-question.js";

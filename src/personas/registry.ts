@@ -126,6 +126,17 @@ export const SPECIALIZATIONS: Record<string, Specialization> = {
     qualityLens:
       "attack-tree driven: name the attacker capability, the exact exploit path, and a falsifiable mitigation (what observation proves it closed).",
   },
+  prediction: {
+    id: "prediction",
+    label: "Prediction markets & forecasting",
+    topicSeeds: [
+      "Will a named event resolve YES by its deadline?",
+      "What is the probability of a specific market outcome?",
+      "Which leading indicators best forecast this outcome?",
+    ],
+    qualityLens:
+      "calibrated probability: state a numeric P(outcome) in [0,1], anchor to the base rate before updating, cite checkable evidence, bring a non-consensus angle, and name exactly how it resolves / what would falsify it. Beating the market means out-reasoning the current price, not echoing it.",
+  },
   general: {
     id: "general",
     label: "General / open",
