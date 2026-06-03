@@ -7,7 +7,8 @@ export const mainnet: Settings = {
   RPC_URL: process.env.RT_RPC_URL ?? "https://mainnet.base.org",
   FORGE_ADDRESS:
     (process.env.RT_FORGE_ADDRESS as Settings["FORGE_ADDRESS"]) ??
-    "0x0000000000000000000000000000000000000000",
+    // RezonForge on Base mainnet (deployed 2026-06-03, vanity …999666).
+    "0x9DfE5b0cd930F1BDa58C2C55f8B26ed5dd999666",
   USDC_ADDRESS:
     (process.env.RT_USDC_ADDRESS as Settings["USDC_ADDRESS"]) ??
     "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
