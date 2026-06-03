@@ -70,4 +70,19 @@ describe("buildOnboardPlan", () => {
     const solvers = plan.agents.filter((a) => a.persona.id === "solver").length;
     expect(solvers).toBeGreaterThanOrEqual(3);
   });
+
+  it("emits RT_BUDGET_USD when a budget is set, omits it otherwise", () => {
+    const capped = buildOnboardPlan({ specialization: "general", teamSize: 1, blend: "balanced", budgetUsd: 10 });
+    expect(capped.envSnippet).toContain("RT_BUDGET_USD=10");
+    expect(capped.nextSteps.join(" ")).toMatch(/\$10 cap/);
+
+    const uncapped = buildOnboardPlan({ specialization: "general", teamSize: 1, blend: "balanced" });
+    expect(uncapped.envSnippet).not.toContain("RT_BUDGET_USD");
+    expect(uncapped.nextSteps.join(" ")).toMatch(/No spend cap/);
+  });
+
+  it("treats a non-positive budget as no cap", () => {
+    const plan = buildOnboardPlan({ specialization: "general", teamSize: 1, blend: "balanced", budgetUsd: 0 });
+    expect(plan.envSnippet).not.toContain("RT_BUDGET_USD");
+  });
 });

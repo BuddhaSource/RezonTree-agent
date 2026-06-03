@@ -12,7 +12,8 @@
 //   - agentIndex: 0
 //   - Expected address (public knowledge, derived via any
 //     BIP-44 compliant tool): 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
-//   - chainId: 84532 (Base Sepolia)
+//   - chainId: 8453 (Base mainnet — the production signing default;
+//     wallet chainId must match the default login domain to sign)
 //   - expiresAt: 1_700_000_000 (a fixed past timestamp)
 //   - Domain: default RezonTree signing domain
 //
@@ -78,13 +79,15 @@ describe("signWalletLoginIntent — EIP-712 round-trip", () => {
   const EXPIRES_AT = 1_700_000_000;
 
   it("produces a signature whose recovered address matches the signer", async () => {
-    const wallet = deriveAgentWallet(HARDHAT_TEST_MNEMONIC, 0, 84532);
+    // Sign against the production default domain (chainId 8453) — wallet
+    // chainId must match the domain or the signer rejects it before signing.
+    const wallet = deriveAgentWallet(HARDHAT_TEST_MNEMONIC, 0, 8453);
     const body = await signWalletLoginIntent({
       wallet,
       expiresAt: EXPIRES_AT,
     });
     expect(body.address.toLowerCase()).toBe(HARDHAT_ACCOUNT_0);
-    expect(body.chainId).toBe(84532);
+    expect(body.chainId).toBe(8453);
     expect(body.expiresAt).toBe(EXPIRES_AT);
     expect(body.signature).toMatch(/^0x[0-9a-f]{130}$/); // 65 bytes
 
@@ -94,7 +97,7 @@ describe("signWalletLoginIntent — EIP-712 round-trip", () => {
   });
 
   it("is deterministic for fixed (wallet, expiresAt, domain) — same signature every time", async () => {
-    const wallet = deriveAgentWallet(HARDHAT_TEST_MNEMONIC, 0, 84532);
+    const wallet = deriveAgentWallet(HARDHAT_TEST_MNEMONIC, 0, 8453);
     const a = await signWalletLoginIntent({ wallet, expiresAt: EXPIRES_AT });
     const b = await signWalletLoginIntent({ wallet, expiresAt: EXPIRES_AT });
     expect(a.signature).toBe(b.signature);
@@ -106,13 +109,15 @@ describe("signWalletLoginIntent — EIP-712 round-trip", () => {
       signWalletLoginIntent({
         wallet,
         expiresAt: EXPIRES_AT,
-        // Default domain is 84532; wallet is 1
+        // Default domain is 8453; wallet is 1
       }),
     ).rejects.toThrow(/chainId/);
   });
 
   it("rejects non-positive expiresAt", async () => {
-    const wallet = deriveAgentWallet(HARDHAT_TEST_MNEMONIC, 0, 84532);
+    // Match the default domain chainId (8453) so the expiresAt guard is the
+    // one that fires, not the chainId guard.
+    const wallet = deriveAgentWallet(HARDHAT_TEST_MNEMONIC, 0, 8453);
     await expect(
       signWalletLoginIntent({ wallet, expiresAt: 0 }),
     ).rejects.toThrow(/expiresAt/);
@@ -122,7 +127,7 @@ describe("signWalletLoginIntent — EIP-712 round-trip", () => {
   });
 
   it("LOAD-BEARING: verification FAILS if message fields are tampered with", async () => {
-    const wallet = deriveAgentWallet(HARDHAT_TEST_MNEMONIC, 0, 84532);
+    const wallet = deriveAgentWallet(HARDHAT_TEST_MNEMONIC, 0, 8453);
     const body = await signWalletLoginIntent({
       wallet,
       expiresAt: EXPIRES_AT,
@@ -160,7 +165,7 @@ describe("signWalletLoginIntent — EIP-712 round-trip", () => {
 // loop covering the bug.
 describe("HD derive ↔ EIP-712 sign-and-recover loopback (regression)", () => {
   it("each of 6 sequential agents produces a signature recoverable to its declared address", async () => {
-    const wallets = deriveAgentWallets(HARDHAT_TEST_MNEMONIC, 6, 84532);
+    const wallets = deriveAgentWallets(HARDHAT_TEST_MNEMONIC, 6, 8453);
     expect(wallets).toHaveLength(6);
     const expiresAt = 1_700_000_000;
     for (const w of wallets) {
@@ -179,9 +184,9 @@ describe("DEFAULT_LOGIN_DOMAIN — backend contract pin", () => {
     // drift makes every signed intent fail recovery.
     expect(DEFAULT_LOGIN_DOMAIN.name).toBe("RezonTreeOracle");
     expect(DEFAULT_LOGIN_DOMAIN.version).toBe("1");
-    expect(DEFAULT_LOGIN_DOMAIN.chainId).toBe(84532);
+    expect(DEFAULT_LOGIN_DOMAIN.chainId).toBe(8453);
     expect(DEFAULT_LOGIN_DOMAIN.verifyingContract.toLowerCase()).toBe(
-      "0x0000000000000000000000000000000000000001",
+      "0x9dfe5b0cd930f1bda58c2c55f8b26ed5dd999666",
     );
   });
 });

@@ -192,3 +192,13 @@ export {
   streakLine,
   type Referral,
 } from "./social/growth.js";
+
+// Budget — a spend cap the agent spends down to, then stops. Pure arithmetic
+// over cumulative committed USDC (sponsor amounts + stakes + fees); the agent
+// checks canAfford before a spend and records after it confirms. Set
+// RT_BUDGET_USD (or `rt init --budget 10`) to cap a run; unset = no cap.
+export {
+  createBudget,
+  budgetFromEnv,
+  type Budget,
+} from "./budget/index.js";

@@ -13,9 +13,19 @@ export type { Settings, Network } from "../settings/base.js";
 
 let current: Settings | null = null;
 
-/** Load settings for a given network. Optionally merges local overrides. */
+/**
+ * Resolve the target network. Production-default: mainnet (Base, real USDC,
+ * the live RezonForge). Set RT_NETWORK=testnet to run against Base Sepolia
+ * (internal/dev only — there is no public testnet).
+ */
+export function resolveNetwork(): "testnet" | "mainnet" {
+  return process.env.RT_NETWORK === "testnet" ? "testnet" : "mainnet";
+}
+
+/** Load settings for a given network (defaults to resolveNetwork()).
+ *  Optionally merges local overrides. */
 export async function loadSettings(
-  network: "testnet" | "mainnet" = "testnet",
+  network: "testnet" | "mainnet" = resolveNetwork(),
 ): Promise<Settings> {
   let resolved: Settings;
   if (network === "mainnet") {

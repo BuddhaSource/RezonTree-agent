@@ -14,6 +14,7 @@ import { createInterface } from "node:readline/promises";
 
 import {
   DEFAULT_SPECIALIZATION,
+  RECOMMENDED_QUESTION_FLOOR_USD,
   resolvePersona,
   resolveSpecialization,
   SPECIALIZATIONS,
@@ -56,6 +57,9 @@ export interface OnboardAnswers {
   blend: Blend;
   /** Optional explicit topic list; falls back to the specialization seeds. */
   topics?: string[];
+  /** Optional spend cap (whole USDC) for the run. Emits RT_BUDGET_USD in the
+   *  env snippet; the swarm spends down to it then stops. Omitted = no cap. */
+  budgetUsd?: number;
 }
 
 export interface RosterAgent {
@@ -99,6 +103,14 @@ export function buildOnboardPlan(answers: OnboardAnswers): OnboardPlan {
       ? answers.topics
       : specialization.topicSeeds;
 
+  // A positive, finite budget caps the run; anything else means "no cap".
+  const budgetUsd =
+    answers.budgetUsd !== undefined &&
+    Number.isFinite(answers.budgetUsd) &&
+    answers.budgetUsd > 0
+      ? answers.budgetUsd
+      : undefined;
+
   const names = agents.map((a) => a.name).join(",");
   const envSnippet = [
     `# RezonTree swarm — ${specialization.label} (${blend} blend, ${teamSize} agents)`,
@@ -107,6 +119,9 @@ export function buildOnboardPlan(answers: OnboardAnswers): OnboardPlan {
     // RT_TOPICS is consumed by the swarm once Loop 7 wires specialization
     // topics in; harmless today.
     `export RT_TOPICS=${JSON.stringify(topics.join("|"))}`,
+    // RT_BUDGET_USD caps total spend; the swarm stops once it's spent down.
+    // Only emitted when a budget was chosen — unset means an uncapped run.
+    ...(budgetUsd !== undefined ? [`export RT_BUDGET_USD=${budgetUsd}`] : []),
   ].join("\n");
 
   const runCommand = `node_modules/.bin/tsx scripts/organic-swarm.ts`;
@@ -114,8 +129,11 @@ export function buildOnboardPlan(answers: OnboardAnswers): OnboardPlan {
   const nextSteps = [
     `Fund the ${teamSize} agent wallet(s) with USDC + a little ETH for gas (rt wallet list to see addresses; rt wallet topup --idx <n> on testnet).`,
     `Source the env above, then launch: ${runCommand}`,
+    budgetUsd !== undefined
+      ? `Budget set: $${budgetUsd} cap (RT_BUDGET_USD) — the swarm spends down to it then stops. Recommended question floor ~$${RECOMMENDED_QUESTION_FLOOR_USD} (override per run with ORGANIC_SPONSOR_AMOUNT).`
+      : `No spend cap set — pass --budget <usd> (or export RT_BUDGET_USD) to bound the run. Recommended question floor ~$${RECOMMENDED_QUESTION_FLOOR_USD} (override with ORGANIC_SPONSOR_AMOUNT).`,
     `Post a question you want the network to solve — every question is new knowledge + reputation: rt question post -f your-question.json (lens: ${specialization.qualityLens})`,
-    `Watch progress + share a report with your humans: rt monitor (10-min heartbeat — coming in this campaign).`,
+    `Check for SDK + protocol updates periodically: rt doctor.`,
   ];
 
   return { specialization, blend, agents, topics, envSnippet, runCommand, nextSteps };
@@ -161,6 +179,7 @@ export async function runOnboard(io: OnboardIO = {}): Promise<OnboardPlan> {
       teamSize: flags.teamSize ?? 3,
       blend: flags.blend ?? "balanced",
       topics: flags.topics,
+      budgetUsd: flags.budgetUsd,
     });
   }
 
@@ -191,6 +210,7 @@ export async function runOnboard(io: OnboardIO = {}): Promise<OnboardPlan> {
       teamSize: Number(teamRaw),
       blend: blendRaw as Blend,
       topics,
+      budgetUsd: flags.budgetUsd,
     });
   } finally {
     rl.close();

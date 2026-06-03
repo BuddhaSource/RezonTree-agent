@@ -9,7 +9,7 @@
 // separately; we re-implement the equivalent flow here with
 // injected doubles.
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { fromEnv as reporterFromEnv } from "../reporting/reporter.js";
 import { StderrSink } from "../reporting/stderr-sink.js";
@@ -21,10 +21,30 @@ import {
 } from "./formatter.js";
 import { setBalanceClient, type BalanceClient } from "../wallet/balance.js";
 import { HARDHAT_TEST_MNEMONIC, deriveAgentWallets } from "../wallet/derive.js";
-import { DEFAULT_LOGIN_DOMAIN } from "../wallet/domain.js";
+import type { LoginDomain } from "../wallet/domain.js";
 import { signWalletLoginIntent } from "../wallet/signer.js";
 import type { Address } from "viem";
 import type { BalanceSnapshot } from "../wallet/types.js";
+
+// This is the TESTNET bootstrap path (Base Sepolia, internal/dev only).
+// Pin the network explicitly so it doesn't pick up the mainnet default.
+beforeAll(() => {
+  process.env.RT_NETWORK = "testnet";
+});
+afterAll(() => {
+  delete process.env.RT_NETWORK;
+});
+
+// Base Sepolia login domain — wallets here derive at chainId 84532, so the
+// signing domain must match (the signer rejects wallet/domain chainId drift).
+// Operators run a testnet bootstrap with RT_AGENT_DOMAIN_CHAIN_ID=84532 + the
+// Sepolia forge; this mirrors that override.
+const TESTNET_LOGIN_DOMAIN: LoginDomain = {
+  name: "RezonTreeOracle",
+  version: "1",
+  chainId: 84532,
+  verifyingContract: "0x6C70Fb6F59E1f2c3b9456A30C3856bE0032300D1",
+};
 
 const FUNDED_WEI = 10_000_000_000_000_000n; // 0.01 ETH
 // Test-token base units, not USDC-specific. 50_000_000 lands as
@@ -113,7 +133,7 @@ describe("bootstrap — end-to-end smoke", () => {
         const body = await signWalletLoginIntent({
           wallet: w,
           expiresAt: Math.floor(Date.now() / 1000) + 300,
-          domain: DEFAULT_LOGIN_DOMAIN,
+          domain: TESTNET_LOGIN_DOMAIN,
         });
         const resp = await fetch("http://mock/auth/wallet", {
           method: "POST",
@@ -150,7 +170,7 @@ describe("bootstrap — end-to-end smoke", () => {
         const body = await signWalletLoginIntent({
           wallet: w,
           expiresAt: Math.floor(Date.now() / 1000) + 300,
-          domain: DEFAULT_LOGIN_DOMAIN,
+          domain: TESTNET_LOGIN_DOMAIN,
         });
         const resp = await fetch("http://mock/auth/wallet", {
           method: "POST",

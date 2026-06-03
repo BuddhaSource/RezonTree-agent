@@ -29,7 +29,8 @@
 import "dotenv/config";
 import fs from "node:fs";
 import { Command } from "commander";
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
@@ -42,7 +43,7 @@ import {
   http,
 } from "viem";
 import { mnemonicToAccount } from "viem/accounts";
-import { baseSepolia } from "viem/chains";
+import { base, baseSepolia } from "viem/chains";
 
 import { requestUSDC, ethFaucetMessage, ETH_FAUCETS } from "../src/faucet/circle.js";
 import { loadPrompt } from "../src/prompts/index.js";
@@ -59,16 +60,88 @@ import { polymarketSource } from "../src/markets/polymarket.js";
 import { loginWallet } from "../src/wallet/login.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const execFileAsync = promisify(execFile);
+
+/** Installed SDK version, read from package.json (the single source). Falls
+ *  back to "unknown" if the file can't be read — never throws. */
+function installedSdkVersion(): string {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(resolve(__dirname, "..", "package.json"), "utf8")) as {
+      version?: string;
+      name?: string;
+    };
+    return pkg.version ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+/** Best-effort latest published version via `npm view <pkg> version`. Returns
+ *  null on any failure (offline, registry error, timeout) — never throws. */
+async function npmLatestVersion(pkg: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("npm", ["view", pkg, "version"], {
+      timeout: 4000,
+      windowsHide: true,
+    });
+    const v = stdout.trim();
+    return v.length > 0 ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Best-effort live protocol/skill version from the backend. Tries
+ *  GET {backend}/skill.json (`.version`), then GET {backend}/v1/protocol
+ *  (probing common version fields). Returns null on any failure — never
+ *  throws. A 4s abort keeps an unreachable backend from hanging the CLI. */
+async function liveProtocolVersion(
+  backend: string,
+): Promise<{ version: string; source: string } | null> {
+  const probe = async (path: string, fields: string[]): Promise<{ version: string; source: string } | null> => {
+    try {
+      const ac = new AbortController();
+      const t = setTimeout(() => ac.abort(), 4000);
+      const res = await fetch(`${backend}${path}`, { signal: ac.signal });
+      clearTimeout(t);
+      if (!res.ok) return null;
+      const body = (await res.json()) as Record<string, unknown>;
+      for (const f of fields) {
+        const v = body[f];
+        if (typeof v === "string" && v.length > 0) return { version: v, source: path };
+        if (typeof v === "number") return { version: String(v), source: path };
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  };
+  return (
+    (await probe("/skill.json", ["version", "skillVersion"])) ??
+    (await probe("/v1/protocol", ["version", "protocolVersion", "domainVersion", "rev"]))
+  );
+}
 
 // ── env ──────────────────────────────────────────────────────────
+// Production-default: Base mainnet. RT_NETWORK=testnet flips the chain,
+// RPC, USDC token, and hosted backend together to Base Sepolia (internal/
+// dev only — there is no public testnet).
+const IS_MAINNET = process.env.RT_NETWORK !== "testnet";
+const CHAIN = IS_MAINNET ? base : baseSepolia;
+const DEFAULT_RPC = IS_MAINNET ? "https://mainnet.base.org" : "https://sepolia.base.org";
+const DEFAULT_USDC = IS_MAINNET
+  ? "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+  : "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+const DEFAULT_BACKEND = IS_MAINNET ? "https://api.rezontree.com" : "http://localhost:8080";
+
 const MNEMONIC = process.env.RT_AGENT_MNEMONIC ?? "";
-const BACKEND = process.env.RT_AGENT_BACKEND_URL ?? "http://localhost:8080";
-const RPC_URLS = (process.env.RT_RPC_URLS ?? process.env.RT_RPC_URL ?? "https://sepolia.base.org")
+const BACKEND = process.env.RT_AGENT_BACKEND_URL ?? DEFAULT_BACKEND;
+const RPC_URLS = (process.env.RT_RPC_URLS ?? process.env.RT_RPC_URL ?? DEFAULT_RPC)
   .split(",")
   .map((u) => u.trim())
   .filter(Boolean);
 const USDC = (process.env.RT_USDC_ADDRESS as Address | undefined) ??
-  ("0x036CbD53842c5426634e7929541eC2318f3dCF7e" as Address);
+  (DEFAULT_USDC as Address);
 const NUM_ROLES = 10;
 const ROLES = [
   "questioner-01",
@@ -84,7 +157,7 @@ const ROLES = [
 ];
 
 const transport = RPC_URLS.length === 1 ? http(RPC_URLS[0]) : fallback(RPC_URLS.map((u) => http(u)), { retryCount: 0 });
-const publicClient = createPublicClient({ chain: baseSepolia, transport });
+const publicClient = createPublicClient({ chain: CHAIN, transport });
 const usdcAbi = [
   {
     type: "function",
@@ -110,7 +183,7 @@ async function balanceFor(addr: Address): Promise<{ usdc: string; eth: string }>
 
 // ── command surface ──────────────────────────────────────────────
 const program = new Command();
-program.name("rt").description("RezonTree CLI — single-binary agent ops").version("0.1.0");
+program.name("rt").description("RezonTree CLI — single-binary agent ops").version(installedSdkVersion());
 
 // rt me
 program.command("me").description("Composite 'what is my situation' (default agent)").action(async () => {
@@ -128,6 +201,7 @@ program.command("cold-start").description("Print cold-start prompt + your situat
   console.log(loadPrompt("cold_start"));
   console.log("\n---\n\n## Your situation\n");
   console.log(JSON.stringify({ role: ROLES[idx] ?? `idx-${idx}`, address: addr, ...bal }, null, 2));
+  console.log("\nTip: run `rt doctor` now and then to check for SDK + protocol updates.");
 });
 
 program
@@ -159,6 +233,7 @@ program
   .option("-t, --team <n>", "team size 1-9")
   .option("-b, --blend <blend>", "balanced | research | solve | vote")
   .option("--topics <list>", "| separated topic overrides")
+  .option("--budget <usd>", "total USDC spend cap for the run (sets RT_BUDGET_USD); swarm stops when spent down")
   .option("--write <path>", "write the env snippet to a file")
   .action(async (opts) => {
     const flags: Partial<OnboardAnswers> = {};
@@ -166,12 +241,46 @@ program
     if (opts.team) flags.teamSize = Number(opts.team);
     if (opts.blend) flags.blend = String(opts.blend) as Blend;
     if (opts.topics) flags.topics = String(opts.topics).split("|").map((t) => t.trim()).filter(Boolean);
+    if (opts.budget !== undefined) flags.budgetUsd = Number(opts.budget);
     const plan = await runOnboard({ flags });
     console.log(renderOnboardPlan(plan));
     if (opts.write) {
       fs.writeFileSync(String(opts.write), plan.envSnippet + "\n");
       console.log(`  env written → ${opts.write}\n`);
     }
+    console.log("  Tip: run `rt doctor` now and then to check for SDK + protocol updates.\n");
+  });
+
+// rt doctor — check for SDK + protocol updates. Best-effort + dependency-free:
+// the SDK version comes from package.json, the latest from `npm view`, and the
+// live protocol/skill version from the backend. Every probe swallows its own
+// failure into a "couldn't check" line so an offline agent still gets a report.
+program
+  .command("doctor")
+  .alias("update-check")
+  .description("Check installed SDK + protocol versions against the latest available")
+  .action(async () => {
+    const installed = installedSdkVersion();
+    console.log("RezonTree doctor — update check\n");
+
+    // 1. SDK version: installed (package.json) vs latest (npm registry).
+    const latest = await npmLatestVersion("rezontree-agent");
+    if (latest === null) {
+      console.log(`  SDK:      ${installed} (couldn't reach npm — offline? skipping latest check)`);
+    } else if (latest === installed) {
+      console.log(`  SDK:      ${installed} — up to date`);
+    } else {
+      console.log(`  SDK:      update available: ${installed} → ${latest}  (npm i -g rezontree-agent@latest)`);
+    }
+
+    // 2. Protocol/skill version: what the backend is serving right now.
+    const live = await liveProtocolVersion(BACKEND);
+    if (live === null) {
+      console.log(`  Protocol: couldn't reach ${BACKEND} (offline, or backend down) — skipping`);
+    } else {
+      console.log(`  Protocol: ${live.source} reports version ${live.version} (backend ${BACKEND})`);
+    }
+    console.log("");
   });
 
 // rt predict — crowdsource a prediction-market outcome's probability

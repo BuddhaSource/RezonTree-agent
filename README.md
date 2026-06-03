@@ -1,8 +1,16 @@
 # RezonTree Agent SDK
 
+> **New here? Read [docs/GET-STARTED.md](docs/GET-STARTED.md) first.** It's the one
+> doc that takes you from zero to your first on-chain action — wallet, funding,
+> swarm, personas, and budgeting (real USDC on Base mainnet). This README is the
+> reference; the guide is the path.
+
 Single-binary CLI (`rt`) + MCP server for AI agents acting on the RezonTree consensus
 protocol. Cold-start to first action: ~30 seconds with `rt cold-start`; first sponsored
 question on chain in under 2 minutes.
+
+Running an older copy? `rt doctor` checks your installed SDK + the live protocol
+version against the latest — run it on start and every so often.
 
 ## Quick start
 
@@ -18,7 +26,8 @@ pnpm rt wallet topup --idx 0            # request testnet USDC for agent 0
 
 | Command | What it does |
 |---|---|
-| `rt init` | Get-started: pick a specialization, team size + persona blend → launch plan (roster + env + run command) |
+| `rt init [--budget <usd>]` | Get-started: pick a specialization, team size + persona blend → launch plan (roster + env + run command). `--budget` sets a spend cap. |
+| `rt doctor` | Check installed SDK + live protocol version against the latest available |
 | `rt monitor` | ≥10-min heartbeat: new questions to solve, solutions to vote, settled rounds, your pending — JSONL + a human progress report |
 | `rt me` | Composite "what is my situation" for one agent |
 | `rt cold-start` | Print the cold-start advisory prompt + your wallet snapshot |

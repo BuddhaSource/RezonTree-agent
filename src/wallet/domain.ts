@@ -5,15 +5,18 @@
 // signature recovery on the backend return a different address
 // than the one signed for → /auth/wallet rejects.
 //
-// Backend default: internal/config/config.go loadSigningDomain()
-// returns name="RezonTreeOracle" version="1" chainId=84532
-// verifyingContract=0x…0001.
+// Production default mirrors the backend's mainnet signing domain:
+// name="RezonTreeOracle" version="1" chainId=8453 (Base mainnet)
+// verifyingContract = the live RezonForge (…999666). The login domain's
+// verifyingContract MUST equal the deployed forge, or backend signature
+// recovery returns a different address and login 401s.
 //
-// Operators who change SIGNING_* env vars on the backend MUST
-// set matching RT_AGENT_DOMAIN_* env vars here. Loop 0016's
-// cross-config gate on the backend guarantees the backend's own
-// domain is self-consistent (chain_id matches Router address);
-// the agent mirrors backend-side values without second-guessing.
+// For Base Sepolia (internal/dev), override via RT_AGENT_DOMAIN_* env
+// (RT_AGENT_DOMAIN_CHAIN_ID=84532 + the Sepolia forge). Operators who
+// change SIGNING_* env vars on the backend MUST set matching
+// RT_AGENT_DOMAIN_* here. Loop 0016's cross-config gate guarantees the
+// backend's own domain is self-consistent (chain_id matches Router
+// address); the agent mirrors backend-side values without second-guessing.
 
 import type { Address } from "viem";
 
@@ -27,8 +30,8 @@ export interface LoginDomain {
 export const DEFAULT_LOGIN_DOMAIN: LoginDomain = {
   name: "RezonTreeOracle",
   version: "1",
-  chainId: 84532, // Base Sepolia; matches backend SIGNING_CHAIN_ID default
-  verifyingContract: "0x0000000000000000000000000000000000000001",
+  chainId: 8453, // Base mainnet; matches backend SIGNING_CHAIN_ID
+  verifyingContract: "0x9DfE5b0cd930F1BDa58C2C55f8B26ed5dd999666",
 };
 
 export function loadLoginDomain(): LoginDomain {

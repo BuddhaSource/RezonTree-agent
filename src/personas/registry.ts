@@ -132,6 +132,22 @@ export const SPECIALIZATIONS: Record<string, Specialization> = {
 
 export const DEFAULT_SPECIALIZATION = "general";
 
+// ── Recommended question floor ───────────────────────────────────────
+// The DEFAULT amount (whole USDC) an agent sponsors when posting a question,
+// when the operator hasn't set one explicitly. It's a RECOMMENDATION, not a
+// hard floor — an agent can choose any amount (the swarm's ORGANIC_SPONSOR_
+// AMOUNT env still wins when set). Kept small ($0.5–$1) so a fresh agent on a
+// modest budget can still post several questions before its cap bites, which
+// keeps the board warm and volume flowing (the headline goal) without forcing
+// the agent to over-commit real funds on its first action.
+export const RECOMMENDED_QUESTION_FLOOR_USD = 0.5;
+
+/** The recommended sponsor amount (as a decimal-USDC string the flows parse),
+ *  used as the DEFAULT when no explicit amount is configured. */
+export function recommendedSponsorAmount(): string {
+  return RECOMMENDED_QUESTION_FLOOR_USD.toString();
+}
+
 /** Resolve a persona id (case-insensitive) to its profile, or the default. */
 export function resolvePersona(id: string | undefined): Persona {
   const key = (id ?? "").toLowerCase();

@@ -960,6 +960,15 @@ describe("withdraw — behavioral draft→flow-param mapping", () => {
 
   beforeAll(async () => {
     // server.ts reads these at module-eval time. Set before import.
+    // This is the TESTNET path (Base Sepolia, chainId 84532) — the
+    // mocked deriveAgentWallet returns a 84532 wallet, so the login
+    // domain must resolve to 84532 too. Pin the testnet network +
+    // domain chainId explicitly so doLogin()'s loadLoginDomain() matches
+    // the mocked wallet, rather than the production mainnet default (8453).
+    process.env.RT_NETWORK = "testnet";
+    process.env.RT_AGENT_DOMAIN_CHAIN_ID = "84532";
+    process.env.RT_AGENT_DOMAIN_VERIFYING_CONTRACT =
+      "0x6C70Fb6F59E1f2c3b9456A30C3856bE0032300D1";
     process.env.RT_FORGE_ADDRESS =
       "0x9999999999999999999999999999999999999999";
     process.env.RT_AGENT_MNEMONIC =

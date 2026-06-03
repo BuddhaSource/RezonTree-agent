@@ -32,7 +32,8 @@ import { createPublicClient, http, type Address, type Hex } from "viem";
 import { deriveAgentWallet } from "../src/wallet/derive.js";
 import { sessionManagerFor } from "../src/wallet/login.js";
 import type { AgentWallet } from "../src/wallet/types.js";
-import { resolveSpecialization } from "../src/personas/registry.js";
+import { resolveSpecialization, recommendedSponsorAmount } from "../src/personas/registry.js";
+import { budgetFromEnv } from "../src/budget/index.js";
 import { assignPersonas, type Blend } from "../src/bootstrap/onboard.js";
 import { resolveDeadlineMs, explainDecision } from "../src/swarm/policy.js";
 import type { VoteSolution } from "../src/voting/matrix.js";
@@ -54,7 +55,17 @@ const MNEMONIC = process.env.RT_AGENT_MNEMONIC!;
 const DURATION_SEC = Number.parseInt(process.env.ORGANIC_DURATION_SECONDS ?? "1800", 10);
 const AGENT_NAMES = (process.env.ORGANIC_AGENTS ?? "alice,bob,carol,dave,eve,frank,grace,heidi,ivan")
   .split(",").map((s) => s.trim()).filter(Boolean);
-const SPONSOR_AMOUNT = process.env.ORGANIC_SPONSOR_AMOUNT ?? "1";
+// Per-action spend (sponsor amount + commit/vote stake all default to this).
+// The persona system recommends a small question floor ($0.5) so a budgeted
+// agent can post several questions before its cap bites; ORGANIC_SPONSOR_AMOUNT
+// overrides it (an agent is never hard-locked to the recommendation).
+const SPONSOR_AMOUNT = process.env.ORGANIC_SPONSOR_AMOUNT ?? recommendedSponsorAmount();
+// Per-action USDC cost the budget governor charges (the same sponsor amount /
+// stake every funded action commits). Used for canAfford checks + record().
+const ACTION_COST_USD = Number(SPONSOR_AMOUNT);
+// Optional spend cap (RT_BUDGET_USD). null ⇒ no cap, behavior unchanged. Shared
+// across the whole swarm: the run stops once every agent is below the floor.
+const budget = budgetFromEnv();
 const INITIAL_BOUNTY = process.env.RT_INITIAL_BOUNTY ?? "1000000";
 const TICK_MIN_MS = Number.parseInt(process.env.ORGANIC_TICK_MIN_MS ?? "3000", 10);
 const TICK_MAX_MS = Number.parseInt(process.env.ORGANIC_TICK_MAX_MS ?? "9000", 10);
@@ -224,18 +235,31 @@ async function tick(a: Agent): Promise<void> {
   const choice = decision.choice;
   if (choice !== "idle") log(a.name, `DECIDE ${decision.reasons.join("; ")}`);
 
+  // Budget gate: every funded action (ask/solve/vote/cosponsor) commits
+  // ACTION_COST_USD. If a cap is set and this agent can't afford the next
+  // action, skip it (and mark broke so the loop idles this agent until its
+  // cap frees up — it never will within a run, so it effectively retires).
+  const isSpend = choice === "ask" || choice === "solve" || choice === "vote" || choice === "cosponsor";
+  if (budget && isSpend && !budget.canAfford(ACTION_COST_USD)) {
+    a.broke = true; // out of budget — stop funded actions for this agent
+    a.acts["idle_budget"] = (a.acts["idle_budget"] ?? 0) + 1;
+    log(a.name, `BUDGET skip ${choice} — $${budget.remainingUsd().toFixed(2)} of $${budget.capUsd.toFixed(2)} left, action costs $${ACTION_COST_USD.toFixed(2)}`);
+    return;
+  }
+
   a.acts[choice] = (a.acts[choice] ?? 0) + 1;
   try {
-    if (choice === "ask") await askFlow.run(a, undefined, flowCtx);
-    else if (choice === "solve") await solveFlow.run(a, pick(solvable), flowCtx);
-    else if (choice === "cosponsor") await cosponsorFlow.run(a, pick(cosponsorable), flowCtx);
+    if (choice === "ask") { await askFlow.run(a, undefined, flowCtx); budget?.record(ACTION_COST_USD); }
+    else if (choice === "solve") { await solveFlow.run(a, pick(solvable), flowCtx); budget?.record(ACTION_COST_USD); }
+    else if (choice === "cosponsor") { await cosponsorFlow.run(a, pick(cosponsorable), flowCtx); budget?.record(ACTION_COST_USD); }
     else if (choice === "vote") {
       // Resolve a votable question (one with confirmed, non-self solutions),
-      // then hand the question + its solutions to the vote flow.
+      // then hand the question + its solutions to the vote flow. Only record
+      // spend when a vote actually fired (the fallback path casts nothing).
       const shuffled = [...voteCand].sort(() => Math.random() - 0.5);
       for (const q of shuffled.slice(0, 4)) {
         const sols = await confirmedSolutions(q.id, a.token);
-        if (sols.some((s) => s.author !== self)) { await voteFlow.run(a, { q, sols }, flowCtx); return; }
+        if (sols.some((s) => s.author !== self)) { await voteFlow.run(a, { q, sols }, flowCtx); budget?.record(ACTION_COST_USD); return; }
       }
       // No votable target right now — fall back to a cheap read tick.
       a.acts["vote"]--; a.acts["idle_no_target"] = (a.acts["idle_no_target"] ?? 0) + 1;
@@ -254,10 +278,18 @@ async function tick(a: Agent): Promise<void> {
   }
 }
 
+// Shared stop flag — flipped once the budget can no longer afford the cheapest
+// action for ANY agent (the budget is shared, so that's a single check). Every
+// agent loop observes it and drains, then main() logs one clean summary.
+let budgetStopped = false;
+
 async function runAgent(a: Agent, deadline: number): Promise<void> {
   // Jittered start so agents don't all fire in lockstep.
   await sleep(rand(0, 4000));
   while (Date.now() < deadline) {
+    // Budget exhausted across the whole swarm — nothing meaningful left to
+    // spend. Stop the loop cleanly rather than spinning on skipped ticks.
+    if (budget && budget.exhausted(ACTION_COST_USD)) { budgetStopped = true; break; }
     try { await tick(a); } catch (e) { log(a.name, `tick error: ${(e as Error).message?.slice(0, 120)}`); }
     await sleep(rand(TICK_MIN_MS, TICK_MAX_MS));
   }
@@ -267,7 +299,12 @@ async function runAgent(a: Agent, deadline: number): Promise<void> {
 async function main() {
   console.log(`organic-swarm | backend ${BACKEND} | forge ${FORGE} | chain ${CHAIN_ID}`);
   console.log(`agents: ${AGENT_NAMES.join(", ")} | duration ${DURATION_SEC <= 0 ? "∞ (continuous)" : DURATION_SEC + "s"} | tick ${TICK_MIN_MS}-${TICK_MAX_MS}ms`);
-  console.log(`specialization: ${SPEC.label} | blend: ${BLEND} | ${TOPICS.length} topic seed(s)\n`);
+  console.log(`specialization: ${SPEC.label} | blend: ${BLEND} | ${TOPICS.length} topic seed(s)`);
+  console.log(
+    budget
+      ? `budget: $${budget.capUsd.toFixed(2)} cap | $${ACTION_COST_USD.toFixed(2)}/action — swarm stops when spent down\n`
+      : `budget: none (RT_BUDGET_USD unset) — uncapped run\n`,
+  );
 
   const personas = assignPersonas(AGENT_NAMES.length, BLEND);
   const agents: Agent[] = [];
@@ -302,6 +339,12 @@ async function main() {
 
   await Promise.all(agents.map((a) => runAgent(a, deadline)));
   clearInterval(hb);
+
+  if (budget && budgetStopped) {
+    console.log(
+      `\n── budget exhausted ($${budget.spentUsd.toFixed(2)} of $${budget.capUsd.toFixed(2)} spent) — stopping ──`,
+    );
+  }
 
   console.log(`\n── organic swarm complete ──`);
   for (const a of agents) {

@@ -9,8 +9,16 @@
     "rezontree-manage": "dist/manage.js",
     "rt": "bin/rt.ts"
   },
+  "files": [
+    "dist/",
+    "bin/",
+    "README.md",
+    "LICENSE",
+    "docs/GET-STARTED.md"
+  ],
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "npm run build",
     "dev": "tsc --watch",
     "manage": "tsx src/manage.ts",
     "lint": "tsc --noEmit",
