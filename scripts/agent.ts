@@ -29,7 +29,7 @@ import {
   formatUnits,
 } from "viem";
 import { mnemonicToAccount } from "viem/accounts";
-import { baseSepolia } from "viem/chains";
+import { base, baseSepolia } from "viem/chains";
 
 import {
   ensureUsdcAllowance,
@@ -53,15 +53,17 @@ import {
 } from "./lib/operator-recovery.js";
 
 // ── env + clients ────────────────────────────────────────────────
-const RPC_URLS = (process.env.RT_RPC_URLS ?? process.env.RT_RPC_URL ?? "https://sepolia.base.org")
+// Mainnet defaults (Base, chain 8453). RT_NETWORK=testnet / the RT_*
+// env overrides flip these to Base Sepolia for internal/dev runs.
+const RPC_URLS = (process.env.RT_RPC_URLS ?? process.env.RT_RPC_URL ?? "https://mainnet.base.org")
   .split(",")
   .map((u) => u.trim())
   .filter(Boolean);
-const BACKEND = (process.env.RT_AGENT_BACKEND_URL ?? "http://localhost:8080").replace(/\/$/, "");
+const BACKEND = (process.env.RT_AGENT_BACKEND_URL ?? "https://api.rezontree.com").replace(/\/$/, "");
 const FORGE = process.env.RT_FORGE_ADDRESS as Address;
-const USDC = (process.env.RT_USDC_ADDRESS as Address) ?? "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+const USDC = (process.env.RT_USDC_ADDRESS as Address) ?? "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const MNEMONIC = process.env.RT_AGENT_MNEMONIC!;
-const CHAIN_ID = Number(process.env.RT_AGENT_CHAIN_ID ?? process.env.RT_CHAIN_ID ?? "84532");
+const CHAIN_ID = Number(process.env.RT_AGENT_CHAIN_ID ?? process.env.RT_CHAIN_ID ?? "8453");
 if (!FORGE) throw new Error("RT_FORGE_ADDRESS required");
 if (!MNEMONIC) throw new Error("RT_AGENT_MNEMONIC required");
 
@@ -69,7 +71,11 @@ const transport =
   RPC_URLS.length === 1
     ? http(RPC_URLS[0])
     : fallback(RPC_URLS.map((u) => http(u)), { retryCount: 0 });
-const publicClient = createPublicClient({ chain: baseSepolia, transport });
+// Chain object derives from CHAIN_ID so the wallet/public clients tag txns
+// with the right chain (was hardcoded baseSepolia — the "sending on the
+// wrong chain" half of the intent-hash/broadcast drift).
+const chain = CHAIN_ID === 84532 ? baseSepolia : base;
+const publicClient = createPublicClient({ chain, transport });
 
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000" as Address;
 
