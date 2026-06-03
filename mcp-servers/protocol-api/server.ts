@@ -17,7 +17,7 @@
  *   RT_FORGE_ADDRESS                     Router contract address
  *   RT_RPC_URL                            JSON-RPC endpoint
  *   RT_USDC_ADDRESS                       USDC token contract
- *   RT_AGENT_CHAIN_ID                     EVM chain id (default 84532)
+ *   RT_AGENT_CHAIN_ID                     EVM chain id (default 8453 mainnet; 84532 if RT_NETWORK=testnet)
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -56,8 +56,13 @@ import {
   TERMINAL_TTL_MS,
 } from "../../src/core/response-cache.js";
 
+// Production-default: Base mainnet. RT_NETWORK=testnet flips the backend,
+// RPC, chainId, USDC, and forge defaults to Base Sepolia (internal/dev only).
+const IS_MAINNET = process.env.RT_NETWORK !== "testnet";
+
 const API_URL =
-  process.env.RT_AGENT_BACKEND_URL || "http://localhost:8080";
+  process.env.RT_AGENT_BACKEND_URL ||
+  (IS_MAINNET ? "https://api.rezontree.com" : "http://localhost:8080");
 
 // ─── wallet-mode env ───────────────────────────────────────
 const AGENT_MNEMONIC = process.env.RT_AGENT_MNEMONIC || "";
@@ -68,15 +73,23 @@ const AGENT_INDEX = Number.parseInt(process.env.RT_AGENT_INDEX || "-1", 10);
 // When missing, chain-broadcast tools throw a teaching error at
 // first call; backend-only tools (list_*, get_*) keep working so
 // read-only agents can still use the server.
-const ROUTER_ADDRESS = process.env.RT_FORGE_ADDRESS as Address | undefined;
-const RPC_URL = process.env.RT_RPC_URL || "https://sepolia.base.org";
+const ROUTER_ADDRESS =
+  (process.env.RT_FORGE_ADDRESS as Address | undefined) ??
+  (IS_MAINNET
+    ? ("0x9DfE5b0cd930F1BDa58C2C55f8B26ed5dd999666" as Address)
+    : undefined);
+const RPC_URL =
+  process.env.RT_RPC_URL ||
+  (IS_MAINNET ? "https://mainnet.base.org" : "https://sepolia.base.org");
 const CHAIN_ID = Number.parseInt(
-  process.env.RT_AGENT_CHAIN_ID || "84532",
+  process.env.RT_AGENT_CHAIN_ID || (IS_MAINNET ? "8453" : "84532"),
   10,
 );
 const USDC_ADDRESS =
   (process.env.RT_USDC_ADDRESS as Address | undefined) ??
-  ("0x036CbD53842c5426634e7929541eC2318f3dCF7e" as Address);
+  ((IS_MAINNET
+    ? "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    : "0x036CbD53842c5426634e7929541eC2318f3dCF7e") as Address);
 
 /**
  * Router broadcast helpers lazy-derive the agent wallet + cache

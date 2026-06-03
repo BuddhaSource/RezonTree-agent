@@ -472,7 +472,7 @@ program
 // rt status — quick overview of all 10 agents
 program.command("status").description("Status overview: all agents + funding").action(async () => {
   console.log(`Backend: ${BACKEND}`);
-  console.log(`Chain:   Base Sepolia (84532)`);
+  console.log(`Chain:   ${IS_MAINNET ? "Base mainnet (8453)" : "Base Sepolia (84532)"}`);
   console.log(`USDC:    ${USDC}\n`);
   let totalUsdc = 0;
   let totalEth = 0;
