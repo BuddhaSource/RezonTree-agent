@@ -7,7 +7,7 @@
 //   pnpm tsx src/manage.ts --settings testnet wallets list
 //
 // The --settings flag picks which settings module to load (testnet or
-// mainnet). Defaults to env RT_SETTINGS or "testnet".
+// mainnet). Defaults to env RT_SETTINGS or "mainnet".
 
 import "dotenv/config";
 import { Command } from "commander";
@@ -29,7 +29,7 @@ async function main() {
     .option(
       "-s, --settings <network>",
       "Settings module: testnet | mainnet",
-      process.env.RT_SETTINGS ?? "testnet",
+      process.env.RT_SETTINGS ?? "mainnet",
     )
     .hook("preAction", async (thisCommand) => {
       // Load settings before any subcommand action runs. This lets

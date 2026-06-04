@@ -28,3 +28,4 @@ votes/
 
 # Private content overrides — a <name>.local.md card shadows its shipped <name>.md (whole-card replace). Never committed.
 *.local.md
+rezontree-files/

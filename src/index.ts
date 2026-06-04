@@ -26,6 +26,20 @@ export {
 // Extend without forking — scaffold a gitignored .local card (agent/skill/voice).
 export { scaffold, type Scaffold, type ScaffoldKind } from "./bootstrap/scaffold.js";
 
+// Agent working directory — Django-style two-level (common + per-persona)
+// file tree merged on read. tools/ research/ working/.
+export {
+  RESOURCE_CATEGORIES,
+  type ResourceCategory,
+  type ResourceScope,
+  type ResourceEntry,
+  resourceRoot,
+  listResources,
+  readResource,
+  resourceDir,
+  ensureResourceDirs,
+} from "./resources/index.js";
+
 // Persona × specialization model (drives swarm behavior + topics + coaching).
 export {
   PERSONAS,

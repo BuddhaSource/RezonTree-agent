@@ -50,6 +50,12 @@ import { loadPrompt } from "../src/prompts/index.js";
 import { renderCatalog } from "../src/catalog/index.js";
 import { scaffold, type ScaffoldKind } from "../src/bootstrap/scaffold.js";
 import {
+  ensureResourceDirs,
+  listResources,
+  resourceRoot,
+  RESOURCE_CATEGORIES,
+} from "../src/resources/index.js";
+import {
   runOnboard,
   renderOnboardPlan,
   type Blend,
@@ -223,6 +229,31 @@ program
     }
     fs.writeFileSync(abs, s.content);
     console.log(`created ${s.path}\nEdit THIS file — never the shipped card. It's gitignored (*.local.md) and overrides/extends the shipped set.`);
+  });
+
+// rt files — the agent working directory. Scaffolds + lists the merged
+// common + per-persona view of tools/ research/ working/.
+program
+  .command("files [persona]")
+  .description("Working directory: scaffold + list tools/research/working (merged common + persona)")
+  .action((persona?: string) => {
+    const id = persona ?? "generalist";
+    ensureResourceDirs(id);
+    console.log(`Working directory: ${resourceRoot()}`);
+    console.log(`  common/<cat>/          shared by every agent`);
+    console.log(`  personas/${id}/<cat>/  this persona only (shadows common)\n`);
+    for (const cat of RESOURCE_CATEGORIES) {
+      const entries = listResources(id, cat);
+      console.log(`  ${cat}/  (${entries.length})`);
+      for (const e of entries) {
+        const marker = e.scope === "persona" ? "•" : "·";
+        console.log(`    ${marker} ${e.name}${e.kind === "dir" ? "/" : ""}`);
+      }
+    }
+    console.log(`\n  · = shared (common)   • = this persona`);
+    console.log(`  tools/    download tools/code here (clone a repo, save a script the agent runs)`);
+    console.log(`  research/ gathered material   working/ scratch + working files`);
+    console.log(`  Drop in common/<cat>/ for all agents, or personas/${id}/<cat>/ for just this one.`);
   });
 
 // rt init — get-started: specialization + team size + persona blend → plan
