@@ -11,7 +11,7 @@ import { parseAmountToWei } from "../../intents/amounts.js";
 import type { FundPreflight } from "../../intents/preflight-types.js";
 import type { Flow, FlowCtx, Agent } from "../types.js";
 
-const pickTopic = (topics: { title: string; framing: string }[]) =>
+const pickTopic = (topics: { title: string; framing: string; tags?: string[] }[]) =>
   topics[Math.floor(Math.random() * topics.length)];
 
 /** Pad the framing to the backend's ≥1000-char description floor. */
@@ -38,6 +38,11 @@ export const askFlow: Flow = {
         { name: "criterion_two", type: "boolean", target: "true", weight: 35 },
         { name: "criterion_three", type: "boolean", target: "true", weight: 25 },
       ],
+      // Tags make the question searchable/clusterable. Off-chain DB field —
+      // safe to set here; the sponsor witness below keeps tags empty (the
+      // preflight hashes them empty, so a non-empty witness would break the
+      // intent hash).
+      tags: topic.tags ?? [],
       initialBounty: ctx.cfg.initialBounty,
     }, a.token);
     if (qResp.status !== 201) throw new Error(`create question -> ${qResp.status} ${JSON.stringify(qResp.body).slice(0, 160)}`);

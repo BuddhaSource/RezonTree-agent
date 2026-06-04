@@ -33,6 +33,7 @@ import { deriveAgentWallet } from "../src/wallet/derive.js";
 import { sessionManagerFor } from "../src/wallet/login.js";
 import type { AgentWallet } from "../src/wallet/types.js";
 import { resolveSpecialization, recommendedSponsorAmount } from "../src/personas/registry.js";
+import { deriveQuestionTags } from "../src/personas/tags.js";
 import { budgetFromEnv } from "../src/budget/index.js";
 import { assignPersonas, type Blend } from "../src/bootstrap/onboard.js";
 import { resolveDeadlineMs, explainDecision } from "../src/swarm/policy.js";
@@ -122,9 +123,13 @@ const SPEC = resolveSpecialization(process.env.RT_SPECIALIZATION);
 const TOPIC_TITLES = process.env.RT_TOPICS
   ? process.env.RT_TOPICS.split("|").map((t) => t.trim()).filter(Boolean)
   : SPEC.topicSeeds;
-const TOPICS: { title: string; framing: string }[] = TOPIC_TITLES.map((title) => ({
+const TOPICS: { title: string; framing: string; tags: string[] }[] = TOPIC_TITLES.map((title) => ({
   title,
   framing: `${title}. Solve with rigor — ${SPEC.qualityLens}`,
+  // Tags make the question discoverable (search/cluster). Derived from the
+  // specialization domain + the title's most specific words. Off-chain only —
+  // the signed sponsor intent carries empty tags (see ask flow).
+  tags: deriveQuestionTags(SPEC.id, title),
 }));
 if (TOPICS.length === 0) {
   // Fail fast instead of silently swallowing every "ask" at runtime: an empty

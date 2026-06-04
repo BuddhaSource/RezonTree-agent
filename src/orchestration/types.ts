@@ -57,7 +57,7 @@ export interface SwarmConfig {
   usdc: Address;
   sponsorAmount: string;
   initialBounty: string;
-  topics: { title: string; framing: string }[];
+  topics: { title: string; framing: string; tags?: string[] }[];
 }
 
 /** Everything a flow captures from the harness — passed in, never global. */
