@@ -9,10 +9,25 @@ import { ensureUsdcAllowance, runSponsorFlow } from "../../forge/quadphase-flow.
 import { awaitReceipt } from "../../forge/quadphase-broadcast.js";
 import { parseAmountToWei } from "../../intents/amounts.js";
 import type { FundPreflight } from "../../intents/preflight-types.js";
+import { deriveQuestionTags } from "../../personas/tags.js";
 import type { Flow, FlowCtx, Agent } from "../types.js";
 
 const pickTopic = (topics: { title: string; framing: string; tags?: string[] }[]) =>
   topics[Math.floor(Math.random() * topics.length)];
+
+// Every question ships ≥3 tags so it's discoverable on the board (pills +
+// facet filter). Prefer the topic's own tags; otherwise derive from the
+// title; pad with a generic floor so the ≥3 minimum always holds even for
+// a terse title. Capped at 5 (backend MaxQuestionTags). Tags are an
+// off-chain DB field — they never touch the sponsor witness / intent hash.
+function questionTags(topicTags: string[] | undefined, title: string): string[] {
+  const merged = [
+    ...(topicTags ?? []),
+    ...deriveQuestionTags("general", title),
+    "open-problem",
+  ];
+  return [...new Set(merged.filter(Boolean))].slice(0, 5);
+}
 
 /** Pad the framing to the backend's ≥1000-char description floor. */
 function makeDescription(framing: string, tag: string): string {
@@ -41,8 +56,9 @@ export const askFlow: Flow = {
       // Tags make the question searchable/clusterable. Off-chain DB field —
       // safe to set here; the sponsor witness below keeps tags empty (the
       // preflight hashes them empty, so a non-empty witness would break the
-      // intent hash).
-      tags: topic.tags ?? [],
+      // intent hash). questionTags() guarantees ≥3 so the board always has
+      // discovery pills even when a topic config omits tags.
+      tags: questionTags(topic.tags, topic.title),
       initialBounty: ctx.cfg.initialBounty,
     }, a.token);
     if (qResp.status !== 201) throw new Error(`create question -> ${qResp.status} ${JSON.stringify(qResp.body).slice(0, 160)}`);
