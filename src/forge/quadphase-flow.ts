@@ -120,6 +120,30 @@ export function assertIntentHashMatch(
   }
 }
 
+// assertContentHashMatch — amount-INDEPENDENT pre-sign drift guard.
+//
+// For sponsor, poolIn (the chosen amount) is client-determined and unknowable
+// at preflight, so the full intent hash can't be pre-asserted (it would
+// false-drift on any non-recommended amount — the $1.20 bug). But the WITNESS
+// contentHash is amount-independent and preflight-knowable: assert the
+// locally-built contentHash matches the backend's envelopeTemplate.contentHash
+// to catch WITNESS drift (e.g. a regression re-introducing non-empty
+// criteria/tags) BEFORE signing — the exact failure class that cost a whole
+// session of workarounds. No-ops when expected is omitted.
+export function assertContentHashMatch(
+  expected: Hex | undefined,
+  local: Hex,
+): void {
+  if (!expected) return;
+  if (expected.toLowerCase() !== local.toLowerCase()) {
+    throw new Error(
+      `content hash drift: expected ${expected} (preflight envelopeTemplate) !== ${local} (local witness recompute). ` +
+        `Client built a different witness than the backend's canonical — never sign past this. ` +
+        `The sponsor witness binds the question's title/body + EMPTY criteria/tags; rebuild it.`,
+    );
+  }
+}
+
 // ─── Shared envelope sign → assert → POST → broadcast spine ──────────
 //
 // Every signed chain-bound flow (sponsor / cosponsor / commit / vote /
@@ -306,10 +330,17 @@ export interface SponsorFlowParams {
   forgeAddress: Address;
   chainId: number;
 
-  /** Server-asserted intentHash from the preflight response. Posted
-   *  verbatim on the unified submit so the dispatcher can mirror its
-   *  Stage-2 reject if the client-recomputed hash drifts. */
-  expectedIntentHash: Hex;
+  /** Server-advised intentHash from preflight. INFORMATIONAL for sponsor:
+   *  poolIn (the chosen amount) is client-determined and unknowable at
+   *  preflight, so the backend bakes the recommended amount here and it
+   *  would false-drift on any other. Sponsor does NOT pre-assert it — the
+   *  local recompute is signed + POSTed and Stage-2 re-derives + validates
+   *  before broadcast. Use expectedContentHash for the pre-sign check. */
+  expectedIntentHash?: Hex;
+  /** Preflight envelopeTemplate.contentHash — amount-independent (witness
+   *  only). Asserted pre-sign against the locally-built witness contentHash
+   *  to catch witness drift before signing. Optional; omit to skip. */
+  expectedContentHash?: Hex;
 
   // SponsorWitness fields (per-Q parameters frozen on first sponsor).
   title: string;
@@ -357,11 +388,21 @@ export async function runSponsorFlow(
   p: SponsorFlowParams,
 ): Promise<SponsorFlowResult> {
   // 1. Witness.
+  // R-CLIENT-IS-TRUST-ORIGIN + protocol invariant: the client builds the
+  // canonical witness from protocol-known rules — it NEVER copies the
+  // backend's envelopeTemplate (blind-signing a server payload is the
+  // anti-pattern that rule forbids; worst case of a hostile server must be
+  // DoS, never a signed-away intent). The sponsor witness binds title+body
+  // (content the client authored) but criteria + tags are ALWAYS empty in
+  // the witness — full content lives off-chain in the create-POST body,
+  // bound only via contentHash. Forcing "" / [] here makes criteria/tags
+  // intent-hash drift impossible regardless of what a caller passes (the
+  // criteria/tags params are NOT part of the signed witness).
   const { witness, contentHash } = buildSponsorWitness({
     title: p.title,
     body: p.body,
-    criteria: p.criteria,
-    tags: p.tags,
+    criteria: "",
+    tags: [],
     oracle: p.oracle,
     sponsorshipFloor: p.sponsorshipFloor,
     commitFee: p.commitFee,
@@ -371,13 +412,23 @@ export async function runSponsorFlow(
     fundingDeadline: p.fundingDeadline,
     noSolutionGracePeriod: p.noSolutionGracePeriod,
   });
+  // Pre-sign drift guard (amount-independent): the locally-built witness
+  // contentHash must match the backend's preflight envelopeTemplate
+  // contentHash — catches witness drift (e.g. a regression re-introducing
+  // non-empty criteria/tags) BEFORE signing. The full intent hash is not
+  // pre-asserted for sponsor (poolIn is the client's amount; Stage-2 gates).
+  assertContentHashMatch(p.expectedContentHash, contentHash);
 
   // 2. Envelope.
   const funds: Funds = {
     token: p.token,
     poolIn: p.amount,
     poolOut: 0n,
-    feeAmount: p.feeAmount,
+    // Sponsor feeAmount is ALWAYS 0 (realized-outcome model: fees skim at
+    // settlement, never at sponsor time — the chain reverts a non-zero
+    // sponsor feeAmount). feeShareBps below is the question's fee RATE, not
+    // a charge. Forcing 0 so a caller can't drift the envelope.
+    feeAmount: 0n,
     feeShareBps: p.feeShareBps,
     feeShares: p.feeShares,
     stakeAmount: 0n,
@@ -403,7 +454,15 @@ export async function runSponsorFlow(
     actionType: "sponsor",
     envelope,
     serializedContent: serializeSponsorWitness(witness),
-    expectedIntentHash: p.expectedIntentHash,
+    // Treat sponsor like commit: poolIn (the sponsor's chosen amount) is
+    // CLIENT-determined and unknowable at preflight, so the backend's
+    // expectedIntentHash bakes the *recommended* amount and false-drifts on
+    // any other (the $1-works/$1.20-drifts bug — NOT a fee/precision issue).
+    // Omit it: the local recompute (real amount + canonical witness) is the
+    // value signed + POSTed, and Stage-2 re-derives + validates from that
+    // envelope BEFORE any gas-spending broadcast. R-CLIENT-IS-TRUST-ORIGIN:
+    // the amount is the client's authority, not the server's to pre-bind.
+    expectedIntentHash: undefined,
     chainId: p.chainId,
     forgeAddress: p.forgeAddress,
     privateKey: p.privateKey,

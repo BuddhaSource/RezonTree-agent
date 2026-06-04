@@ -19,7 +19,7 @@
 //
 // Audit issue #618.
 
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Address, Hex, WalletClient } from "viem";
 
 import {
@@ -97,19 +97,32 @@ describe("runXxxFlow refuses to sign past drift (R-INTENT-HASH-IS-MATCH-KEY)", (
   };
 
   // We additionally pin a fetch spy. If the drift assertion fails to
-  // fire, the flow would attempt a POST — that's the second-level
-  // proof the assertion came BEFORE any network call.
-  const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
-    throw new Error(
-      "fetch invoked — drift assertion failed to fire before submit",
-    );
+  // fire, the flow would attempt a POST — that's the second-level proof
+  // the assertion came BEFORE any network call. Scoped to THIS describe
+  // via beforeAll/afterAll(restore) so the global-fetch mock never leaks
+  // into / out of the body-capture describe below (which legitimately
+  // reaches fetch — sponsor's non-drift path now POSTs).
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  beforeAll(() => {
+    fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => {
+      throw new Error(
+        "fetch invoked — drift assertion failed to fire before submit",
+      );
+    });
+  });
+  afterAll(() => {
+    fetchSpy.mockRestore();
   });
 
-  it("runSponsorFlow throws on drift", async () => {
+  it("runSponsorFlow throws on content drift (witness mismatch)", async () => {
+    // Sponsor's full intent hash is amount-dependent (poolIn is client-chosen,
+    // unknowable at preflight) so it is NOT pre-asserted; the amount-
+    // INDEPENDENT witness contentHash is checked against the preflight
+    // template instead. A bogus expectedContentHash must fail pre-network.
     await expect(
       runSponsorFlow({
         ...common,
-        expectedIntentHash: BOGUS_HASH,
+        expectedContentHash: BOGUS_HASH,
         title: "T",
         body: "B",
         criteria: "C",
@@ -128,7 +141,7 @@ describe("runXxxFlow refuses to sign past drift (R-INTENT-HASH-IS-MATCH-KEY)", (
         feeShareBps: 0,
         feeShares: [],
       }),
-    ).rejects.toThrow(/intent hash drift/);
+    ).rejects.toThrow(/content hash drift/);
   });
 
   it("runCosponsorFlow throws on drift", async () => {
