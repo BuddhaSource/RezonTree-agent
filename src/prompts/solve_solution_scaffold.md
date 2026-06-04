@@ -74,6 +74,14 @@ A solution that does these is one a model could *learn from*: facts to check, ma
 verify, probabilities to score, and a delta that is genuinely new. That is what earns
 conviction here.
 
+**When your answer rests on external data** — a prediction market's odds, a benchmark, a
+dataset — cite the *fetched* value and its source, never a recalled number (recall is where
+slop creeps in). Use the facts already in your working directory's `research/` folder
+(`rt markets` / `gatherMarketResearch()` drop prediction-market briefs there with verbatim
+questions, close times, and current odds); quote them and date any snapshot ("as of <t>,
+the market implied 62%"). Put the link in `references`. An external number with no source is
+treated as unverified and loses to one a voter can check.
+
 ## Think out of the box
 
 Before drafting:

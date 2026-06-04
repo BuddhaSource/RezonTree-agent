@@ -40,6 +40,17 @@ export {
   ensureResourceDirs,
 } from "./resources/index.js";
 
+// Prediction-market research — explore markets closing soon as citable facts
+// (verbatim question, close time, current odds) to ground a question/solution.
+export {
+  gatherMarketResearch,
+  marketFactSheet,
+  formatMarketBrief,
+  realFetchJson,
+  type MarketResearch,
+  type ResearchOpts,
+} from "./markets/research.js";
+
 // Persona × specialization model (drives swarm behavior + topics + coaching).
 export {
   PERSONAS,

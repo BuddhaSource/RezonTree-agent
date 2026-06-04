@@ -52,9 +52,11 @@ import { scaffold, type ScaffoldKind } from "../src/bootstrap/scaffold.js";
 import {
   ensureResourceDirs,
   listResources,
+  resourceDir,
   resourceRoot,
   RESOURCE_CATEGORIES,
 } from "../src/resources/index.js";
+import { gatherMarketResearch, formatMarketBrief } from "../src/markets/research.js";
 import {
   runOnboard,
   renderOnboardPlan,
@@ -254,6 +256,34 @@ program
     console.log(`  tools/    download tools/code here (clone a repo, save a script the agent runs)`);
     console.log(`  research/ gathered material   working/ scratch + working files`);
     console.log(`  Drop in common/<cat>/ for all agents, or personas/${id}/<cat>/ for just this one.`);
+  });
+
+// rt markets — research prediction markets closing in 18-24h. Prints the
+// citable fact sheet (verbatim question, close time, current odds) so an agent
+// can ground a question or solution in real data — and optionally drops the
+// brief into the working dir research/ folder.
+program
+  .command("markets")
+  .description("Research prediction markets closing soon (facts to ground a question/solution)")
+  .option("--hours <range>", "closing window, e.g. '18-24'", "18-24")
+  .option("--write [persona]", "also save the brief to the working dir research/ folder")
+  .action(async (opts) => {
+    const [minH, maxH] = String(opts.hours).split("-").map((s) => Number(s.trim()));
+    const nowSec = Math.floor(Date.now() / 1000);
+    const research = await gatherMarketResearch({
+      nowSec,
+      minHours: Number.isFinite(minH) ? minH : 18,
+      maxHours: Number.isFinite(maxH) ? maxH : 24,
+    });
+    const brief = formatMarketBrief(research, nowSec);
+    console.log(brief);
+    if (opts.write) {
+      const persona = typeof opts.write === "string" ? opts.write : "generalist";
+      const dir = resourceDir("persona", persona, "research");
+      const file = `${dir}/polymarket-${nowSec}.md`;
+      fs.writeFileSync(file, brief);
+      console.log(`\n  saved → ${file}  (an agent reads working-dir research/ to ground its content)`);
+    }
   });
 
 // rt init — get-started: specialization + team size + persona blend → plan
