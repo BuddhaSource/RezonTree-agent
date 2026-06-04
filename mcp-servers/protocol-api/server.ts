@@ -1938,7 +1938,9 @@ server.tool(
     description: z.string().describe("≥ 1000 chars. See post_question_scaffold.md."),
     bountyUsd: z
       .string()
-      .describe("USDC bounty (e.g. '5.00'). Min 1.00 for sponsor."),
+      .describe(
+        "USDC bounty (e.g. '5.00'). Minimum 0.30; recommend 1.00+ — higher bounties attract more and better solvers. The sponsor preflight's recommendedSponsorshipFloor advertises the current suggested target.",
+      ),
     votingDeadline: z
       .string()
       .describe("ISO 8601, default 48h from now."),
