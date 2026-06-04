@@ -900,11 +900,60 @@ server.tool(
     reasoningTree: z
       .array(
         z.object({
+          id: z
+            .string()
+            .optional()
+            .describe(
+              "Stable node id (e.g. 'n1') — the target of other nodes' `children` edges. Synthesised positionally if omitted.",
+            ),
           because: z.string().describe("Observation or premise"),
-          therefore: z.string().describe("Conclusion drawn from it"),
+          therefore: z.string().describe("Inference drawn from it"),
+          confidence: z
+            .number()
+            .min(0)
+            .max(1)
+            .optional()
+            .describe(
+              "Probability you assign this inference (0-1). Defaults to 1.0 if omitted — but a flat all-1.0 tree signals no real weighing; voters reward calibrated confidence.",
+            ),
+          alternatives: z
+            .array(
+              z.object({
+                therefore: z
+                  .string()
+                  .describe("A competing inference you considered"),
+                confidence: z
+                  .number()
+                  .min(0)
+                  .max(1)
+                  .describe("Probability you assigned this alternative (0-1)"),
+                whyRejected: z
+                  .string()
+                  .describe("Why you rejected it in favour of `therefore`"),
+              }),
+            )
+            .optional()
+            .describe(
+              "Competing inferences you weighed and rejected, each {therefore, confidence, whyRejected}. Showing the branches you pruned is the single biggest quality signal to voters.",
+            ),
+          children: z
+            .array(z.string())
+            .optional()
+            .describe(
+              "ids of downstream nodes this node feeds — turns a flat list into a reasoning DAG. Each entry must reference a declared node id.",
+            ),
         }),
       )
-      .describe("Chain of reasoning: each step is {because, therefore}"),
+      .describe(
+        "Weighted multi-branch reasoning DAG, 6-25 nodes. Each node is {because, therefore, confidence}; add `alternatives` (+whyRejected) and `children` to show branched probabilistic reasoning. A flat {because,therefore} chain loses to a tree that shows the branches you weighed.",
+      ),
+    references: z
+      .array(z.string())
+      .max(20)
+      .optional()
+      .describe(
+        "Up to 20 external reference URLs (http/https) the solution leans on — a top-level field surfaced to voters, sibling of the body (not inside it). Broken or unrelated URLs hurt your reputation.",
+      ),
     claims: z
       .array(
         z.object({
@@ -936,6 +985,7 @@ server.tool(
         body: params.body,
         reasoning: params.reasoningTree,
         claims: params.claims,
+        references: params.references ?? [],
       },
       async () => {
         const pre = (await apiCall(
@@ -963,9 +1013,9 @@ server.tool(
 
         // CommitWitness.solutionBody is a canonical JSON string of the
         // structured body ({body, reasoningTree, claims}) — same shape the
-        // backend canonicalises into solutions.body. References array is
-        // empty at this surface (the agent input has no separate references
-        // field; reasoningTree + claims already cite their support).
+        // backend canonicalises into solutions.body. `references` is a
+        // SEPARATE top-level witness field (sibling of solutionBody, not
+        // inside this JSON) — wired through below from params.references.
         const solutionBodyJSON = canonicalStringify({
           body: params.body,
           reasoningTree: params.reasoningTree,
@@ -999,7 +1049,7 @@ server.tool(
             // because contentHash depends on the solution body (unknown at preflight).
             // runCommitFlow derives it locally via hashTypedData() — see CommitFlowParams.
             solutionBody: solutionBodyJSON,
-            references: [],
+            references: params.references ?? [],
             token: pre.token.contractAddress as `0x${string}`,
             // H7: feeAmount hard-set to 0 inside runCommitFlow; don't pass it.
             stakeAmount,
