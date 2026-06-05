@@ -5,10 +5,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  ensureQuestionDirs,
   ensureResourceDirs,
   listResources,
   readResource,
+  RESEARCH_SUBDIRS,
   RESOURCE_CATEGORIES,
+  researchSubdir,
   resourceDir,
   resourceRoot,
 } from "./index.js";
@@ -89,5 +92,68 @@ describe("resources working directory", () => {
 
   it("empty / missing dirs list as empty, not error", () => {
     expect(listResources("nobody", "research")).toEqual([]);
+  });
+
+  // ── question scope (the "very specific" tier) ──
+
+  it("question scope folds in as the most-specific tier, shadowing persona + common", () => {
+    write("common/research/a.md", "common");
+    write("personas/researcher/research/b.md", "persona");
+    write("questions/qst_abc/research/a.md", "question wins");
+    write("questions/qst_abc/research/c.md", "question only");
+    const entries = listResources("researcher", "research", "qst_abc");
+    const byName = Object.fromEntries(entries.map((e) => [e.name, e.scope]));
+    // a.md present in common AND question → question shadows.
+    expect(byName["a.md"]).toBe("question");
+    expect(byName["b.md"]).toBe("persona");
+    expect(byName["c.md"]).toBe("question");
+    // Without the qid, the question tier is invisible (back-compat).
+    expect(listResources("researcher", "research").map((e) => e.name)).toEqual([
+      "a.md",
+      "b.md",
+    ]);
+  });
+
+  it("readResource prefers question > persona > common when a qid is given", () => {
+    write("common/research/x.md", "from common");
+    write("personas/solver/research/x.md", "from persona");
+    write("questions/qst_z/research/x.md", "from question");
+    // Most-specific tier wins.
+    expect(readResource("solver", "research", "x.md", "qst_z")).toBe(
+      "from question",
+    );
+    // No question copy → falls back to persona (a different question's tier
+    // is empty, so persona shadows common).
+    write("personas/solver/research/p.md", "persona only");
+    expect(readResource("solver", "research", "p.md", "qst_z")).toBe(
+      "persona only",
+    );
+    // Absent everywhere → null.
+    expect(readResource("solver", "research", "missing.md", "qst_z")).toBeNull();
+  });
+
+  it("ensureQuestionDirs scaffolds every category + the research sub-structure", () => {
+    const qroot = ensureQuestionDirs("qst_scaffold");
+    expect(qroot.startsWith(resourceRoot())).toBe(true);
+    // tools/ + working/ scaffolded but empty.
+    expect(listResources("nobody", "tools", "qst_scaffold")).toEqual([]);
+    expect(listResources("nobody", "working", "qst_scaffold")).toEqual([]);
+    // research/ carries the canonical sub-structure (order-independent).
+    const subdirs = listResources("nobody", "research", "qst_scaffold");
+    expect(subdirs.every((e) => e.kind === "dir")).toBe(true);
+    expect(subdirs.map((e) => e.name).sort()).toEqual([...RESEARCH_SUBDIRS].sort());
+  });
+
+  it("researchSubdir resolves a canonical research bucket, path-guarded", () => {
+    const pdfs = researchSubdir("question", "qst_pdf", "pdfs");
+    expect(pdfs.startsWith(resourceRoot())).toBe(true);
+    expect(pdfs.endsWith(join("research", "pdfs"))).toBe(true);
+    expect(() => researchSubdir("common", "x", "../escape")).toThrow(/unsafe/);
+  });
+
+  it("resourceDir writes into the question scope", () => {
+    const dir = resourceDir("question", "qst_w", "tools");
+    expect(dir.startsWith(resourceRoot())).toBe(true);
+    expect(dir.includes(join("questions", "qst_w", "tools"))).toBe(true);
   });
 });

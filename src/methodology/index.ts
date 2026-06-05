@@ -20,6 +20,8 @@ const DEDUP_BY_CONTENT = loadCard("dedup-strategy");
 
 const RESEARCH_REGISTRY = loadCard("research-registry");
 
+const RESEARCH_FRAMEWORK = loadCard("research-framework");
+
 export type MethodologyTool = {
   name: string;
   description: string;
@@ -74,5 +76,11 @@ export const methodologyTools: MethodologyTool[] = [
     description:
       "Methodology: how to scan the question registry before posting to avoid duplicates. Returns the search-then-decide recipe.",
     body: () => RESEARCH_REGISTRY,
+  },
+  {
+    name: "craft_research_framework",
+    description:
+      "Framework: the research workspace + how to use the SDK. Returns where research goes (shared / per-persona / per-question scopes), the deterministic-vs-non-deterministic rule that keeps open research drift-free, the workspace API + rt verbs, and citation discipline. Call this when you start investigating a question.",
+    body: () => RESEARCH_FRAMEWORK,
   },
 ];

@@ -26,18 +26,24 @@ export {
 // Extend without forking — scaffold a gitignored .local card (agent/skill/voice).
 export { scaffold, type Scaffold, type ScaffoldKind } from "./bootstrap/scaffold.js";
 
-// Agent working directory — Django-style two-level (common + per-persona)
-// file tree merged on read. tools/ research/ working/.
+// Agent working directory / research workspace — merged file tree across
+// three scopes (common + per-persona + per-question). tools/ research/
+// working/, with a canonical research sub-layout. See the research-framework
+// card for the determinism contract.
 export {
   RESOURCE_CATEGORIES,
+  RESEARCH_SUBDIRS,
   type ResourceCategory,
+  type ResearchSubdir,
   type ResourceScope,
   type ResourceEntry,
   resourceRoot,
   listResources,
   readResource,
   resourceDir,
+  researchSubdir,
   ensureResourceDirs,
+  ensureQuestionDirs,
 } from "./resources/index.js";
 
 // Prediction-market research — explore markets closing soon as citable facts

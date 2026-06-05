@@ -40,6 +40,7 @@ src/
 ├── swarm/          # action-menu policy — which flow runs, by weight
 ├── voting/         # sharp-voting pipeline: matrix → credibility → injection → decide
 ├── markets/        # prediction-market skill (Polymarket adapter + question framing)
+├── resources/      # research workspace — common/persona/question scopes, merged on read
 ├── forge/          # viem broadcast + the Quadphase flow spine   ┐
 ├── intents/        # EIP-712 intent builders + preflight guards   ├ MONEY PATH (sealed)
 ├── wallet/         # HD derive + EIP-712 sign + login             ┘
@@ -56,6 +57,28 @@ RUNBOOK.md          # cold-clone → live round walkthrough
 The split is by determinism: FLOWS are code (`orchestration/`), CONTENT is md cards
 (`agents/` + `skills/`), the money path (`forge/intents/wallet`) is sealed — fenced by
 `src/architecture.test.ts`.
+
+### Research framework
+
+`src/resources/` is the agent **research workspace** — a git-ignored file tree
+(`RT_RESOURCE_DIR`, default `./rezontree-files`) with three scopes that share one
+shape and merge most-specific-first on read:
+
+```
+common/<cat>/        shared, cross-project          ← every agent
+personas/<id>/<cat>/ this persona                   ← agent-specific
+questions/<qid>/<cat>/ this question (very specific) ← per-investigation
+   cat ∈ {tools, research, working};  research/ ⊃ {downloads,pdfs,repos,sources,notes}
+```
+
+This carries the same determinism split: the **research itself is
+non-deterministic** (agent judgement), but **where it lands is deterministic** —
+agents call `resourceDir` / `researchSubdir` / `ensureQuestionDirs` (or
+`rt research`), never hand-rolled paths, so open-ended work stays drift-free and
+re-findable. Research is content preparation (cited in the body a flow signs); it
+never touches the sealed money path. The `research-framework` skill card teaches
+the whole thing and is surfaced at boot (cold-start prompt + the
+`craft_research_framework` methodology tool).
 
 ## Commands
 

@@ -47,11 +47,15 @@ import { base, baseSepolia } from "viem/chains";
 
 import { requestUSDC, ethFaucetMessage, ETH_FAUCETS } from "../src/faucet/circle.js";
 import { loadPrompt } from "../src/prompts/index.js";
+import { loadCard } from "../src/skills/load.js";
 import { renderCatalog } from "../src/catalog/index.js";
 import { scaffold, type ScaffoldKind } from "../src/bootstrap/scaffold.js";
 import {
+  ensureQuestionDirs,
   ensureResourceDirs,
   listResources,
+  RESEARCH_SUBDIRS,
+  researchSubdir,
   resourceDir,
   resourceRoot,
   RESOURCE_CATEGORIES,
@@ -256,6 +260,56 @@ program
     console.log(`  tools/    download tools/code here (clone a repo, save a script the agent runs)`);
     console.log(`  research/ gathered material   working/ scratch + working files`);
     console.log(`  Drop in common/<cat>/ for all agents, or personas/${id}/<cat>/ for just this one.`);
+  });
+
+// rt research — the question-scoped research workspace. The deterministic
+// path/scaffold surface for an agent's non-deterministic investigation: same
+// helpers → same folders → no drift. See src/skills/research-framework.md.
+const research = program
+  .command("research")
+  .description("Research workspace for a question (questions/<qid>/) + the framework guide");
+
+research
+  .command("init <qid>")
+  .description("Scaffold a question's research workspace (tools/research/working + downloads/pdfs/repos/sources/notes) and list it")
+  .action((qid: string) => {
+    const qroot = ensureQuestionDirs(qid);
+    console.log(`Question workspace: ${qroot}\n`);
+    for (const cat of RESOURCE_CATEGORIES) {
+      const entries = listResources("generalist", cat, qid).filter(
+        (e) => e.scope === "question",
+      );
+      console.log(`  ${cat}/  (${entries.length})`);
+      for (const e of entries) {
+        console.log(`    • ${e.name}${e.kind === "dir" ? "/" : ""}`);
+      }
+    }
+    console.log(
+      `\n  research/ buckets: ${RESEARCH_SUBDIRS.join("  ")}`,
+    );
+    console.log(
+      `  Drop downloads/PDFs/clones/sources there; cite them in the body you sign`,
+    );
+    console.log(`  (quote the number, name the source, date the snapshot). Tree is git-ignored.`);
+  });
+
+research
+  .command("path <qid>")
+  .description("Print a deterministic folder path under a question (default: its research/ dir)")
+  .option("--sub <subdir>", "research bucket: downloads | pdfs | repos | sources | notes")
+  .action((qid: string, opts: { sub?: string }) => {
+    console.log(
+      opts.sub
+        ? researchSubdir("question", qid, opts.sub)
+        : resourceDir("question", qid, "research"),
+    );
+  });
+
+research
+  .command("guide")
+  .description("Print the research-framework card (scopes, determinism rule, SDK usage, citation)")
+  .action(() => {
+    console.log(loadCard("research-framework"));
   });
 
 // rt markets — research prediction markets closing in 18-24h. Prints the

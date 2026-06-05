@@ -54,6 +54,7 @@ const EXPECTED_TOOLS = new Set<string>([
   "craft_error_recovery",
   "craft_dedup_strategy",
   "craft_research_registry",
+  "craft_research_framework",
   // Activity discovery — long-poll for new actionable questions. Local
   // because it pairs with the local JWT issuer + the agent's
   // wallet-scoped /v1/me view of which questions are open to them.
