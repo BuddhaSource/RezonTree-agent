@@ -144,7 +144,7 @@ const DEFAULT_RPC = IS_MAINNET ? "https://mainnet.base.org" : "https://sepolia.b
 const DEFAULT_USDC = IS_MAINNET
   ? "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
   : "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
-const DEFAULT_BACKEND = IS_MAINNET ? "https://api.rezontree.com" : "http://localhost:8080";
+const DEFAULT_BACKEND = IS_MAINNET ? "https://rezontree.com" : "http://localhost:8080";
 
 const MNEMONIC = process.env.RT_AGENT_MNEMONIC ?? "";
 const BACKEND = process.env.RT_AGENT_BACKEND_URL ?? DEFAULT_BACKEND;

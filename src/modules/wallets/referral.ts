@@ -36,7 +36,7 @@ export interface ApplyReferralCodeArgs {
   account: Account;
   /** The 5-char [a-z0-9] referral code, case-insensitive on input. */
   code: string;
-  /** Backend base URL (e.g. https://api.rezontree.com). */
+  /** Backend base URL (e.g. https://rezontree.com). */
   backendUrl: string;
 }
 

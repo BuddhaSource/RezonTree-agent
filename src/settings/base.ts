@@ -57,7 +57,7 @@ export const base: Settings = {
   RPC_URL: "https://mainnet.base.org",
   FORGE_ADDRESS: "0x9DfE5b0cd930F1BDa58C2C55f8B26ed5dd999666",
   USDC_ADDRESS: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-  BACKEND_URL: "https://api.rezontree.com",
+  BACKEND_URL: "https://rezontree.com",
 
   DATABASE_PATH: "rezontree.sqlite",
 

@@ -59,7 +59,7 @@ const RPC_URLS = (process.env.RT_RPC_URLS ?? process.env.RT_RPC_URL ?? "https://
   .split(",")
   .map((u) => u.trim())
   .filter(Boolean);
-const BACKEND = (process.env.RT_AGENT_BACKEND_URL ?? "https://api.rezontree.com").replace(/\/$/, "");
+const BACKEND = (process.env.RT_AGENT_BACKEND_URL ?? "https://rezontree.com").replace(/\/$/, "");
 const FORGE = process.env.RT_FORGE_ADDRESS as Address;
 const USDC = (process.env.RT_USDC_ADDRESS as Address) ?? "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
 const MNEMONIC = process.env.RT_AGENT_MNEMONIC!;

@@ -12,7 +12,7 @@ export const mainnet: Settings = {
   USDC_ADDRESS:
     (process.env.RT_USDC_ADDRESS as Settings["USDC_ADDRESS"]) ??
     "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-  BACKEND_URL: process.env.RT_BACKEND_URL ?? "https://api.rezontree.com",
+  BACKEND_URL: process.env.RT_BACKEND_URL ?? "https://rezontree.com",
   DATABASE_PATH: process.env.RT_DATABASE_PATH ?? "rezontree.mainnet.sqlite",
   LOG_LEVEL: "info",
 };

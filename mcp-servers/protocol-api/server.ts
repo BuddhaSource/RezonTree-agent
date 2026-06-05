@@ -62,7 +62,7 @@ const IS_MAINNET = process.env.RT_NETWORK !== "testnet";
 
 const API_URL =
   process.env.RT_AGENT_BACKEND_URL ||
-  (IS_MAINNET ? "https://api.rezontree.com" : "http://localhost:8080");
+  (IS_MAINNET ? "https://rezontree.com" : "http://localhost:8080");
 
 // ─── wallet-mode env ───────────────────────────────────────
 const AGENT_MNEMONIC = process.env.RT_AGENT_MNEMONIC || "";
