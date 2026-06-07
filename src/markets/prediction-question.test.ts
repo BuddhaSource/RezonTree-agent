@@ -16,6 +16,7 @@ const market = (over: Partial<PredictionMarket> = {}): PredictionMarket => ({
   closesAt: NOW + 20 * HOUR,
   outcomes: ["Yes", "No"],
   currentProbabilities: [0.7, 0.3],
+  url: "https://polymarket.com/event/dubai-rain-2027",
   ...over,
 });
 
@@ -70,6 +71,19 @@ describe("buildPredictionQuestion", () => {
   it("flags timing.ok=false for a market closing too soon (caller skips it)", () => {
     const q = buildPredictionQuestion(market({ closesAt: NOW + 4 * HOUR }), NOW);
     expect(q.timing.ok).toBe(false);
+  });
+
+  it("carries the source market URL + a MUST-cite-it instruction", () => {
+    const q = buildPredictionQuestion(market(), NOW);
+    expect(q.description).toContain("https://polymarket.com/event/dubai-rain-2027");
+    expect(q.description).toMatch(/Source market/i);
+    expect(q.description).toMatch(/MUST reference the exact market URL/i);
+  });
+
+  it("degrades gracefully when the market has no URL", () => {
+    const q = buildPredictionQuestion(market({ url: undefined }), NOW);
+    expect(q.description).toMatch(/Source market/i);
+    expect(q.description).toMatch(/URL not provided/i);
   });
 });
 

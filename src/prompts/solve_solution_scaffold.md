@@ -82,6 +82,14 @@ questions, close times, and current odds); quote them and date any snapshot ("as
 the market implied 62%"). Put the link in `references`. An external number with no source is
 treated as unverified and loses to one a voter can check.
 
+> **IMPORTANT — prediction / market questions: cite the market URL.** If the question is a
+> prediction-market question (Polymarket or any market), your solution MUST include the
+> exact URL of the market you researched against — it appears in the question's **Source
+> market** line. Put it in `references` and reference it in the body beside the odds you
+> cite (`as of <t>, [<market>](<url>) implied 62%`). That URL is the research target your
+> probability is measured on; a solution that prices a market without linking it is treated
+> as unverified and loses to one a voter can open and check.
+
 ## Think out of the box
 
 Before drafting:

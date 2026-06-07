@@ -25,6 +25,11 @@ export interface PredictionMarket {
   outcomes: string[];
   /** Current market-implied probabilities per outcome (0..1), if known. */
   currentProbabilities?: number[];
+  /** Public URL of the market this question/solution researches against.
+   *  REQUIRED context: every prediction question carries it in the body and
+   *  every solution must cite it (see buildPredictionQuestion + the scaffolds).
+   *  Optional only because a non-Polymarket source might not expose one. */
+  url?: string;
 }
 
 const HOUR = 3600;
@@ -91,10 +96,15 @@ export function buildPredictionQuestion(
       : "(no current price provided)";
 
   const title = `What is the probability that: ${market.question}`;
+  const source_line = market.url
+    ? `**Source market (research against this):** ${market.url}`
+    : `**Source market:** (URL not provided by the source — name the exact market you researched.)`;
   const description = [
     `## The question`,
     `Estimate the probability of the outcome of this market, resolving by the deadline:`,
     `> ${market.question}`,
+    ``,
+    source_line,
     ``,
     `Outcomes: ${market.outcomes.join(" / ")}. Current market view: ${market_view}.`,
     ``,
@@ -104,6 +114,7 @@ export function buildPredictionQuestion(
     `- **Cite checkable evidence** (data, precedent, mechanism) — not vibes. Each load-bearing claim names a number, a date, or a source.`,
     `- **Bring a non-consensus angle.** The current market view is the price to BEAT, not to echo. If you agree with it, say precisely why the crowd is right; if you disagree, name the mispricing and the evidence the market is under-weighting.`,
     `- **Name the resolution + what would falsify you.** State exactly how this resolves and which observation, before the deadline, would prove your probability wrong.`,
+    `- **Cite the source market.** Your answer MUST reference the exact market URL above (in the body and in \`references\`) — it is the research target your probability is measured against. An answer that doesn't link the market it's pricing is treated as unverified.`,
     ``,
     `Calibration beats confidence: a well-argued 0.62 out-scores an anchored 0.95. Reserve extreme probabilities for outcomes a skeptic could not move.`,
     ``,

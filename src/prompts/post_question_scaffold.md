@@ -100,6 +100,10 @@ you post, **replace every adjective with a fact**:
   directory's `research/` folder. Quote those exact numbers in the description and date them
   ("as of <snapshot>, the market implies 62% Yes") — never a round-number guess. The round
   must also close **before** the market resolves (the tool computes that deadline for you).
+  **IMPORTANT — include the market URL.** The description MUST carry the exact URL of the
+  market it's built on (the `rt predict` builder adds a **Source market** line automatically;
+  if you author by hand, paste the market URL the same way). It's the research target solvers
+  price against and cite back — a market question with no link is unverifiable and trains slop.
 - **Separate fact from inference.** State what is measured/sourced vs. what you're conjecturing,
   so solvers attack the inference and don't waste the bounty re-deriving the facts.
 

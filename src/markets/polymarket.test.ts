@@ -4,6 +4,7 @@ import {
   filterClosingWindow,
   parseGammaMarket,
   polymarketSource,
+  polymarketUrl,
 } from "./polymarket.js";
 import type { PredictionMarket } from "./prediction-question.js";
 
@@ -19,6 +20,8 @@ const gamma = (over: Record<string, unknown> = {}) => ({
   endDate: iso(20),
   outcomes: '["Yes","No"]',
   outcomePrices: '["0.7","0.3"]',
+  slug: "will-x-by-friday",
+  events: [{ slug: "what-happens-by-friday" }],
   ...over,
 });
 
@@ -31,6 +34,8 @@ describe("parseGammaMarket", () => {
     expect(m!.closesAt).toBe(NOW + 20 * HOUR);
     expect(m!.outcomes).toEqual(["Yes", "No"]);
     expect(m!.currentProbabilities).toEqual([0.7, 0.3]);
+    // URL is derived from the EVENT slug (the public page), not the market slug.
+    expect(m!.url).toBe("https://polymarket.com/event/what-happens-by-friday");
   });
 
   it("rejects resolved / inactive / malformed markets", () => {
@@ -45,6 +50,17 @@ describe("parseGammaMarket", () => {
   it("omits currentProbabilities when prices don't line up with outcomes", () => {
     const m = parseGammaMarket(gamma({ outcomePrices: '["0.7"]' })); // 1 price, 2 outcomes
     expect(m!.currentProbabilities).toBeUndefined();
+  });
+});
+
+describe("polymarketUrl", () => {
+  it("prefers the event slug, falls back to the market slug, else undefined", () => {
+    expect(polymarketUrl({ slug: "m", events: [{ slug: "ev" }] })).toBe(
+      "https://polymarket.com/event/ev",
+    );
+    expect(polymarketUrl({ slug: "m" })).toBe("https://polymarket.com/event/m");
+    expect(polymarketUrl({ events: [{}] })).toBeUndefined();
+    expect(polymarketUrl({})).toBeUndefined();
   });
 });
 

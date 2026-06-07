@@ -53,6 +53,10 @@ export function marketFactSheet(m: PredictionMarket, nowSec: number): string[] {
     .join(" · ");
   return [
     `Market (verbatim): ${m.question}`,
+    // The market URL is mandatory: every question/solution built on this market
+    // must cite it as the research target. Carry it in the fact sheet so it
+    // lands in the working-dir brief and the agent has it to hand.
+    `Market URL (cite this): ${m.url ?? "(not provided by source — record the exact market you used)"}`,
     `Resolves: ${new Date(m.closesAt * 1000).toISOString()} (~${hoursToClose}h from snapshot)`,
     `Outcomes + current market-implied odds: ${odds}`,
     `Source: Polymarket — re-verify before citing; odds are a point-in-time snapshot, not a guarantee`,
@@ -109,8 +113,9 @@ export function formatMarketBrief(
   }
   lines.push(
     `${research.length} market(s) in the closing window. Ground any question or`,
-    `solution in these facts — cite the actual odds + close time, never invent a`,
-    `number or a source.`,
+    `solution in these facts — cite the market URL + the actual odds + close time,`,
+    `never invent a number or a source. The market URL is REQUIRED in every`,
+    `prediction question and solution (the research target it's measured against).`,
     "",
   );
   for (const r of research) {

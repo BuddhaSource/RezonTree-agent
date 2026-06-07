@@ -17,6 +17,7 @@ const sample: PredictionMarket = {
   closesAt: NOW + 20 * HOUR,
   outcomes: ["Yes", "No"],
   currentProbabilities: [0.62, 0.38],
+  url: "https://polymarket.com/event/x-by-friday",
 };
 
 function mockSource(markets: PredictionMarket[]): MarketSource {
@@ -35,6 +36,10 @@ describe("market research helpers", () => {
     );
     // Anti-slop: explicitly marks the odds as a snapshot to re-verify.
     expect(facts.some((f) => /snapshot|re-verify/i.test(f))).toBe(true);
+    // The market URL (research target) must be in the fact sheet to cite.
+    expect(
+      facts.some((f) => f.includes("https://polymarket.com/event/x-by-friday")),
+    ).toBe(true);
   });
 
   it("marketFactSheet reports unknown odds rather than inventing a number", () => {
@@ -66,7 +71,9 @@ describe("market research helpers", () => {
     ];
     const md = formatMarketBrief(research, NOW);
     expect(md).toMatch(/never invent a/i);
+    expect(md).toMatch(/market URL is REQUIRED/i);
     expect(md).toContain("Will X happen by Friday?");
+    expect(md).toContain("https://polymarket.com/event/x-by-friday");
   });
 
   it("formatMarketBrief handles an empty window without inventing content", () => {

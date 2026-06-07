@@ -39,6 +39,24 @@ interface GammaMarket {
   endDate?: string;
   outcomes?: string | string[];
   outcomePrices?: string | string[];
+  /** Market slug (per-market). The PUBLIC page is the EVENT page, so prefer
+   *  the event slug below; this is the fallback. */
+  slug?: string;
+  /** Parent event(s); the event slug is what resolves at polymarket.com/event/. */
+  events?: { slug?: string }[];
+}
+
+/** The public Polymarket page for a market is its EVENT page
+ *  (polymarket.com/event/<event-slug>) — the per-market `slug` groups under an
+ *  event and doesn't resolve on its own for multi-market events. Prefer the
+ *  event slug; fall back to the market slug; undefined when neither is present. */
+export function polymarketUrl(m: {
+  slug?: string;
+  events?: { slug?: string }[];
+}): string | undefined {
+  const eventSlug = m.events?.find((e) => e?.slug)?.slug;
+  const slug = eventSlug ?? m.slug;
+  return slug ? `https://polymarket.com/event/${slug}` : undefined;
 }
 
 /** Gamma sends arrays as JSON-encoded strings (e.g. '["Yes","No"]'); accept
@@ -72,7 +90,17 @@ export function parseGammaMarket(m: GammaMarket | null | undefined): PredictionM
     prices.length === outcomes.length && prices.every((p) => Number.isFinite(p)) ? prices : undefined;
   const id = String(m.conditionId ?? m.id ?? "");
   if (!id) return null;
-  return { id, question: m.question, closesAt: Math.floor(ms / 1000), outcomes, currentProbabilities };
+  return {
+    id,
+    question: m.question,
+    closesAt: Math.floor(ms / 1000),
+    outcomes,
+    currentProbabilities,
+    // The market URL is mandatory context for any question/solution built on
+    // this market — the research target every answer must cite. See
+    // prediction-question + research + the solve/post scaffolds.
+    url: polymarketUrl(m),
+  };
 }
 
 /** Pure: keep only markets closing within [minHours, maxHours] from now. */
